@@ -251,3 +251,16 @@ export async function inspectDirectoryUsage(
   }
   return usage
 }
+
+/**
+ * 当前文档的图片落点 = 文档所在目录 + 生效的文档资源目录。
+ *
+ * `documentResourceDirectory` 来自三级解析结果（全局 → 文件夹 → 当前文档），
+ * 因此下载 / 上传 / 批量任务必须调用这里，而不是各自读全局设置。
+ */
+export function resolveImageProjectDirectory(
+  documentPath: string,
+  documentResourceDirectory: string,
+): string {
+  return path.resolve(path.dirname(documentPath), documentResourceDirectory)
+}

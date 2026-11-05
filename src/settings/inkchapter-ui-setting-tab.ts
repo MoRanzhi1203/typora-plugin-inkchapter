@@ -6,6 +6,7 @@
  */
 import { SettingTab } from '@typora-community-plugin/core'
 import type { InkChapterUiSettings } from './settings-model'
+import { preserveSettingsScroll } from './settings-scroll'
 
 /** 设置页与运行时之间的唯一接口（读取 = 已按默认值补齐的配置）。 */
 export interface InkChapterUiSettingTabHost {
@@ -28,8 +29,10 @@ export class InkChapterUiSettingTab extends SettingTab {
   }
 
   private render(): void {
-    while (this.containerEl.firstChild) this.containerEl.removeChild(this.containerEl.firstChild)
-    const ui = this.host.read()
+    preserveSettingsScroll(this.containerEl, () => {
+      this.containerEl.classList.add('inkchapter-settings', 'inkchapter-settings-ui')
+      while (this.containerEl.firstChild) this.containerEl.removeChild(this.containerEl.firstChild)
+      const ui = this.host.read()
 
     this.addSettingTitle('文件夹树')
     this.checkbox(
@@ -85,6 +88,7 @@ export class InkChapterUiSettingTab extends SettingTab {
       ui.ribbon,
       v => this.patch({ ribbon: v }),
     )
+    })
   }
 
   private checkbox(name: string, description: string, checked: boolean, onChange: (value: boolean) => void): void {

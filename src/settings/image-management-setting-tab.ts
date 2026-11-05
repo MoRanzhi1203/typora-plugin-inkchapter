@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 墨章「图片管理」设置页 = 首次初始化向导 + 日常配置入口。
  *
  * 设计：
@@ -26,6 +26,8 @@ import type { GitHubConnectionTestResult } from '../image-management/github-conn
 import type { InitializeImageLibraryResult, LibraryInspection } from '../image-management/image-library-inspection'
 import { resolveImageDataPaths } from '../image-management/image-data-paths'
 import type { ImageLibraryCenterRow, ImageLibraryView } from '../image-management/image-library-center'
+import type { ImageScopeOverrides, ResolvedImageScope } from '../image-management/image-scope-settings'
+import { preserveSettingsScroll } from './settings-scroll'
 
 const DEFAULT_REMOTE_PROFILE_ID = 'github-default'
 
@@ -53,6 +55,18 @@ export interface ImageManagementSettingTabHost {
   deleteCredential(referenceId: string): Promise<{ ok: boolean; code?: string }>
   /** 只读连接测试；不创建远程文件。 */
   testConnection(profile: ImageRemoteProfile): Promise<GitHubConnectionTestResult>
+  /** V5.0 — 当前文档 / 文件夹的图片作用域上下文。 */
+  getScopeContext(): Promise<{
+    documentPath: string | null
+    folderPath: string | null
+    resolved: ResolvedImageScope | null
+    documentOverride: ImageScopeOverrides | null
+    folderOverride: ImageScopeOverrides | null
+  }>
+  setDocumentScope(overrides: ImageScopeOverrides): Promise<void>
+  setFolderScope(overrides: ImageScopeOverrides): Promise<void>
+  clearDocumentScope(): Promise<void>
+  clearFolderScope(): Promise<void>
 }
 
 function formatBytes(bytes: number | null): string {
@@ -123,8 +137,10 @@ export class ImageManagementSettingTab extends SettingTab {
   }
 
   private render(): void {
-    while (this.containerEl.firstChild) this.containerEl.removeChild(this.containerEl.firstChild)
-    const settings = this.host.read()
+    preserveSettingsScroll(this.containerEl, () => {
+      this.containerEl.classList.add('inkchapter-settings', 'inkchapter-settings-image')
+      while (this.containerEl.firstChild) this.containerEl.removeChild(this.containerEl.firstChild)
+      const settings = this.host.read()
     this.libraryPathDraft = settings.globalLibrary.root
     this.statusEl = null
     this.diagnosticsEl = null
@@ -133,6 +149,8 @@ export class ImageManagementSettingTab extends SettingTab {
     this.tokenInput = null
     this.credentialStatusEl = null
     this.connectionResultEl = null
+    this.scopePanelEl = null
+    this.scopeContext = null
 
     this.addSettingTitle(settings.initialized ? '图片管理' : '图片管理 · 初始化向导')
     this.addSetting(s => {
@@ -290,6 +308,18 @@ export class ImageManagementSettingTab extends SettingTab {
       })
     })
 
+    this.addSetting(s => {
+      s.addName('插入远程图后自动本地化')
+      s.addDescription(
+        '默认关闭：Typora 原生插入的远程图片保持原样。开启后，仅对“插入后新增的远程引用”'
+        + '按当前文档资源目录下载并改写；可在下方「生效范围」中按文件夹 / 文档单独覆盖。',
+      )
+      s.addCheckbox(cb => {
+        cb.checked = settings.autoLocalizeOnInsert
+        cb.onchange = () => this.write({ ...this.host.read(), autoLocalizeOnInsert: cb.checked })
+      })
+    })
+
     this.addSettingTitle('命名与压缩')
     this.addSetting(s => {
       s.addName('图片命名策略')
@@ -330,9 +360,242 @@ export class ImageManagementSettingTab extends SettingTab {
       })
     })
 
-    this.renderRemoteSection(settings)
-    this.renderPathSection(settings)
-    this.renderGuidance()
+      this.renderRemoteSection(settings)
+      this.renderPathSection(settings)
+      this.renderGuidance()
+      this.renderScopeSection()
+    })
+  }
+
+  // ── V5.0 — 三级作用域（全局 → 文件夹 → 当前文档） ──────────────────────
+
+  private scopePanelEl: HTMLElement | null = null
+  private scopeContext: {
+    documentPath: string | null
+    folderPath: string | null
+    resolved: ResolvedImageScope | null
+    documentOverride: ImageScopeOverrides | null
+    folderOverride: ImageScopeOverrides | null
+  } | null = null
+
+  private renderScopeSection(): void {
+    this.addSettingTitle('生效范围（全局 → 文件夹 → 当前文档）')
+    this.addSetting(s => {
+      s.addName('当前文档的图片配置')
+      s.addDescription(
+        '覆盖只影响当前 Markdown；未覆盖字段按「文件夹 → 全局默认」继承。'
+        + 'Typora 原生六种插入方式保持原样，只有这里显式开启的“插入后接管”才会由墨章执行。',
+      )
+    })
+    this.addSetting(s => {
+      s.addDescription(div => {
+        this.scopePanelEl = div
+        div.className = 'inkchapter-scope-panel'
+        div.textContent = '正在读取作用域…'
+      })
+    })
+    void this.loadScopeContext()
+  }
+
+  private async loadScopeContext(): Promise<void> {
+    try {
+      this.scopeContext = await this.host.getScopeContext()
+      this.renderScopePanel()
+    } catch {
+      if (this.scopePanelEl) this.scopePanelEl.textContent = '无法读取作用域配置。'
+    }
+  }
+
+  private scopeOriginLabel(key: keyof ImageScopeOverrides): string {
+    const entry = this.scopeContext?.resolved?.origins.find(item => item.key === key)
+    if (!entry) return '继承：全局默认'
+    if (entry.origin === 'document') return '覆盖：当前文档'
+    if (entry.origin === 'folder') return '继承：当前文件夹'
+    return '继承：全局默认'
+  }
+
+  private currentDocumentValue(key: keyof ImageScopeOverrides): unknown {
+    const override = this.scopeContext?.documentOverride
+    if (override && override[key] !== undefined) return override[key]
+    return this.scopeContext?.resolved?.settings[key]
+  }
+
+  private documentOverrideValue(key: keyof ImageScopeOverrides): unknown {
+    return this.scopeContext?.documentOverride?.[key]
+  }
+
+  private async saveDocumentOverride(patch: Record<string, unknown>, clearKey?: string): Promise<void> {
+    const next: ImageScopeOverrides = { ...(this.scopeContext?.documentOverride ?? {}) }
+    if (clearKey) {
+      delete (next as Record<string, unknown>)[clearKey]
+    } else {
+      for (const [key, value] of Object.entries(patch)) {
+        ;(next as Record<string, unknown>)[key] = value
+      }
+    }
+    try {
+      await this.host.setDocumentScope(next)
+      if (this.scopeContext) this.scopeContext.documentOverride = next
+      await this.loadScopeContext()
+    } catch (error) {
+      const code = (error as Error)?.message
+      const message = code === 'NO_ACTIVE_DOCUMENT'
+        ? '当前没有打开的 Markdown，无法保存文档级覆盖。'
+        : code === 'IMAGE_SCOPE_SERVICE_UNAVAILABLE'
+          ? '图片作用域服务未就绪（请重启 Typora 后重试）。'
+          : `保存文档级覆盖失败：${code ?? 'UNKNOWN'}`
+      if (this.scopePanelEl) this.scopePanelEl.textContent = message
+    }
+  }
+
+  private renderScopePanel(): void {
+    const panel = this.scopePanelEl
+    if (!panel) return
+    const ctx = this.scopeContext
+    while (panel.firstChild) panel.removeChild(panel.firstChild)
+
+    const meta = document.createElement('div')
+    meta.className = 'inkchapter-scope-meta'
+    meta.textContent = ctx?.documentPath
+      ? `当前文档：${ctx.documentPath}`
+      : '当前没有打开的 Markdown：只能使用全局默认设置。'
+    if (ctx?.folderPath) {
+      const folder = document.createElement('span')
+      folder.className = 'inkchapter-scope-folder'
+      folder.textContent = `　文件夹：${ctx.folderPath}`
+      meta.appendChild(folder)
+    }
+    panel.appendChild(meta)
+
+    if (!ctx?.documentPath) {
+      const hint = document.createElement('div')
+      hint.className = 'inkchapter-scope-hint'
+      hint.textContent = '保存文档后即可为它单独设置图片策略（项目内、项目外都一样）。'
+      panel.appendChild(hint)
+      return
+    }
+
+    const grid = document.createElement('div')
+    grid.className = 'inkchapter-scope-grid'
+    panel.appendChild(grid)
+
+    const addRow = (
+      label: string,
+      key: keyof ImageScopeOverrides,
+      control: HTMLElement,
+    ): void => {
+      const row = document.createElement('div')
+      row.className = 'inkchapter-scope-row'
+      const name = document.createElement('span')
+      name.className = 'inkchapter-scope-label'
+      name.textContent = label
+      const origin = document.createElement('span')
+      origin.className = 'inkchapter-scope-origin'
+      origin.textContent = this.scopeOriginLabel(key)
+      row.appendChild(name)
+      row.appendChild(origin)
+      row.appendChild(control)
+      grid.appendChild(row)
+    }
+
+    const dirInput = document.createElement('input')
+    dirInput.type = 'text'
+    dirInput.className = 'inkchapter-scope-input'
+    dirInput.placeholder = '继承（例如 assets/images）'
+    dirInput.value = String(this.documentOverrideValue('documentResourceDirectory') ?? '')
+    dirInput.onchange = () => {
+      const value = dirInput.value.trim()
+      if (value === '') void this.saveDocumentOverride({}, 'documentResourceDirectory')
+      else void this.saveDocumentOverride({ documentResourceDirectory: value })
+    }
+    addRow('文档资源目录', 'documentResourceDirectory', dirInput)
+
+    const selectFor = (
+      key: keyof ImageScopeOverrides,
+      options: Array<[string, string]>,
+      onChange: (value: string) => void,
+    ): HTMLSelectElement => {
+      const select = document.createElement('select')
+      select.className = 'inkchapter-scope-select'
+      for (const [value, text] of options) select.add(new Option(text, value))
+      const override = this.documentOverrideValue(key)
+      select.value = override === undefined ? '' : String(override)
+      select.onchange = () => onChange(select.value)
+      return select
+    }
+
+    addRow('引用模式', 'referenceMode', selectFor('referenceMode', [
+      ['', '继承'], ['local-relative', '本地相对路径'], ['remote-url', '远程 URL'],
+    ], value => {
+      if (value === '') void this.saveDocumentOverride({}, 'referenceMode')
+      else void this.saveDocumentOverride({ referenceMode: value })
+    }))
+
+    addRow('上传服务', 'uploadService', selectFor('uploadService', [
+      ['', '继承'], ['none', '无（不上传）'], ['github', 'GitHub'],
+    ], value => {
+      if (value === '') void this.saveDocumentOverride({}, 'uploadService')
+      else void this.saveDocumentOverride({ uploadService: value })
+    }))
+
+    addRow('插入本地图后自动上传', 'autoUpload', selectFor('autoUpload', [
+      ['', '继承'], ['true', '开启'], ['false', '关闭'],
+    ], value => {
+      if (value === '') void this.saveDocumentOverride({}, 'autoUpload')
+      else void this.saveDocumentOverride({ autoUpload: value === 'true' })
+    }))
+
+    addRow('插入远程图后自动本地化', 'autoLocalizeOnInsert', selectFor('autoLocalizeOnInsert', [
+      ['', '继承'], ['true', '开启'], ['false', '关闭'],
+    ], value => {
+      if (value === '') void this.saveDocumentOverride({}, 'autoLocalizeOnInsert')
+      else void this.saveDocumentOverride({ autoLocalizeOnInsert: value === 'true' })
+    }))
+
+    addRow('图片命名策略', 'namingStrategy', selectFor('namingStrategy', [
+      ['', '继承'], ['timestamp-hash', '时间戳 + 哈希'], ['original-name', '保留原文件名'], ['custom', '自定义'],
+    ], value => {
+      if (value === '') void this.saveDocumentOverride({}, 'namingStrategy')
+      else void this.saveDocumentOverride({ namingStrategy: value })
+    }))
+
+    const actions = document.createElement('div')
+    actions.className = 'inkchapter-scope-actions'
+
+    const toFolder = document.createElement('button')
+    toFolder.className = 'inkchapter-scope-button'
+    toFolder.textContent = '把当前文档覆盖应用为文件夹默认'
+    toFolder.onclick = () => {
+      const overrides = this.scopeContext?.documentOverride ?? {}
+      void this.host.setFolderScope(overrides)
+        .then(() => this.loadScopeContext())
+        .catch(error => {
+          if (!this.scopePanelEl) return
+          const code = (error as Error)?.message
+          this.scopePanelEl.textContent = code === 'IMAGE_SCOPE_SERVICE_UNAVAILABLE'
+            ? '图片作用域服务未就绪（请重启 Typora 后重试）。'
+            : `保存文件夹级覆盖失败：${code ?? 'UNKNOWN'}`
+        })
+    }
+    actions.appendChild(toFolder)
+
+    const clearDoc = document.createElement('button')
+    clearDoc.className = 'inkchapter-scope-button'
+    clearDoc.textContent = '清除当前文档覆盖'
+    clearDoc.onclick = () => {
+      void this.host.clearDocumentScope().then(() => this.loadScopeContext())
+    }
+    actions.appendChild(clearDoc)
+
+    const clearFolder = document.createElement('button')
+    clearFolder.className = 'inkchapter-scope-button'
+    clearFolder.textContent = '清除当前文件夹覆盖'
+    clearFolder.onclick = () => {
+      void this.host.clearFolderScope().then(() => this.loadScopeContext())
+    }
+    actions.appendChild(clearFolder)
+
+    panel.appendChild(actions)
   }
 
   private renderPathSection(settings: ImageSettings): void {

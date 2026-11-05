@@ -1,6 +1,7 @@
 import { SettingTab } from '@typora-community-plugin/core'
 import type { PluginSettings } from '@typora-community-plugin/core'
 import type { InkChapterSettings } from './settings-model'
+import { captureSettingsScroll, preserveSettingsScroll, restoreSettingsScroll } from './settings-scroll'
 import type {
   HeadingLevel,
   HeadingLevelStyle,
@@ -358,6 +359,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
   private savedCaptionFormulaBaseline: ObjectNumberingConfig | null = null
 
   onshow(): void {
+    const scrollSnapshot = captureSettingsScroll(this.containerEl)
+    this.containerEl.classList.add('inkchapter-settings', 'inkchapter-settings-heading')
     this.cancelDrag()
     while (this.containerEl.firstChild) {
       this.containerEl.removeChild(this.containerEl.firstChild)
@@ -418,6 +421,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       errEl.textContent = '[错误] 设置页面渲染失败: ' + (e instanceof Error ? e.message : String(e))
       this.containerEl.appendChild(errEl)
     }
+    restoreSettingsScroll(scrollSnapshot)
   }
 
   onhide(): void {
@@ -3528,14 +3532,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // Re-render the entire page to reflect draft changes.
     // Must NOT call onshow() — that resets layout drafts to persisted state.
     this.cancelDrag('draft-change')
-    while (this.containerEl.firstChild) {
-      this.containerEl.removeChild(this.containerEl.firstChild)
-    }
-    try {
-      this.render()
-    } catch (e) {
-      console.error('[InkChapter] SettingTab render 失败:', e)
-    }
+    preserveSettingsScroll(this.containerEl, () => {
+      while (this.containerEl.firstChild) {
+        this.containerEl.removeChild(this.containerEl.firstChild)
+      }
+      try {
+        this.render()
+      } catch (e) {
+        console.error('[InkChapter] SettingTab render 失败:', e)
+      }
+    })
   }
 
   /**

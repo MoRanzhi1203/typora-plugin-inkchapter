@@ -4,7 +4,10 @@ import type { InkChapterSettings } from './settings/settings-model'
 import { DEFAULT_SETTINGS, DEFAULT_UI_SETTINGS, resolveUiSettings } from './settings/default-settings'
 import { InkChapterUiSettingTab } from './settings/inkchapter-ui-setting-tab'
 import { ImageManagementSettingTab } from './settings/image-management-setting-tab'
-import { resolveImageSettings, type ImageRemoteProfile } from './image-management/image-settings'
+import { resolveImageSettings, type ImageRemoteProfile, type ImageSettings } from './image-management/image-settings'
+import { ImageScopeStore } from './image-management/image-scope-store'
+import { ImageDocumentScopeService } from './image-management/image-document-scope-service'
+import { ImageInsertionController } from './image-management/image-insertion-controller'
 import {
   WindowsDpapiCredentialStore,
   migrateLegacyPicGoToken,
@@ -39,7 +42,7 @@ import {
   switchTyporaUploaderToInkChapter,
 } from './image-management/typora-uploader-switch'
 import { buildImageLibraryCenter, type ImageLibraryView } from './image-management/image-library-center'
-import { inspectDirectoryUsage } from './image-management/image-path-policy'
+import { inspectDirectoryUsage, resolveImageProjectDirectory } from './image-management/image-path-policy'
 import {
   FRAMEWORK_RIBBON_ENABLE_CLASS,
   INKCHAPTER_RIBBON_HIDDEN_CLASS,
@@ -285,6 +288,50 @@ export default class extends Plugin<InkChapterSettings> {
   private imageContextMenuDownload?: ImageContextMenuDownload
   /** 系统安全凭据存储；只在插件内部持有，不挂到 window。 */
   private imageCredentialStore?: ImageCredentialStore
+  /** V5.0 — 文件夹 / 文档级图片配置覆盖（插件私有数据目录）。 */
+  private imageScopeStore?: ImageScopeStore
+  /** V5.0 — 当前文档的生效图片配置解析服务。 */
+  private imageDocumentScopeService?: ImageDocumentScopeService
+  /** V5.0 — 原生插入后的逐文档策略执行器（默认不干预原生语义）。 */
+  private imageInsertionController?: ImageInsertionController
+  /** 当前文档已解析的图片配置（供同步回调如 readSettings 使用）。 */
+  private activeImageSettings: ImageSettings | null = null
+
+  /**
+   * V5.0 — 当前文档的生效图片配置（global → folder → document）。
+   * 所有插件自有的图片动作（下载 / 上传 / 批量 / 图库中心）都必须走这里，
+   * 而不是直接读全局 `image` 设置。
+   */
+  private async resolveActiveImageSettings(): Promise<ImageSettings> {
+    const globalSettings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+    if (!this.imageDocumentScopeService) {
+      this.activeImageSettings = globalSettings
+      return globalSettings
+    }
+    try {
+      const resolved = await this.imageDocumentScopeService.resolve()
+      this.activeImageSettings = resolved.settings
+      return resolved.settings
+    } catch {
+      this.activeImageSettings = globalSettings
+      return globalSettings
+    }
+  }
+
+  /** 文档切换 / 设置变化后刷新缓存，避免同步回调读到上一份文档的配置。 */
+  private refreshActiveImageScope(): void {
+    void this.resolveActiveImageSettings().catch(() => undefined)
+  }
+
+  /** 当前文档的生效作用域（设置页展示继承关系用；失败时返回 null）。 */
+  private async readActiveImageScope() {
+    if (!this.imageDocumentScopeService) return null
+    try {
+      return await this.imageDocumentScopeService.resolve()
+    } catch {
+      return null
+    }
+  }
 
   /**
    * 图片数据根目录。
@@ -346,7 +393,8 @@ export default class extends Plugin<InkChapterSettings> {
     const targets: Array<'project' | 'library' | 'offline' | 'custom'> = []
     if (this.app.workspace.activeFile) targets.push('project')
     try {
-      const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+      const settings = this.activeImageSettings
+        ?? resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
       const paths = resolveImageDataPaths(this.imageDataBaseDir, { settings })
       if (paths.libraryImagesDir) targets.push('library')
     } catch { /* ignore */ }
@@ -374,8 +422,8 @@ export default class extends Plugin<InkChapterSettings> {
     }
     let projectDirectory: string | null = null
     if (documentPath) {
-      const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
-      projectDirectory = path.resolve(path.dirname(documentPath), settings.documentResourceDirectory)
+      const settings = await this.resolveActiveImageSettings()
+      projectDirectory = resolveImageProjectDirectory(documentPath, settings.documentResourceDirectory)
     }
     const result = await service.download({
       url: input.url,
@@ -442,8 +490,8 @@ export default class extends Plugin<InkChapterSettings> {
       return
     }
     const markdown = editor.getMarkdown()
-    const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
-    const projectDirectory = path.resolve(path.dirname(documentPath), settings.documentResourceDirectory)
+    const settings = await this.resolveActiveImageSettings()
+    const projectDirectory = resolveImageProjectDirectory(documentPath, settings.documentResourceDirectory)
     const summary = await downloadDocumentRemoteImages({
       markdown,
       documentPath,
@@ -494,6 +542,37 @@ export default class extends Plugin<InkChapterSettings> {
     // 第三参数 false：保留 Typora 撤销历史（与现有安全写回路径一致）。
     File.reloadContent(outcome.markdown, false, false, false, true)
     return { ok: true, resultKind: 'REWRITTEN' }
+  }
+
+  /**
+   * V5.0 — 原生插入策略执行后的引用改写：按 destination 定位唯一引用，
+   * 只替换目标地址（alt / 图号 / 图名 / 正文保持不变）。
+   */
+  private rewriteInsertedReference(rawDestination: string, newDestination: string): boolean {
+    const documentPath = this.app.workspace.activeFile
+    if (!documentPath) return false
+    let markdown: string
+    try {
+      markdown = editor.getMarkdown()
+    } catch {
+      return false
+    }
+    const selection = selectMarkdownImageReference({
+      markdown,
+      documentPath,
+      rawDestinations: [rawDestination],
+      occurrenceIndex: 0,
+    })
+    if (!selection.reference) return false
+    const outcome = applyReferenceDestination(markdown, selection.reference, newDestination)
+    if (!outcome) return false
+    if (outcome.kind === 'ALREADY_LINKED') return true
+    try {
+      File.reloadContent(outcome.markdown, false, false, false, true)
+      return true
+    } catch {
+      return false
+    }
   }
 
   /** 让 Typora 原生「上传图片」调用墨章 CLI（可逆：写入前自动备份 profile.data）。 */
@@ -572,7 +651,7 @@ export default class extends Plugin<InkChapterSettings> {
    * 不修改当前 Markdown，也不删除源文件。
    */
   private async uploadLocalImageInteractive(): Promise<void> {
-    const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+    const settings = await this.resolveActiveImageSettings()
     if (!settings.enabled) {
       Notice.info('墨章：图片管理尚未启用，请先在「设置 → 墨章 · 图片」启用。')
       return
@@ -614,7 +693,7 @@ export default class extends Plugin<InkChapterSettings> {
    * 图片管理未启用或服务未初始化时返回空数组，设置页据此显示「尚未就绪」。
    */
   private async buildImageLibraryCenter(): Promise<ImageLibraryView[]> {
-    const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+    const settings = await this.resolveActiveImageSettings()
     if (!settings.enabled || !this.imageAssetService || !this.imageUploadService) return []
 
     const paths = resolveImageDataPaths(this.imageDataBaseDir, { settings })
@@ -2055,6 +2134,42 @@ export default class extends Plugin<InkChapterSettings> {
           return store.delete(referenceId)
         },
         testConnection: (profile) => this.testImageRemoteConnection(profile),
+        // V5.0 — 三级作用域：设置页读取 / 写入当前文档与当前文件夹的覆盖。
+        getScopeContext: async () => {
+          const service = this.imageDocumentScopeService
+          const resolved = await this.readActiveImageScope()
+          return {
+            documentPath: this.app.workspace.activeFile ?? null,
+            folderPath: service?.getActiveFolderPath() ?? null,
+            resolved,
+            documentOverride: service ? await service.getDocumentOverride() : null,
+            folderOverride: service ? await service.getFolderOverride() : null,
+          }
+        },
+        setDocumentScope: async (overrides) => {
+          const service = this.imageDocumentScopeService
+          if (!service) throw new Error('IMAGE_SCOPE_SERVICE_UNAVAILABLE')
+          await service.setDocumentScope(overrides)
+          this.refreshActiveImageScope()
+        },
+        setFolderScope: async (overrides) => {
+          const service = this.imageDocumentScopeService
+          if (!service) throw new Error('IMAGE_SCOPE_SERVICE_UNAVAILABLE')
+          await service.setFolderScope(overrides)
+          this.refreshActiveImageScope()
+        },
+        clearDocumentScope: async () => {
+          const service = this.imageDocumentScopeService
+          if (!service) throw new Error('IMAGE_SCOPE_SERVICE_UNAVAILABLE')
+          await service.clearDocumentScope()
+          this.refreshActiveImageScope()
+        },
+        clearFolderScope: async () => {
+          const service = this.imageDocumentScopeService
+          if (!service) throw new Error('IMAGE_SCOPE_SERVICE_UNAVAILABLE')
+          await service.clearFolderScope()
+          this.refreshActiveImageScope()
+        },
       }))
       console.log('[InkChapter] image settings tab registered')
     } catch (e) {
@@ -2066,6 +2181,14 @@ export default class extends Plugin<InkChapterSettings> {
       const imageSettings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
       const paths = resolveImageDataPaths(this.imageDataBaseDir, { settings: imageSettings })
       this.imageAssetService = new ImageAssetService(paths)
+      // V5.0 — 文件夹 / 文档级覆盖：与全局设置一起构成三级图片配置。
+      this.imageScopeStore = new ImageScopeStore({ dataRoot: paths.dataRoot })
+      this.imageDocumentScopeService = new ImageDocumentScopeService({
+        getGlobalSettings: () => resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never),
+        getActiveDocumentPath: () => this.app.workspace.activeFile ?? null,
+        store: this.imageScopeStore,
+      })
+      this.activeImageSettings = imageSettings
       this.imageTransferTaskStore = new ImageTransferTaskStore(
         path.join(paths.dataRoot, 'transfer-tasks.json'),
       )
@@ -2075,7 +2198,8 @@ export default class extends Plugin<InkChapterSettings> {
         assets: this.imageAssetService,
         tasks: this.imageTransferTaskStore,
         credentials: credentialStore ?? undefined,
-        readSettings: () => resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never),
+        readSettings: () => this.activeImageSettings
+          ?? resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never),
       })
       this.imageDownloadService = new ImageDownloadService({
         paths,
@@ -2086,6 +2210,46 @@ export default class extends Plugin<InkChapterSettings> {
         download: image => { void this.downloadImageFromContextMenu(image) },
       })
       this.imageContextMenuDownload.start()
+
+      // V5.0 — 逐文档插入策略：只有当前文档/文件夹显式开启 autoUpload /
+      // autoLocalizeOnInsert 时才接管；默认 NONE，Typora 原生六种插入语义不变。
+      this.imageInsertionController = new ImageInsertionController({
+        getSettings: () => this.activeImageSettings
+          ?? resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never),
+        getMarkdown: () => {
+          try { return editor.getMarkdown() } catch { return null }
+        },
+        getDocumentPath: () => this.app.workspace.activeFile ?? null,
+        upload: async (filePath) => {
+          const service = this.imageUploadService
+          if (!service) return { ok: false, message: 'UPLOAD_SERVICE_UNAVAILABLE' }
+          const result = await service.uploadLocalFile({ filePath })
+          return result.ok ? { ok: true, url: result.url } : { ok: false, message: result.message }
+        },
+        localize: async (url) => {
+          const service = this.imageDownloadService
+          const documentPath = this.app.workspace.activeFile ?? null
+          if (!service || !documentPath) return { ok: false, message: 'NO_ACTIVE_DOCUMENT' }
+          const settings = await this.resolveActiveImageSettings()
+          const projectDirectory = resolveImageProjectDirectory(documentPath, settings.documentResourceDirectory)
+          const result = await service.download({ url, documentPath, projectDirectory, placement: 'project' })
+          if (!result.ok || !result.filePath) return { ok: false, message: result.message }
+          return { ok: true, destination: relativeMarkdownImagePath(documentPath, result.filePath) }
+        },
+        rewrite: (rawDestination, newDestination) => this.rewriteInsertedReference(rawDestination, newDestination),
+        notify: (message, kind) => {
+          if (kind === 'error') Notice.error(message)
+          else Notice.info(message)
+        },
+      })
+      this.register(() => this.imageInsertionController?.dispose())
+      this.register(this.app.features.markdownEditor.on('edit', () => {
+        this.refreshActiveImageScope()
+        this.imageInsertionController?.notifyEdit()
+      }) as never)
+      this.register(this.app.workspace.on('active-leaf:change', () => {
+        this.refreshActiveImageScope()
+      }) as never)
       console.log('[InkChapter] image asset service ready')
 
       // 旧版 PicGo 私有配置里的明文 Token → 系统安全存储，并立即从 JSON 移除。
