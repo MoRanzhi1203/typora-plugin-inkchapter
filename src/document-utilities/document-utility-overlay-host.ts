@@ -22052,7 +22052,7 @@ export class DocumentUtilityOverlayHost {
           })
         : null
       const rawPres = decideNavigatorPresentation({
-        scrollable: true,
+        scrollable: next.scrollable,
         hasVisibleEditor,
         editorCanContainNavigator,
         gutterCandidateValid,
@@ -22070,7 +22070,7 @@ export class DocumentUtilityOverlayHost {
         this.stabilizationRemeasurePending = false
       }
       const stab = applyNavigatorStabilization({
-        scrollable: true,
+        scrollable: next.scrollable,
         presentation: rawPres.presentation,
         reason: rawPres.reason,
         lastStableVisible: this.lastStableNavigatorPresentation,

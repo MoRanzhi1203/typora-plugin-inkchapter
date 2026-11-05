@@ -261,7 +261,7 @@ describe('NAV-HIDDEN-AUDIT-1..5 hidden navigator audit closure', () => {
     ;(document.querySelector('.inkchapter-doc-toolbar__btn--diag') as HTMLButtonElement).click()
   }
 
-  it('NAV-HIDDEN-AUDIT-1: short doc drawer open → navigator is evaluated as VISIBLE (never EXPECTED_HIDDEN)', () => {
+  it('NAV-HIDDEN-AUDIT-1: short doc drawer open → NAV-PLACEMENT NOT_EVALUATED/NAVIGATOR_EXPECTED_HIDDEN', () => {
     immediateRaf()
     shortShell()
     const h = mountHost()
@@ -269,13 +269,12 @@ describe('NAV-HIDDEN-AUDIT-1..5 hidden navigator audit closure', () => {
     const lines = auditEvents(auditLines).filter(e => e.event === 'DOCUMENT-UTILITY-NAV-PLACEMENT')
     const last = lines[lines.length - 1]
     expect(last).toBeTruthy()
-    // V5.1 — 短文档也常驻显示导航器，因此不再出现 EXPECTED_HIDDEN 分支。
-    expect(last.payload.decision).not.toBe('NOT_EVALUATED')
-    expect(last.payload.decisionReason).not.toBe('NAVIGATOR_EXPECTED_HIDDEN')
+    expect(last.payload.decision).toBe('NOT_EVALUATED')
+    expect(last.payload.decisionReason).toBe('NAVIGATOR_EXPECTED_HIDDEN')
     h.dispose()
   })
 
-  it('NAV-HIDDEN-AUDIT-2: short doc → BCR EXPECTED_VISIBLE + AUDIT-INVARIANT PASS', () => {
+  it('NAV-HIDDEN-AUDIT-2: short doc → BCR EXPECTED_HIDDEN + AUDIT-INVARIANT PASS', () => {
     immediateRaf()
     shortShell()
     const h = mountHost()
@@ -290,7 +289,7 @@ describe('NAV-HIDDEN-AUDIT-1..5 hidden navigator audit closure', () => {
     const invariants = auditEvents(auditLines).filter(e => e.event === 'DOCUMENT-UTILITY-NAVIGATOR-AUDIT-INVARIANT')
     expect(invariants.length).toBeGreaterThanOrEqual(1)
     expect(invariants[invariants.length - 1].payload.decision).toBe('PASS')
-    expect(invariants[invariants.length - 1].payload.expectedVisible).toBe('true')
+    expect(invariants[invariants.length - 1].payload.expectedVisible).toBe('false')
     h.dispose()
   })
 

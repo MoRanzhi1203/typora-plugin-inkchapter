@@ -152,17 +152,14 @@ describe('NAV-MOUNT / NAV-NONSCROLL / NAV-TRANSITION — host DOM', () => {
     expect(document.querySelectorAll('.inkchapter-doc-navigator').length).toBeLessThanOrEqual(1)
   })
 
-  it('NAV-NONSCROLL-1: ACTIVE + documentKey exists + not scrollable → visible rail with disabled arrows', () => {
+  it('NAV-NONSCROLL-1: ACTIVE + documentKey exists + not scrollable → hidden', () => {
     makeShell(shellRect, 300, 300) // scrollHeight === clientHeight
     const h = new DocumentUtilityOverlayHost({ ctx: makeContext(() => activeWs), providers: fakeProviders(), onBindDocument: () => {} })
     h.mount()
-    // V5.1 — 文档工具模块常驻：短文档也显示导航器，只是两个箭头禁用。
+    // 只有真实纵向滚动范围才显示导航器。
     const nav = navEl()!
-    expect(nav.hidden).toBe(false)
-    expect(['gutter', 'inset']).toContain(nav.dataset.rail)
-    const buttons = Array.from(nav.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-navigator__btn'))
-    expect(buttons.length).toBeGreaterThan(0)
-    expect(buttons.every(btn => btn.disabled)).toBe(true)
+    expect(nav.hidden).toBe(true)
+    expect(nav.dataset.rail).toBe('hidden')
   })
 
   it('long scrollable doc → navigator visible on the right rail (mode ∈ {gutter, inset})', () => {

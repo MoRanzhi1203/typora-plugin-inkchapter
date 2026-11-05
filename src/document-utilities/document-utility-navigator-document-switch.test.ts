@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 /**
- * P0 — 右下角翻页导航器在“切换 Markdown”后必须持续可见。
+ * P0 — 右下角翻页导航器：只有当前正文存在真实纵向滚动范围时才显示。
  *
- * 覆盖完整状态覆盖与生命周期：
- *   A(长) → B(短) → C(长) → A(长)
- *   快速连续切换（中间不等待几何/诊断）
- *   切换期间的瞬时无文档（SWITCHING_DOCUMENT）
- *   真正无活动文档（NO_DOCUMENT）才隐藏
+ * 最终交互规则：
+ *   无活动文档            → 隐藏
+ *   当前文档不可纵向滚动  → 隐藏
+ *   当前文档可纵向滚动    → 显示（箭头按位置启用/禁用）
+ *   切换短→长 / 长→短 / 长→长 / 长→短→长 / 长→长→短 → 每次按新文档重新计算
+ *   窗口尺寸变化、内容编辑导致滚动范围变化 → 重新计算
  *
  * 断言真实 DOM：hidden / inline display / aria-hidden / 节点唯一性 / 箭头可用性。
  */
@@ -56,7 +57,7 @@ function makeShell(): HTMLElement {
   Object.defineProperty(shell, 'getBoundingClientRect', { configurable: true, value: () => shellRect })
   Object.defineProperty(shell, 'clientHeight', { configurable: true, value: 700 })
   Object.defineProperty(shell, 'scrollHeight', { configurable: true, writable: true, value: 700 })
-  Object.defineProperty(shell, 'scrollTop', { configurable: true, value: 0, writable: true })
+  Object.defineProperty(shell, 'scrollTop', { configurable: true, writable: true, value: 0 })
   const write = document.createElement('div')
   write.id = 'write'
   write.setAttribute('contenteditable', 'true')
@@ -110,76 +111,159 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe(): void {} disconnect(): void {} unobserve(): void {} })
   vi.stubGlobal('requestAnimationFrame', ((cb: FrameRequestCallback) => { cb(0); return 1 }) as typeof requestAnimationFrame)
   shell = makeShell()
-  setDoc('/vault/a.md', 'doc:a', LONG_MD, true)
+  setDoc('/vault/short.md', 'doc:short', SHORT_MD, false)
 })
 
-describe('P0 navigator document switch — A(长) → B(短) → C(长) → A(长)', () => {
-  it('stays visible and mounted through every switch', () => {
+describe('P0 navigator visibility — short documents hide, long documents show', () => {
+  it('short document → hidden; long document → visible', () => {
     const h = mount()
-    expect(isVisible()).toBe(true)
-    expect(arrows().every(btn => btn.disabled)).toBe(false)
+    expect(isVisible()).toBe(false)
+    expect(navigator().hidden).toBe(true)
+    expect(navigator().style.display).toBe('none')
 
-    setDoc('/vault/b.md', 'doc:b', SHORT_MD, false)
-    h.bindDocument()
-    expect(isVisible()).toBe(true)
-    expect(arrows().every(btn => btn.disabled)).toBe(true)
-
-    setDoc('/vault/c.md', 'doc:c', LONG_MD, true)
+    setDoc('/vault/long.md', 'doc:long', LONG_MD, true)
     h.bindDocument()
     expect(isVisible()).toBe(true)
     expect(arrows().every(btn => btn.disabled)).toBe(false)
-
-    setDoc('/vault/a.md', 'doc:a', LONG_MD, true)
-    h.bindDocument()
-    expect(isVisible()).toBe(true)
-    expect(navigator().style.right).not.toBe('')
     h.dispose()
   })
 
-  it('survives rapid consecutive switches without waiting for geometry', () => {
+  it('short → short stays hidden; long → long stays visible', () => {
     const h = mount()
-    setDoc('/vault/b.md', 'doc:b', SHORT_MD, false)
+    setDoc('/vault/short2.md', 'doc:short2', SHORT_MD, false)
     h.bindDocument()
-    setDoc('/vault/c.md', 'doc:c', LONG_MD, true)
+    expect(isVisible()).toBe(false)
+
+    setDoc('/vault/long.md', 'doc:long', LONG_MD, true)
     h.bindDocument()
-    setDoc('/vault/a.md', 'doc:a', LONG_MD, true)
+    expect(isVisible()).toBe(true)
+    setDoc('/vault/long2.md', 'doc:long2', LONG_MD, true)
+    h.bindDocument()
+    expect(isVisible()).toBe(true)
+    h.dispose()
+  })
+
+  it('long → short hides; long → short → long shows again', () => {
+    const h = mount()
+    setDoc('/vault/long.md', 'doc:long', LONG_MD, true)
+    h.bindDocument()
+    expect(isVisible()).toBe(true)
+
+    setDoc('/vault/short.md', 'doc:short', SHORT_MD, false)
+    h.bindDocument()
+    expect(isVisible()).toBe(false)
+
+    setDoc('/vault/long2.md', 'doc:long2', LONG_MD, true)
+    h.bindDocument()
+    expect(isVisible()).toBe(true)
+    h.dispose()
+  })
+
+  it('long → long → short ends hidden', () => {
+    const h = mount()
+    setDoc('/vault/long.md', 'doc:long', LONG_MD, true)
+    h.bindDocument()
+    setDoc('/vault/long2.md', 'doc:long2', LONG_MD, true)
+    h.bindDocument()
+    expect(isVisible()).toBe(true)
+    setDoc('/vault/short.md', 'doc:short', SHORT_MD, false)
+    h.bindDocument()
+    expect(isVisible()).toBe(false)
+    h.dispose()
+  })
+
+  it('survives 10 rapid switches and matches the final document', () => {
+    const h = mount()
+    for (let i = 0; i < 10; i++) {
+      const long = i % 2 === 0
+      setDoc(`/vault/doc-${i}.md`, `doc:${i}`, long ? LONG_MD : SHORT_MD, long)
+      h.bindDocument()
+    }
+    // i=9 → short → hidden
+    expect(isVisible()).toBe(false)
+    setDoc('/vault/final-long.md', 'doc:final', LONG_MD, true)
     h.bindDocument()
     expect(isVisible()).toBe(true)
     expect(document.querySelectorAll('.inkchapter-doc-navigator')).toHaveLength(1)
     h.dispose()
   })
 
-  it('transient EMPTY during a switch does not persist a hidden navigator', () => {
+  it('recomputes after a window resize (small → large → small)', () => {
     const h = mount()
-    // 切换中的瞬时状态：workspace 暂时报告“无活动叶子”。
-    activeWs = { active: false, file: null, key: null, md: '' }
-    h.bindDocument()
-    // 新文档到达（同一 tick 内继续切换）。
-    setDoc('/vault/b.md', 'doc:b', LONG_MD, true)
+    setDoc('/vault/long.md', 'doc:long', LONG_MD, true)
     h.bindDocument()
     expect(isVisible()).toBe(true)
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 900 })
+    window.dispatchEvent(new Event('resize'))
+    expect(isVisible()).toBe(true)
+
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1920 })
+    window.dispatchEvent(new Event('resize'))
+    expect(isVisible()).toBe(true)
+    h.dispose()
+  })
+
+  it('recomputes when editing changes the real scroll range', () => {
+    const h = mount()
+    expect(isVisible()).toBe(false)
+    setDoc('/vault/short.md', 'doc:short', LONG_MD, true)
+    window.dispatchEvent(new Event('resize'))
+    expect(isVisible()).toBe(true)
+    setDoc('/vault/short.md', 'doc:short', SHORT_MD, false)
+    window.dispatchEvent(new Event('resize'))
+    expect(isVisible()).toBe(false)
+    h.dispose()
+  })
+
+  it('disables the up arrow at the top and the down arrow at the bottom', () => {
+    const h = mount()
+    setDoc('/vault/long.md', 'doc:long', LONG_MD, true)
+    h.bindDocument()
+    const nav = navigator()
+    const [up, down] = arrows()
+    expect(up).toBeTruthy()
+    expect(down).toBeTruthy()
+    // At the top: up is disabled, down is enabled.
+    expect(up.disabled).toBe(true)
+    expect(down.disabled).toBe(false)
+    ;(shell as HTMLElement & { scrollTop: number }).scrollTop = 1700
+    shell.dispatchEvent(new Event('scroll'))
+    expect(up.disabled).toBe(false)
+    expect(down.disabled).toBe(true)
+    void nav
     h.dispose()
   })
 
   it('hides only for a genuine NO_DOCUMENT state', () => {
     const h = mount()
-    activeWs = { active: false, file: null, key: null, md: '' }
+    setDoc('/vault/long.md', 'doc:long', LONG_MD, true)
     h.bindDocument()
-    const nav = navigator()
-    expect(nav.hidden).toBe(true)
-    expect(nav.style.display).toBe('none')
-    h.dispose()
-  })
-
-  it('keeps visible navigator usable after reopening a document', () => {
-    const h = mount()
+    expect(isVisible()).toBe(true)
     activeWs = { active: false, file: null, key: null, md: '' }
     h.bindDocument()
     expect(navigator().hidden).toBe(true)
-    setDoc('/vault/d.md', 'doc:d', LONG_MD, true)
+    expect(navigator().style.display).toBe('none')
+    h.dispose()
+  })
+
+  it('keeps the navigator unaffected by hub/status failures', () => {
+    const h = new DocumentUtilityOverlayHost({
+      ctx: makeContext(() => activeWs),
+      providers: fakeProviders(),
+      onBindDocument: () => {},
+      documentHub: {
+        getImageSummary: () => { throw new Error('image summary failure') },
+        uploadAll: () => {},
+        downloadAll: () => {},
+        checkDualLink: () => {},
+        openImageSettings: () => {},
+      },
+    })
+    h.mount()
+    setDoc('/vault/long.md', 'doc:long', LONG_MD, true)
     h.bindDocument()
     expect(isVisible()).toBe(true)
-    expect(arrows().every(btn => btn.disabled)).toBe(false)
     h.dispose()
   })
 })

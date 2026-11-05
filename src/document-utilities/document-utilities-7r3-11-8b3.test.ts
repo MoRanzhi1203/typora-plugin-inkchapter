@@ -120,12 +120,12 @@ describe('NAV-VIS-1/2/3 pure scrollability authority', () => {
 })
 
 describe('NAV-VIS-4/5/6 live visibility transitions (host level)', () => {
-  it('NAV-VIS-4: short → long → navigator stays mounted (module is document-constant)', () => {
+  it('NAV-VIS-4: short → long → navigator appears only when the document really scrolls', () => {
     const { shell } = makeShell()
     const h = mountHost()
-    // V5.1 — 文档工具模块常驻：短文档也显示模块。
-    expect(navigatorDisplay(h)).not.toBe('none')
-    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(false)
+    // 短文档无纵向滚动范围 → 隐藏。
+    expect(navigatorDisplay(h)).toBe('none')
+    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(true)
     setScrollHeight(shell, 702) // user keeps typing → real container becomes scrollable
     window.dispatchEvent(new Event('resize')) // geometry re-measure
     expect(navigatorDisplay(h)).not.toBe('none')
@@ -133,30 +133,28 @@ describe('NAV-VIS-4/5/6 live visibility transitions (host level)', () => {
     h.dispose()
   })
 
-  it('NAV-VIS-5: long → short → navigator stays visible', () => {
+  it('NAV-VIS-5: long → short → navigator hides', () => {
     const { shell } = makeShell()
     setScrollHeight(shell, 2000)
     const h = mountHost()
     expect(navigatorDisplay(h)).not.toBe('none')
-    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(false)
     setScrollHeight(shell, 700) // content deleted
     window.dispatchEvent(new Event('resize'))
-    expect(navigatorDisplay(h)).not.toBe('none')
-    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(false)
+    expect(navigatorDisplay(h)).toBe('none')
+    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(true)
     h.dispose()
   })
 
-  it('NAV-VIS-6: document switch A(scrollable) → B(short) → navigator stays mounted (no stale)', () => {
+  it('NAV-VIS-6: document switch A(scrollable) → B(short) → navigator hides (no stale)', () => {
     const { shell } = makeShell()
     setScrollHeight(shell, 2000)
     const h = mountHost()
     expect(navigatorDisplay(h)).not.toBe('none')
-    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(false)
     // Doc B is short; bindDocument triggers a geometry re-measure.
     setScrollHeight(shell, 700)
     h.bindDocument()
-    expect(navigatorDisplay(h)).not.toBe('none')
-    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(false)
+    expect(navigatorDisplay(h)).toBe('none')
+    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(true)
     const nav = document.querySelector('.inkchapter-doc-navigator') as HTMLElement
     expect(nav.style.left).toBe('')
     h.dispose()
