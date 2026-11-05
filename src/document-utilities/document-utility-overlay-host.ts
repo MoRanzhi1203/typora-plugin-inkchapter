@@ -21005,7 +21005,14 @@ export class DocumentUtilityOverlayHost {
       }
     }
     const renderedToolbarCount = toolbarEls.filter(isRenderedVisible).length
-    const renderedProblemsControlCount = problemsEls.filter(isRenderedVisible).length
+    // V5.1 — the compact status square carries the same projection as the old
+    // problems control; count it so visibility invariants stay authoritative.
+    const renderedStatusSquareCount = Array.from(document.querySelectorAll<HTMLElement>('.inkchapter-doc-status'))
+      .filter(isRenderedVisible).length
+    const renderedProblemsControlCount = Math.max(
+      problemsEls.filter(isRenderedVisible).length,
+      renderedStatusSquareCount,
+    )
     const visuallyProven = rectWidth > 0 && rectHeight > 0 && clientRectCount > 0
     const measureMode: 'REAL' | 'HEADLESS' = display === 'none' || visuallyProven ? 'REAL' : 'HEADLESS'
     return {
@@ -22847,6 +22854,16 @@ export class DocumentUtilityOverlayHost {
    * Called on every diagnostics publish, document switch and lock transition.
    */
   private refreshDocumentHub(): void {
+    try {
+      this.refreshDocumentHubUnsafe()
+    } catch (error) {
+      // Fail-open: the hub is presentation-only. A failure here must NEVER
+      // break the diagnostics / geometry / navigator pipeline.
+      console.error('[InkChapter] document hub refresh failed', error)
+    }
+  }
+
+  private refreshDocumentHubUnsafe(): void {
     const hub = this.documentHub
     if (!hub) return
     const projection = deriveDocumentProblemsProjection(this.snapshot)

@@ -1393,7 +1393,9 @@ export default class extends Plugin<InkChapterSettings> {
         },
         // V5.1 — 文档管理中心图片区：状态方块点击后展示当前文档策略与批量入口。
         documentHub: {
-          getImageSummary: () => this.buildDocumentHubImageSummary(),
+          getImageSummary: () => {
+            try { return this.buildDocumentHubImageSummary() } catch { return null }
+          },
           uploadAll: () => { void this.getDocumentImageBatchService().run('upload') },
           downloadAll: () => { void this.getDocumentImageBatchService().run('download') },
           checkDualLink: () => { void this.getDocumentImageBatchService().run('dual-link') },
