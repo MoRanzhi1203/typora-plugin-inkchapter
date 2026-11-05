@@ -21326,7 +21326,7 @@ export class DocumentUtilityOverlayHost {
     // Untitled + 0 chars is NOT a scrollable Markdown document.
     const emptyUntitled = (fp == null || fp === '') && (md == null || md.replace(/\s/g, '') === '')
     const root = resolveBusinessContentRoot()
-    return decideNavigatorEligibilityPure({
+    const eligibility = decideNavigatorEligibilityPure({
       presenceState: ev.presence.state,
       hasActiveDocument: ev.hasActiveDocument,
       documentKey: this.opts.ctx.authority.getDocumentKey(),
@@ -21335,6 +21335,22 @@ export class DocumentUtilityOverlayHost {
       canonicalReady: this.authorityReady.canonical,
       realLayout: !isHeadlessTestRuntime(),
     })
+    // P0 FIX — CANONICAL_FRAME_NOT_READY is a TRANSIENT switch state, not a
+    // final "no document" decision. `authorityReady.canonical` is reset by the
+    // ACTIVE_TAB_CHANGED / ACTIVE_LEAF_CHANGED / FILE_OPEN reconciles that
+    // follow CANONICAL_FRAME_CHANGED, so a document switch used to leave the
+    // navigator permanently hidden. A real active file + document key keeps
+    // the navigator mounted while the canonical frame settles.
+    if (
+      !eligibility.eligible
+      && eligibility.reason === 'CANONICAL_FRAME_NOT_READY'
+      && ev.presence.state === 'ACTIVE'
+      && fp != null && fp !== ''
+      && this.opts.ctx.authority.getDocumentKey() != null
+    ) {
+      return { eligible: true, reason: 'ACTIVE_DOCUMENT_CANONICAL_PENDING' }
+    }
+    return eligibility
   }
 
   // ── Native word-count panel avoidance (presentation-only) ─────────────────
@@ -21580,10 +21596,22 @@ export class DocumentUtilityOverlayHost {
   }
 
   /** Phase 2-B.3 — SINGLE DOM writer for navigator display/rail. */
+
   private applyNavigatorPresentation(presentation: NavigatorPresentation, insetRightPx: number | null): void {
     if (!this.navigatorEl) return
     this.navigatorEl.dataset.rail = presentation
     this.navigatorEl.hidden = presentation === 'hidden'
+    // P0 FIX — `hidden` is NOT the only visibility channel: the geometry writer
+    // sets an inline `display:none` while hidden, and that inline value would
+    // survive a later hidden=false write (document switch: hide on the
+    // transition frame → show on the new document → inline none persisted →
+    // the navigator stayed invisible). The presentation writer now owns BOTH
+    // channels so a visible decision always clears the stale inline display.
+    if (presentation === 'hidden') {
+      this.navigatorEl.style.display = 'none'
+    } else {
+      this.navigatorEl.style.removeProperty('display')
+    }
     this.navigatorEl.setAttribute('aria-hidden', String(presentation === 'hidden'))
     // NOTE — the navigator's right/bottom anchor is NEVER written here. The
     // single geometry writer commits base anchor + word-count avoidance offset;

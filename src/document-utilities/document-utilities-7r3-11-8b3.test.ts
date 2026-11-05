@@ -124,10 +124,12 @@ describe('NAV-VIS-4/5/6 live visibility transitions (host level)', () => {
     const { shell } = makeShell()
     const h = mountHost()
     // V5.1 — 文档工具模块常驻：短文档也显示模块。
-    expect(navigatorDisplay(h)).toBe('flex')
+    expect(navigatorDisplay(h)).not.toBe('none')
+    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(false)
     setScrollHeight(shell, 702) // user keeps typing → real container becomes scrollable
     window.dispatchEvent(new Event('resize')) // geometry re-measure
-    expect(navigatorDisplay(h)).toBe('flex')
+    expect(navigatorDisplay(h)).not.toBe('none')
+    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(false)
     h.dispose()
   })
 
@@ -135,10 +137,12 @@ describe('NAV-VIS-4/5/6 live visibility transitions (host level)', () => {
     const { shell } = makeShell()
     setScrollHeight(shell, 2000)
     const h = mountHost()
-    expect(navigatorDisplay(h)).toBe('flex')
+    expect(navigatorDisplay(h)).not.toBe('none')
+    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(false)
     setScrollHeight(shell, 700) // content deleted
     window.dispatchEvent(new Event('resize'))
-    expect(navigatorDisplay(h)).toBe('flex')
+    expect(navigatorDisplay(h)).not.toBe('none')
+    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(false)
     h.dispose()
   })
 
@@ -146,11 +150,13 @@ describe('NAV-VIS-4/5/6 live visibility transitions (host level)', () => {
     const { shell } = makeShell()
     setScrollHeight(shell, 2000)
     const h = mountHost()
-    expect(navigatorDisplay(h)).toBe('flex')
+    expect(navigatorDisplay(h)).not.toBe('none')
+    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(false)
     // Doc B is short; bindDocument triggers a geometry re-measure.
     setScrollHeight(shell, 700)
     h.bindDocument()
-    expect(navigatorDisplay(h)).toBe('flex')
+    expect(navigatorDisplay(h)).not.toBe('none')
+    expect((document.querySelector('.inkchapter-doc-navigator') as HTMLElement).hidden).toBe(false)
     const nav = document.querySelector('.inkchapter-doc-navigator') as HTMLElement
     expect(nav.style.left).toBe('')
     h.dispose()
