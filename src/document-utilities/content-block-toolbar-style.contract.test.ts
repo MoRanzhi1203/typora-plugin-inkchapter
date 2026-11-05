@@ -23,6 +23,40 @@ function ruleBody(selector: string): string {
   return ''
 }
 
+describe('CONTENT-TOOLBAR-STYLE image actions', () => {
+  it('binds the image bar to a relative image container and keeps it hidden by default', () => {
+    expect(ruleBody('.inkchapter-image-actions-anchor {')).toContain('position: relative')
+    const bar = ruleBody('.inkchapter-content-toolbar--image {')
+    // 定位由 JS 依据实际图片矩形写入：CSS 只提供 0 基线。
+    expect(bar).toContain('top: 0')
+    expect(bar).toContain('left: 0')
+    expect(bar).toContain('right: auto')
+    expect(bar).not.toContain('right: 6px')
+    expect(bar).toContain('opacity: 0')
+    expect(bar).toContain('visibility: hidden')
+    // 浮层操作条自身必须可命中：否则鼠标落在按钮间隙/图片→面板的空隙时
+    // 会被判为“已离开”，面板在鼠标移到按钮前就隐藏。
+    expect(bar).toContain('pointer-events: auto')
+  })
+
+  it('paints 28px rounded image buttons and theme tokens', () => {
+    const btn = ruleBody(
+      '.inkchapter-content-toolbar--image .inkchapter-content-toolbar__btn {',
+    )
+    expect(btn).toContain('width: 28px')
+    expect(btn).toContain('height: 28px')
+    expect(btn).toContain('border-radius: 6px')
+    expect(btn).toContain('var(--ink-ui-bg-surface')
+  })
+
+  it('renders the more-actions menu above the image and keeps it non-layout', () => {
+    const menu = ruleBody('.inkchapter-content-toolbar__menu {')
+    expect(menu).toContain('position: absolute')
+    expect(menu).toContain('top: calc(100% + 4px)')
+    expect(menu).toContain('pointer-events: auto')
+  })
+})
+
 describe('CONTENT-TOOLBAR-STYLE shell', () => {
   it('declares a non-interactive wrapper and interactive buttons', () => {
     const wrapper = ruleBody('.inkchapter-content-toolbar {')

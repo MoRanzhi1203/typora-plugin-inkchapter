@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
+import { createHash } from 'crypto'
 import type { HeadingDescriptor, HeadingNumberingSettings } from './heading-types'
 import { getPresetLevels } from './presets'
 import { HeadingNumberingAuthority } from './heading-numbering-snapshot'
@@ -55,14 +56,49 @@ beforeEach(() => {
 })
 
 describe('FIXTURE-IMG — Strict-H1 boundary fixture asset integrity', () => {
-  it('FIXTURE-IMG-1: every local image reference resolves to an existing repository file', () => {
+  const PNG_SIGNATURE = '89504e470d0a1a0a'
+  const sha256Of = (file: string): string =>
+    createHash('sha256').update(fs.readFileSync(file).toString('base64')).digest('hex')
+
+  it('FIXTURE-IMG-1: every local image reference resolves to a real, non-empty PNG in the repository', () => {
     const md = fs.readFileSync(fixturePath, 'utf8')
     const refs = [...md.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map(m => m[1])
     expect(refs.length).toBeGreaterThanOrEqual(3)
+    const digests = new Map<string, string>()
     for (const ref of refs) {
       const target = path.resolve(fixtureDir, ref)
       expect(fs.existsSync(target), `missing asset: ${ref}`).toBe(true)
+      const bytes = fs.readFileSync(target)
+      // 真实 PNG 内容，而不是 0 字节占位文件。
+      expect(bytes.length, `empty asset: ${ref}`).toBeGreaterThan(0)
+      expect(bytes.subarray(0, 8).toString('hex'), `not a PNG: ${ref}`).toBe(PNG_SIGNATURE)
+      // 同一图片被多次引用时必须指向完全相同的字节（内容身份，而非文件名）。
+      const digest = sha256Of(target)
+      const previous = digests.get(ref)
+      if (previous != null) expect(digest, `unstable content: ${ref}`).toBe(previous)
+      digests.set(ref, digest)
     }
+    // 三张不同的 boundary 图片内容互不相同：同名/同引用不得被当作同一张图。
+    expect(digests.size).toBeGreaterThanOrEqual(3)
+    expect(new Set(digests.values()).size).toBe(digests.size)
+  })
+
+  it('FIXTURE-IMG-1b: the runtime copies are byte-identical to the canonical vault assets', () => {
+    const canonical = path.resolve(fixtureDir, '../../assets/phase7-strict-h1-boundary')
+    // 这些是 vault 级共享资产，runtime 副本必须逐字节一致（不得漂移）。
+    for (const name of ['boundary-a-figure.png', 'boundary-b-figure.png']) {
+      const runtimeCopy = path.join(fixtureDir, 'assets', 'phase7-strict-h1-boundary', name)
+      const sourceCopy = path.join(canonical, name)
+      expect(fs.existsSync(runtimeCopy), `missing runtime copy: ${name}`).toBe(true)
+      expect(fs.existsSync(sourceCopy), `missing canonical copy: ${name}`).toBe(true)
+      expect(sha256Of(runtimeCopy), `copy drifted: ${name}`).toBe(sha256Of(sourceCopy))
+    }
+    // A2 图是本章专用资源，只存在于 runtime 夹具目录：必须同样是非空 PNG。
+    const a2 = path.join(fixtureDir, 'assets', 'phase7-strict-h1-boundary', 'boundary-a-chapter-a2-figure.png')
+    expect(fs.existsSync(a2)).toBe(true)
+    const a2Bytes = fs.readFileSync(a2)
+    expect(a2Bytes.length).toBeGreaterThan(0)
+    expect(a2Bytes.subarray(0, 8).toString('hex')).toBe(PNG_SIGNATURE)
   })
 
   it('FIXTURE-IMG-2: no absolute / user-specific / remote image source', () => {

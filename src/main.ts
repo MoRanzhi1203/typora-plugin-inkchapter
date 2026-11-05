@@ -4,11 +4,41 @@ import type { InkChapterSettings } from './settings/settings-model'
 import { DEFAULT_SETTINGS, DEFAULT_UI_SETTINGS, resolveUiSettings } from './settings/default-settings'
 import { InkChapterUiSettingTab } from './settings/inkchapter-ui-setting-tab'
 import { ImageManagementSettingTab } from './settings/image-management-setting-tab'
-import { resolveImageSettings } from './image-management/image-settings'
+import { resolveImageSettings, type ImageRemoteProfile } from './image-management/image-settings'
+import {
+  WindowsDpapiCredentialStore,
+  migrateLegacyPicGoToken,
+  resolveCredentialReferenceId,
+  type ImageCredentialStatus,
+  type ImageCredentialStore,
+} from './image-management/image-credential-store'
+import {
+  testGitHubConnection,
+  type GitHubConnectionTestResult,
+} from './image-management/github-connection-test'
 import { initializeImageLibrary, inspectImageLibraryTarget } from './image-management/image-library-inspection'
 import { pickFolderNative } from './image-management/image-directory-picker'
+import { pickImageFileNative } from './image-management/image-file-picker'
 import { resolveImageDataPaths } from './image-management/image-data-paths'
 import { ImageAssetService } from './image-management/image-asset-service'
+import { ImageTransferTaskStore } from './image-management/image-transfer-task-store'
+import { ImageUploadService } from './image-management/image-upload-service'
+import { ImageDownloadService } from './image-management/image-download-service'
+import { downloadDocumentRemoteImages } from './image-management/document-remote-download'
+import { ImageContextMenuDownload } from './image-management/image-context-menu-download'
+import {
+  applyReferenceDestination,
+  relativeMarkdownImagePath,
+  selectMarkdownImageReference,
+} from './image-management/image-reference-rewrite'
+import {
+  TYPORA_CUSTOM_UPLOADER,
+  applyTyporaUploaderRuntime,
+  findNodeExecutable,
+  restoreTyporaUploaderFromLatestBackup,
+  switchTyporaUploaderToInkChapter,
+} from './image-management/typora-uploader-switch'
+import { buildImageLibraryCenter, type ImageLibraryView } from './image-management/image-library-center'
 import { inspectDirectoryUsage } from './image-management/image-path-policy'
 import {
   FRAMEWORK_RIBBON_ENABLE_CLASS,
@@ -245,10 +275,380 @@ export default class extends Plugin<InkChapterSettings> {
   private fileTreeDragAdapter?: FileTreeDragAdapter
   /** 图片资产索引服务：延迟加载，损坏索引不阻断插件启动。 */
   private imageAssetService?: ImageAssetService
+  /** 传输任务持久化（上传队列与诊断）。 */
+  private imageTransferTaskStore?: ImageTransferTaskStore
+  /** 墨章侧上传适配器（PicGo 编程 API + 插件私有配置）。 */
+  private imageUploadService?: ImageUploadService
+  /** 远程图片下载（复用缓存/图库；默认不改写 Markdown）。 */
+  private imageDownloadService?: ImageDownloadService
+  /** 在 Typora 原生图片右键菜单中追加下载项。 */
+  private imageContextMenuDownload?: ImageContextMenuDownload
+  /** 系统安全凭据存储；只在插件内部持有，不挂到 window。 */
+  private imageCredentialStore?: ImageCredentialStore
+
+  /**
+   * 图片数据根目录。
+   *
+   * 框架的 `dataPath` 指向**设置文件**（`<dataDir>/<pluginId>.json`），
+   * 不能直接当作目录传给 `resolveImageDataPaths`，否则会生成
+   * `.../ranzhi.inkchapter.json/image` 这种把文件当目录的非法路径。
+   */
+  private get imageDataBaseDir(): string {
+    return path.dirname(this.dataPath)
+  }
+
+  /** 懒创建系统安全凭据存储；失败时返回 null（上传将被阻止）。 */
+  private getOrCreateCredentialStore(): ImageCredentialStore | null {
+    if (this.imageCredentialStore) return this.imageCredentialStore
+    try {
+      const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+      const paths = resolveImageDataPaths(this.imageDataBaseDir, { settings })
+      this.imageCredentialStore = new WindowsDpapiCredentialStore({
+        rootDir: path.join(paths.dataRoot, 'secrets'),
+      })
+      return this.imageCredentialStore
+    } catch {
+      return null
+    }
+  }
+
+  /** 只读连接测试；Token 只在本方法内短期持有，不写入日志或设置。 */
+  private async testImageRemoteConnection(
+    profile: ImageRemoteProfile,
+  ): Promise<GitHubConnectionTestResult> {
+    const store = this.getOrCreateCredentialStore()
+    if (!store || store.backend === 'unavailable') {
+      return {
+        ok: false,
+        summary: '系统安全存储不可用，无法读取 Token；上传保持禁用。',
+        checks: [],
+        resolvedBranch: null,
+        repoPrivate: null,
+      }
+    }
+    const credential = await store.read(resolveCredentialReferenceId(profile))
+    if (!credential.ok) {
+      return {
+        ok: false,
+        summary: credential.code === 'CREDENTIAL_NOT_FOUND'
+          ? '尚未保存 GitHub Token，请先保存后再测试连接。'
+          : '无法读取已保存的 GitHub Token，请重新保存。',
+        checks: [],
+        resolvedBranch: null,
+        repoPrivate: null,
+      }
+    }
+    return testGitHubConnection({ profile, token: credential.secret })
+  }
+
+  /** 下载目标按当前文档与图库配置动态计算（不需要用户理解资产模型）。 */
+  private imageDownloadTargets(): Array<'project' | 'library' | 'offline' | 'custom'> {
+    const targets: Array<'project' | 'library' | 'offline' | 'custom'> = []
+    if (this.app.workspace.activeFile) targets.push('project')
+    try {
+      const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+      const paths = resolveImageDataPaths(this.imageDataBaseDir, { settings })
+      if (paths.libraryImagesDir) targets.push('library')
+    } catch { /* ignore */ }
+    targets.push('offline', 'custom')
+    return targets
+  }
+
+  /** 工具栏“下载图片”入口：下载到指定位置，可选替换当前引用。 */
+  private async downloadImageFromToolbar(input: {
+    img: HTMLImageElement
+    url: string
+    destination: 'project' | 'library' | 'offline' | 'custom'
+    replaceReference: boolean
+  }): Promise<{ ok: boolean; message: string }> {
+    const service = this.imageDownloadService
+    if (!service) return { ok: false, message: '图片下载服务未就绪，请重启 Typora 后重试' }
+    const documentPath = this.app.workspace.activeFile ?? null
+    if (!documentPath && input.destination === 'project') {
+      return { ok: false, message: '当前文档尚未保存，无法下载到文档图片目录' }
+    }
+    let customDirectory: string | null = null
+    if (input.destination === 'custom') {
+      customDirectory = await pickFolderNative({ description: '选择图片下载目录' })
+      if (!customDirectory) return { ok: false, message: '已取消下载' }
+    }
+    let projectDirectory: string | null = null
+    if (documentPath) {
+      const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+      projectDirectory = path.resolve(path.dirname(documentPath), settings.documentResourceDirectory)
+    }
+    const result = await service.download({
+      url: input.url,
+      documentPath,
+      projectDirectory,
+      placement: input.destination,
+      customDirectory,
+    })
+    if (!result.ok || !result.filePath) {
+      return { ok: false, message: result.message }
+    }
+    let alreadyLinked = false
+    if (input.replaceReference) {
+      const rewrite = this.rewriteImageReferenceToLocal(input.img, result.filePath)
+      if (!rewrite.ok) {
+        return { ok: false, message: `图片已下载，但 Markdown 引用替换失败：${rewrite.reason}` }
+      }
+      alreadyLinked = rewrite.resultKind === 'ALREADY_LINKED'
+    }
+    const action = result.resultKind === 'REUSED_LOCAL'
+      ? '本地已有相同图片，已直接复用，无需重复下载'
+      : result.resultKind === 'COPIED_EXISTING_LOCAL'
+        ? '已复用本地已有图片并复制到目标目录，无需联网下载'
+        : '已下载新图片'
+    const referenceNote = !input.replaceReference
+      ? ''
+      : alreadyLinked
+        ? '，当前引用已正确，无需修改'
+        : '，并已更新当前图片引用'
+    return {
+      ok: true,
+      message: `${action}${referenceNote}${input.replaceReference ? '' : `：${path.basename(result.filePath)}`}`,
+    }
+  }
+
+  /** 原生图片右键菜单「下载并转为本地引用（墨章）」：复用/下载后只改当前引用。 */
+  private async downloadImageFromContextMenu(img: HTMLImageElement): Promise<void> {
+    const wrapper = img.closest<HTMLElement>('.md-image')
+    const url = wrapper?.getAttribute('data-src')?.trim() || img.getAttribute('src')?.trim() || ''
+    if (!url) {
+      Notice.error('墨章：无法读取当前图片地址')
+      return
+    }
+    const result = await this.downloadImageFromToolbar({
+      img,
+      url,
+      destination: 'project',
+      replaceReference: true,
+    })
+    if (result.ok) Notice.info(`墨章：${result.message}`)
+    else Notice.error(`墨章：下载失败 — ${result.message}`)
+  }
+
+  /** 批量下载当前文档的全部远程图片；只落盘登记，不改写 Markdown。 */
+  private async downloadDocumentRemoteImagesInteractive(): Promise<void> {
+    const service = this.imageDownloadService
+    if (!service) {
+      Notice.error('墨章：图片下载服务未就绪，请重启 Typora 后重试')
+      return
+    }
+    const documentPath = this.app.workspace.activeFile ?? null
+    if (!documentPath) {
+      Notice.info('墨章：当前文档尚未保存，无法确定下载目录')
+      return
+    }
+    const markdown = editor.getMarkdown()
+    const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+    const projectDirectory = path.resolve(path.dirname(documentPath), settings.documentResourceDirectory)
+    const summary = await downloadDocumentRemoteImages({
+      markdown,
+      documentPath,
+      projectDirectory,
+      maxConcurrent: settings.limits.maxConcurrentDownloads,
+      download: input => service.download(input),
+    })
+    if (summary.total === 0) {
+      Notice.info('墨章：本文档没有远程图片')
+      return
+    }
+    const detail = `复用 ${summary.reused} 张、实际下载 ${summary.downloaded} 张、本地复制 ${summary.copied} 张、`
+      + `失败 ${summary.failed} 张（网络传输 ${summary.networkTransfers} 次）`
+    if (summary.failed > 0) {
+      Notice.error(`墨章：${detail}；Markdown 未改动，失败项可重试`)
+    } else {
+      Notice.info(`墨章：${detail}；Markdown 未改动`)
+    }
+  }
+
+  /** 只替换当前图片的 destination；保留 alt / 图号 / 图名与其他正文。 */
+  private rewriteImageReferenceToLocal(
+    img: HTMLImageElement,
+    filePath: string,
+  ): { ok: boolean; reason?: string; resultKind?: 'ALREADY_LINKED' | 'REWRITTEN' } {
+    const documentPath = this.app.workspace.activeFile
+    if (!documentPath) return { ok: false, reason: 'NO_ACTIVE_DOCUMENT' }
+    const markdown = editor.getMarkdown()
+    const wrapper = img.closest<HTMLElement>('.md-image')
+    const dataSrc = wrapper?.getAttribute('data-src') ?? null
+    const src = img.getAttribute('src')
+    const selection = selectMarkdownImageReference({
+      markdown,
+      documentPath,
+      rawDestinations: [dataSrc, src],
+      occurrenceIndex: this.remoteImageOccurrenceIndex(img),
+    })
+    if (!selection.reference) return { ok: false, reason: selection.reason ?? 'NO_REFERENCE' }
+    const outcome = applyReferenceDestination(
+      markdown,
+      selection.reference,
+      relativeMarkdownImagePath(documentPath, filePath),
+    )
+    if (!outcome) return { ok: false, reason: 'INVALID_DESTINATION_RANGE' }
+    // 目标引用已经正确：返回 ALREADY_LINKED，不触发重载，避免无意义的正文
+    // 写入与撤销栈污染（alt / 图号 / 图名保持不变）。
+    if (outcome.kind === 'ALREADY_LINKED') return { ok: true, resultKind: 'ALREADY_LINKED' }
+    // 第三参数 false：保留 Typora 撤销历史（与现有安全写回路径一致）。
+    File.reloadContent(outcome.markdown, false, false, false, true)
+    return { ok: true, resultKind: 'REWRITTEN' }
+  }
+
+  /** 让 Typora 原生「上传图片」调用墨章 CLI（可逆：写入前自动备份 profile.data）。 */
+  private async switchTyporaNativeUploader(): Promise<void> {
+    const manifest = (this as unknown as { manifest?: { dir?: string } }).manifest
+    const pluginDir = manifest?.dir?.trim() ?? ''
+    if (!pluginDir) {
+      Notice.error('墨章：无法定位插件目录，未修改 Typora 上传器')
+      return
+    }
+    const nodeExecutable = findNodeExecutable()
+    if (!nodeExecutable) {
+      Notice.error('墨章：未找到 Node.js，无法切换 Typora 自定义上传器')
+      return
+    }
+    const result = await switchTyporaUploaderToInkChapter({
+      nodeExecutable,
+      cliPath: path.join(pluginDir, 'upload-cli.cjs'),
+      settingsFile: this.dataPath,
+    })
+    if (!result.ok) {
+      Notice.error(`墨章：Typora 上传器切换失败（${result.code ?? 'UNKNOWN'}）— ${result.message}`)
+      return
+    }
+    const applied = result.command
+      ? applyTyporaUploaderRuntime({ uploader: TYPORA_CUSTOM_UPLOADER, command: result.command })
+      : false
+    Notice.info(applied
+      ? '墨章：Typora 上传图片按钮已切换到墨章适配器；若当前窗口仍提示未设置，请重启 Typora'
+      : '墨章：Typora 上传图片按钮已切换到墨章适配器，请重启 Typora 生效')
+  }
+
+  /** 恢复 Typora 原生上传器设置（使用最近一次自动备份）。 */
+  private async restoreTyporaNativeUploader(): Promise<void> {
+    const result = await restoreTyporaUploaderFromLatestBackup()
+    if (!result.ok) {
+      Notice.error(`墨章：${result.message}`)
+      return
+    }
+    const applied = result.state
+      ? applyTyporaUploaderRuntime({
+        uploader: result.state.imageUploader ?? '',
+        command: result.state.customImageUploader ?? '',
+      })
+      : false
+    Notice.info(applied
+      ? '墨章：已恢复 Typora 原生上传器设置；若当前窗口仍使用墨章适配器，请重启 Typora'
+      : '墨章：已恢复 Typora 原生上传器设置，请重启 Typora 生效')
+  }
+
+  /** 同一原始远程 URL 的图片序号（不依赖 alt/文件名/图号）。 */
+  private remoteImageOccurrenceIndex(img: HTMLImageElement): number {
+    const root = img.closest('#write') ?? document.getElementById('write')
+    if (!root) return 0
+    const keyOf = (el: HTMLImageElement): string => {
+      const wrapper = el.closest<HTMLElement>('.md-image')
+      return wrapper?.getAttribute('data-src') ?? el.getAttribute('src') ?? ''
+    }
+    const key = keyOf(img)
+    let index = 0
+    for (const candidate of Array.from(root.querySelectorAll('img'))) {
+      if (keyOf(candidate) !== key) continue
+      if (candidate === img) return index
+      index++
+    }
+    return 0
+  }
 
   /** 界面 / 文件夹树 配置（读取侧唯一权威：缺失字段按默认值补齐）。 */
   private readUiSettings() {
     return resolveUiSettings(this.settings.get('ui' as keyof InkChapterSettings) as never)
+  }
+
+  /**
+   * 手动上传单张本地图片：选择文件 → 走墨章上传器 → 复制真实 URL。
+   * 不修改当前 Markdown，也不删除源文件。
+   */
+  private async uploadLocalImageInteractive(): Promise<void> {
+    const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+    if (!settings.enabled) {
+      Notice.info('墨章：图片管理尚未启用，请先在「设置 → 墨章 · 图片」启用。')
+      return
+    }
+    if (!this.imageUploadService) {
+      Notice.error('墨章：上传服务未就绪，请重启 Typora 后重试。')
+      return
+    }
+    if (settings.uploadService !== 'github') {
+      const conflict = await this.imageUploadService.inspectInsertModeConflict()
+      const suffix = conflict.hasConflict
+        ? ' 当前 Typora 插入方式为「上传图片」，同样不会自动上传。'
+        : ''
+      Notice.error(`墨章：上传服务为「无」，未发起上传。请在「设置 → 墨章 · 图片」启用 GitHub 上传服务。${suffix}`)
+      return
+    }
+
+    const filePath = await pickImageFileNative({ description: '选择要上传到图床的图片' })
+    if (!filePath) return
+
+    const result = await this.imageUploadService.uploadLocalFile({ filePath })
+    if (!result.ok) {
+      Notice.error(`墨章：上传失败（${result.errorCode}）— ${result.message}`)
+      return
+    }
+    let copied = false
+    try {
+      await navigator.clipboard.writeText(result.url)
+      copied = true
+    } catch { /* 剪贴板不可用时仍展示 URL */ }
+    const action = result.resultKind === 'REUSED_REMOTE'
+      ? 'GitHub 已有相同图片，已直接复用云端链接，无需重复上传（0 次上传）'
+      : '已上传新图片（1 次上传）'
+    Notice.info(`墨章：${action}${copied ? '，URL 已复制' : ''}：${result.url}`)
+  }
+
+  /**
+   * 构建四视图图库中心（只读）。
+   * 图片管理未启用或服务未初始化时返回空数组，设置页据此显示「尚未就绪」。
+   */
+  private async buildImageLibraryCenter(): Promise<ImageLibraryView[]> {
+    const settings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+    if (!settings.enabled || !this.imageAssetService || !this.imageUploadService) return []
+
+    const paths = resolveImageDataPaths(this.imageDataBaseDir, { settings })
+    const assets = await this.imageAssetService.list()
+    const tasks = this.imageTransferTaskStore ? await this.imageTransferTaskStore.list() : []
+    const typoraPreferences = await this.imageUploadService.readTyporaImagePreferences()
+
+    const documentPath = this.app.workspace.activeFile ?? null
+    let markdown: string | null = null
+    if (documentPath) {
+      try {
+        const content = File.getContent()
+        if (typeof content === 'string') markdown = content
+      } catch { /* 编辑器未就绪时只展示「未索引」状态 */ }
+    }
+
+    let cacheUsage: { fileCount: number; totalBytes: number } | null = null
+    if (paths.cacheObjectsDir) {
+      try {
+        const usage = await inspectDirectoryUsage(paths.cacheObjectsDir)
+        cacheUsage = { fileCount: usage.fileCount, totalBytes: usage.totalBytes }
+      } catch { /* 缓存目录尚未创建 */ }
+    }
+
+    return buildImageLibraryCenter({
+      documentPath,
+      markdown,
+      assets,
+      tasks,
+      settings,
+      paths,
+      typoraPreferences,
+      cacheUsage,
+    })
   }
 
   /** 界面配置应用次数（有界取证 A3，仅计数，不产生日志风暴）。 */
@@ -743,6 +1143,20 @@ export default class extends Plugin<InkChapterSettings> {
           emitAudit: (event, payload) => emitRuntimeAudit(event, payload),
           getPreviewLines: () => this.readUiSettings().codeBlockPreviewLines,
           getAutoExpandOnEdit: () => this.readUiSettings().codeBlockAutoExpandOnEdit,
+          getDocumentDir: () => {
+            const filePath = this.app.workspace.activeFile
+            return filePath ? path.dirname(filePath) : null
+          },
+          imageAssetActions: {
+            getFigureNameState: (img) => {
+              const target = this.captionService?.resolveCaptionNamingTarget(img)
+              return target ? { named: !!target.currentName } : null
+            },
+            requestFigureName: (img, mode) =>
+              this.captionContextMenu?.requestNamingForElement(img, mode) ?? false,
+            downloadTargets: () => this.imageDownloadTargets(),
+            download: (input) => this.downloadImageFromToolbar(input),
+          },
         },
         getActiveFilePath: () => this.app.workspace.activeFile ?? null,
         getDocumentKey: () => {
@@ -1612,7 +2026,7 @@ export default class extends Plugin<InkChapterSettings> {
           if (kind === 'error') Notice.error(message)
           else Notice.info(message)
         },
-        getDataPath: () => this.dataPath,
+        getDataPath: () => this.imageDataBaseDir,
         inspectUsage: async (target) => {
           try {
             const usage = await inspectDirectoryUsage(target)
@@ -1621,6 +2035,26 @@ export default class extends Plugin<InkChapterSettings> {
             return null
           }
         },
+        getLibraryCenter: () => this.buildImageLibraryCenter(),
+        uploadLocalImage: () => this.uploadLocalImageInteractive(),
+        getCredentialStatus: async (referenceId): Promise<ImageCredentialStatus> => {
+          const store = this.getOrCreateCredentialStore()
+          if (!store) {
+            return { configured: false, backend: 'unavailable', updatedAt: null }
+          }
+          return store.status(referenceId)
+        },
+        saveCredential: async (referenceId, token) => {
+          const store = this.getOrCreateCredentialStore()
+          if (!store) return { ok: false, code: 'CREDENTIAL_BACKEND_UNAVAILABLE' }
+          return store.write(referenceId, token)
+        },
+        deleteCredential: async (referenceId) => {
+          const store = this.getOrCreateCredentialStore()
+          if (!store) return { ok: false, code: 'CREDENTIAL_BACKEND_UNAVAILABLE' }
+          return store.delete(referenceId)
+        },
+        testConnection: (profile) => this.testImageRemoteConnection(profile),
       }))
       console.log('[InkChapter] image settings tab registered')
     } catch (e) {
@@ -1630,9 +2064,56 @@ export default class extends Plugin<InkChapterSettings> {
     // 图片资产索引：只解析路径并建立服务，首次使用时才读盘。
     try {
       const imageSettings = resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
-      const paths = resolveImageDataPaths(this.dataPath, { settings: imageSettings })
+      const paths = resolveImageDataPaths(this.imageDataBaseDir, { settings: imageSettings })
       this.imageAssetService = new ImageAssetService(paths)
+      this.imageTransferTaskStore = new ImageTransferTaskStore(
+        path.join(paths.dataRoot, 'transfer-tasks.json'),
+      )
+      const credentialStore = this.getOrCreateCredentialStore()
+      this.imageUploadService = new ImageUploadService({
+        paths,
+        assets: this.imageAssetService,
+        tasks: this.imageTransferTaskStore,
+        credentials: credentialStore ?? undefined,
+        readSettings: () => resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never),
+      })
+      this.imageDownloadService = new ImageDownloadService({
+        paths,
+        assets: this.imageAssetService,
+        tasks: this.imageTransferTaskStore,
+      })
+      this.imageContextMenuDownload = new ImageContextMenuDownload({
+        download: image => { void this.downloadImageFromContextMenu(image) },
+      })
+      this.imageContextMenuDownload.start()
       console.log('[InkChapter] image asset service ready')
+
+      // 旧版 PicGo 私有配置里的明文 Token → 系统安全存储，并立即从 JSON 移除。
+      // 即使还没有远程配置也要执行，确保任何明文 Token 都不留在磁盘。
+      const migrationProfile = imageSettings.remoteProfiles.find(profile => profile.enabled)
+        ?? imageSettings.remoteProfiles[0]
+      if (credentialStore) {
+        void migrateLegacyPicGoToken({
+          configPath: this.imageUploadService.getPicGoConfigPath(),
+          store: credentialStore,
+          referenceId: migrationProfile
+            ? resolveCredentialReferenceId(migrationProfile)
+            : 'image.github.default',
+        }).then(result => {
+          if (result === 'migrated') {
+            Notice.info('墨章：已将旧版 PicGo 明文 Token 迁移到本机安全存储')
+          } else if (result === 'removed-without-store') {
+            Notice.error('墨章：安全存储不可用，已从 PicGo 配置移除明文 Token；请重新保存 Token')
+          }
+        }).catch(() => undefined)
+      }
+
+      // 「上传图片 + 上传服务 none」在启动时提示一次；不修改 Typora 首选项。
+      if (imageSettings.enabled) {
+        void this.imageUploadService.inspectInsertModeConflict().then(conflict => {
+          if (conflict.hasConflict) Notice.info(`墨章：${conflict.message}`)
+        }).catch(() => undefined)
+      }
     } catch (e) {
       console.error('[InkChapter] 图片资产索引初始化失败，图片增强功能不可用', e)
     }
@@ -1653,6 +2134,57 @@ export default class extends Plugin<InkChapterSettings> {
       title: '检查插件状态',
       scope: 'global',
       callback: () => Notice.info('墨章 InkChapter 已正常加载'),
+    })
+
+    // 手动上传入口：只上传用户显式选择的单张图片，不改写 Markdown。
+    this.registerCommand({
+      id: 'inkchapter.image.upload-local',
+      title: '墨章：上传本地图片…',
+      scope: 'global',
+      callback: () => { void this.uploadLocalImageInteractive() },
+    })
+
+    // 批量下载当前文档的远程图片；只落盘登记，不改写 Markdown。
+    this.registerCommand({
+      id: 'inkchapter.image.download-document-remote',
+      title: '墨章：下载本文档全部远程图片',
+      scope: 'global',
+      callback: () => { void this.downloadDocumentRemoteImagesInteractive() },
+    })
+
+    // Typora 原生「上传图片」接管 / 恢复（修改前自动备份 profile.data）。
+    this.registerCommand({
+      id: 'inkchapter.image.use-typora-uploader',
+      title: '墨章：让 Typora 上传图片使用墨章适配器',
+      scope: 'global',
+      callback: () => { void this.switchTyporaNativeUploader() },
+    })
+    this.registerCommand({
+      id: 'inkchapter.image.restore-typora-uploader',
+      title: '墨章：恢复 Typora 原生上传器',
+      scope: 'global',
+      callback: () => { void this.restoreTyporaNativeUploader() },
+    })
+
+    // 图库中心入口：只读汇总四视图，不修改任何文件。
+    this.registerCommand({
+      id: 'inkchapter.image.library-center',
+      title: '墨章：图片图库中心',
+      scope: 'global',
+      callback: () => {
+        void this.buildImageLibraryCenter().then(views => {
+          if (views.length === 0) {
+            Notice.info('墨章：图片管理尚未启用或未初始化，请先在「设置 → 墨章 · 图片」完成初始化。')
+            return
+          }
+          const summary = views
+            .map(view => `${view.title}：${view.rows.length} 项`)
+            .join('；')
+          const diagnostics = views.find(view => view.id === 'tasks-diagnostics')
+          const conflict = diagnostics?.rows.find(row => row.status === 'failed' && row.primary.includes('上传图片'))
+          Notice.info(`墨章图库中心 — ${summary}${conflict ? `。${conflict.primary}` : ''}`)
+        }).catch(() => { Notice.error('墨章：图库中心读取失败，编辑与文件不受影响。') })
+      },
     })
 
     // File tree drag/drop capability report (runtime verification helper)
@@ -2172,6 +2704,12 @@ export default class extends Plugin<InkChapterSettings> {
       if (this.captionService) {
         this.captionService.dispose()
         this.captionService = undefined
+      }
+    })
+    safely('image-context-menu-download', () => {
+      if (this.imageContextMenuDownload) {
+        this.imageContextMenuDownload.dispose()
+        this.imageContextMenuDownload = undefined
       }
     })
     safely('image-asset-service', () => {

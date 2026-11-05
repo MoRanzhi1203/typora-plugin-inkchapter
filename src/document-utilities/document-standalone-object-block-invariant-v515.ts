@@ -400,6 +400,8 @@ export interface FigureOwningBlockDomFacts {
 }
 
 const CAPTION_PROJECTION_SELECTOR = '[data-inkchapter-caption]'
+/** 插件 UI（工具栏/菜单/浮层）永远不是正文；即使误入编辑块也必须排除。 */
+const PLUGIN_UI_SELECTOR = '[data-inkchapter-ui-root]'
 
 /**
  * §2.1 — the image's OWN object subtree (the `md-image` wrapper carrying the alt
@@ -429,6 +431,7 @@ function collectSemanticText(node: Node, skip: ReadonlySet<HTMLElement>, out: st
   if (el.tagName === 'IMG') return // the image token itself is never "mixed text"
   if (skip.has(el)) return // the image object wrapper (alt / title metadata)
   if (el.matches?.(CAPTION_PROJECTION_SELECTOR)) return // the projection is not document text
+  if (el.matches?.(PLUGIN_UI_SELECTOR) || el.closest?.(PLUGIN_UI_SELECTOR)) return // plugin UI is not body text
   for (const child of Array.from(el.childNodes)) collectSemanticText(child, skip, out)
 }
 

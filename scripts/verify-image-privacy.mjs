@@ -25,10 +25,9 @@ const RULES = [
   { name: 'PRIVATE_KEY', pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
   { name: 'AWS_ACCESS_KEY', pattern: /AKIA[0-9A-Z]{16}/ },
   { name: 'PICGO_TOKEN_FIELD', pattern: /"token"\s*:\s*"[^"]{20,}"/ },
-  { name: 'PRIVATE_USER_ROOT', pattern: /C:\\Users\\MSIPC/i },
-  { name: 'PRIVATE_LIBRARY_PATH', pattern: /E:\\TyporaImageLibrary/i },
-  { name: 'PRIVATE_GITHUB_OWNER', pattern: /MoRanzhi1203/i },
-  { name: 'PRIVATE_IMAGE_REPO', pattern: /Picture_Bed/i },
+  { name: 'PRIVATE_USER_ROOT', pattern: /C:\\Users\\[^\\\s]+/i },
+  // 非 C 盘的私人图库/图片目录同样不得进入提交（夹具与日志也适用）。
+  { name: 'PRIVATE_IMAGE_LIBRARY_PATH', pattern: /[A-Za-z]:[\\/][^\\/\s"']*(?:TyporaImageLibrary|图片库)[\\/]/i },
 ]
 
 let diff = ''

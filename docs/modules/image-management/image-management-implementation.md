@@ -31,7 +31,7 @@
 | 非空目录保护 | 无墨章标记且非空时，必须用户确认后才接管 | 不覆盖、不移动用户已有文件 |
 | 图库标记 | `.inkchapter-image-library.json`（原子写入） | 用于识别「这是墨章图库」，支持重新接管 |
 | 原生目录选择 | 独立 PowerShell 进程调用 `System.Windows.Forms.FolderBrowserDialog` | 框架与 Typora 类型声明均无已验证的目录选择 API；不猜测 Electron renderer 能力 |
-| 凭据 | 设置中只保存 `credentialReferenceId` | Token 不进入设置、日志、Markdown |
+| 凭据 | 设置中只保存自动生成的 `credentialReferenceId`；Token 经 Windows DPAPI 加密存于插件私有目录 | Token 不进入设置、日志、Markdown 或 PicGo JSON |
 | 索引存储 | JSON + 原子写入；SQLite 待原生模块兼容验证 | 先保证可用与可回滚 |
 | 身份判定 | SHA-256 内容寻址 | 文件名不参与资产身份 |
 

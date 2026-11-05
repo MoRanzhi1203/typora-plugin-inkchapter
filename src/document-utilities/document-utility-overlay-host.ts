@@ -1231,6 +1231,10 @@ export interface DocumentUtilitiesOverlayOptions {
     getPreviewLines?: () => 5 | 10
     /** 点击折叠代码块可见文字时是否自动展开（默认 true）。 */
     getAutoExpandOnEdit?: () => boolean
+    /** 当前文档目录：用于图片“复制本地路径”的解析。 */
+    getDocumentDir?: () => string | null
+    /** 图片资产扩展动作（图名 / 下载）；缺省时只保留复制菜单。 */
+    imageAssetActions?: import('./content-block-toolbar-controller').ContentBlockToolbarImageAssetActions
   }
 }
 
@@ -4502,6 +4506,8 @@ export class DocumentUtilityOverlayHost {
         emitAudit: toolbarOpts.emitAudit,
         getPreviewLines: toolbarOpts.getPreviewLines,
         getAutoExpandOnEdit: toolbarOpts.getAutoExpandOnEdit,
+        getDocumentDir: toolbarOpts.getDocumentDir,
+        imageAssetActions: toolbarOpts.imageAssetActions,
         getBlockDiagnosticMarks: (ordinal) => this.readCodeBlockDiagnosticMarks(ordinal),
       })
       this.contentBlockToolbar.mount()
@@ -32835,7 +32841,14 @@ export class DocumentUtilityOverlayHost {
     siblingCount: number,
   ): void {
     const meta = (diag.metadata ?? {}) as Record<string, unknown>
-    const resourceExists = typeof meta.localFileExists === 'boolean' ? meta.localFileExists : null
+    // 远程图片没有本地存在性事实（localFileExists=null）：null 只能表示
+    // "不是本地资源"，绝不能被当作"资源缺失"。远程引用的可用性由真实渲染的
+    // <img> + decode 事实证明，否则远程 occurrence 永远无法计入有效覆盖。
+    const remoteResource = /^https?:\/\//i.test(destination)
+      || /^https?:\/\//i.test(String(meta.rawDestination ?? ''))
+    const resourceExists = remoteResource
+      ? true
+      : (typeof meta.localFileExists === 'boolean' ? meta.localFileExists : null)
     const hint = result?.sourceOccurrence ?? null
     const usedFallback = hint?.usedSourceBlockFallback === true
     const kind = classifyFigureLocateKind({ ruleCode: diag.code, usedSourceBlockFallback: usedFallback })
@@ -32884,13 +32897,16 @@ export class DocumentUtilityOverlayHost {
     const domIdentity = this.domImageIdentity(element)
     const group = this.figureRenderedTargetByDestination.get(destination)
       ?? { sourceBlockIdentities: new Set<string>(), occurrenceIdentities: new Set<string>(), domElementIdentities: new Set<string>() }
-    if (group.occurrenceIdentities.size > 0
+    // §34 — a DIFFERENT occurrence that resolved onto an ALREADY used DOM image
+    // is the "always hits the first same-URL image" defect. It is judged BEFORE
+    // the group is extended, and it feeds `correctOccurrence` so the wrong locate
+    // can never be counted as positive coverage as well.
+    const duplicateDomHit = group.occurrenceIdentities.size > 0
       && !group.occurrenceIdentities.has(occurrenceKey)
       && domIdentity != null
-      && group.domElementIdentities.has(domIdentity)) {
-      // §34 — a DIFFERENT occurrence resolved onto an ALREADY used DOM image.
+      && group.domElementIdentities.has(domIdentity)
+    if (duplicateDomHit) {
       this.countersFixtureResourceV1.duplicateDestinationWrongFirstMatch++
-      this.countersFixtureResourceV1.renderedFigureOccurrenceWrongTarget++
     }
     group.occurrenceIdentities.add(occurrenceKey)
     group.sourceBlockIdentities.add(sourceBlockKey)
@@ -32905,7 +32921,8 @@ export class DocumentUtilityOverlayHost {
     }
 
     // §38 — a successful resolution alone is NOT acceptance.
-    const correctOccurrence = !(group.occurrenceIdentities.size > 1 && domIdentity == null)
+    const correctOccurrence = !duplicateDomHit
+      && !(group.occurrenceIdentities.size > 1 && domIdentity == null)
     const verdict = evaluateRenderedOccurrenceLocate({
       resourceExists,
       resolvedNodeTag: result?.resolvedNodeKind ?? null,
@@ -33053,14 +33070,23 @@ export class DocumentUtilityOverlayHost {
     const observations: FixtureResourceObservation[] = []
 
     for (const ref of references) {
-      const vaultRelative = normalizeResourcePath(`${fixtureDir}${ref.relativeDestination}`)
-      const absolute = vaultRoot ? `${vaultRoot.replace(/[\\/]+$/, '')}/${vaultRelative}` : vaultRelative
+      // 夹具既可使用仓库内相对资源，也可使用 GitHub 图床链接：
+      // 远程引用直接以 URL 作为匹配键，不再拼接 vault 目录。
+      const remote = /^https?:\/\//i.test(ref.relativeDestination)
+      const vaultRelative = remote
+        ? ref.relativeDestination
+        : normalizeResourcePath(`${fixtureDir}${ref.relativeDestination}`)
+      const absolute = remote
+        ? ref.relativeDestination
+        : (vaultRoot ? `${vaultRoot.replace(/[\\/]+$/, '')}/${vaultRelative}` : vaultRelative)
       // REAL filesystem authority (the SAME predicate the diagnostics use).
       const missing = typeof this.opts.providers.isLinkTargetMissing === 'function'
         ? this.opts.providers.isLinkTargetMissing(ref.rawDestination)
         : false
-      const img = images.find(el =>
-        this.normalizeDomSrcToVaultRelative(el.getAttribute('src') ?? '') === vaultRelative) ?? null
+      const img = remote
+        ? images.find(el => (el.getAttribute('src') ?? '').trim() === ref.relativeDestination) ?? null
+        : images.find(el =>
+          this.normalizeDomSrcToVaultRelative(el.getAttribute('src') ?? '') === vaultRelative) ?? null
       const facts = this.measureRenderedImgFacts(img)
       const diagnostic = this.fixtureResourceDiagnosticFor(snapshot, ref.relativeDestination)
       const observation: FixtureResourceObservation = {

@@ -292,7 +292,7 @@ describe('CaptionContextMenu', () => {
     }
   })
 
-  it('right-clicking the image body still opens the edit/clear menu (regression)', () => {
+  it('does not steal the native image context menu; naming stays in the toolbar', () => {
     const root = makeRoot()
     const im = addImage(root, 'a.png')
     const svc = createService(root, 'doc-a')
@@ -302,11 +302,28 @@ describe('CaptionContextMenu', () => {
     const menu = new CaptionContextMenu(svc)
     const dispose = menu.attach(() => root)
     try {
-      im.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }))
-      const menuEl = document.querySelector('.inkchapter-caption-menu')
-      expect(menuEl).not.toBeNull()
-      expect(menuEl!.textContent).toContain('编辑图名')
-      expect(menuEl!.textContent).toContain('清除图名')
+      const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 })
+      im.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(false)
+      expect(document.querySelector('.inkchapter-caption-menu')).toBeNull()
+    } finally {
+      dispose()
+      menu.dispose()
+    }
+  })
+
+  it('opens naming from the toolbar entry without intercepting contextmenu', () => {
+    const root = makeRoot()
+    const im = addImage(root, 'a.png')
+    const svc = createService(root, 'doc-a')
+    services.push(svc)
+    svc.setCaption('figure', svc.resolveTargetForElement(im)!, 'okok')
+
+    const menu = new CaptionContextMenu(svc)
+    const dispose = menu.attach(() => root)
+    try {
+      expect(menu.requestNamingForElement(im, 'clear')).toBe(true)
+      expect(root.querySelector('img')!.getAttribute('alt') ?? '').toBe('')
     } finally {
       dispose()
       menu.dispose()

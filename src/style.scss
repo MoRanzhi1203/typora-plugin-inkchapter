@@ -4776,6 +4776,127 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   border: 0;
 }
 
+/* ── 图片操作条（绑定 .md-image 容器，按实际图片边界定位） ─────────────────
+   与代码语言栏不同，图片没有可插入的块级壳；操作条作为图片包裹层的绝对定位
+   子节点存在，随图片一起滚动。left/top 由 JS 依据图片矩形写入（相对锚点的
+   局部坐标），CSS 只提供 0 基线，避免退回到“内容块右侧”的固定定位。
+   默认隐藏；图片 hover、操作条自身 hover、图片被选中或 JS 标记可见时显示。 */
+.inkchapter-image-actions-anchor {
+  position: relative;
+}
+
+.inkchapter-content-toolbar--image {
+  top: 0;
+  left: 0;
+  right: auto;
+  padding: 2px;
+  gap: 2px;
+  min-height: 28px;
+  background: var(--ink-ui-bg-surface, #fff);
+  border: 1px solid var(--ink-ui-border, #ddd);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+  opacity: 0;
+  visibility: hidden;
+  /* 图片操作条是独立浮层：自身必须可命中，否则鼠标落在按钮间隙或
+     图片→面板的空隙上时会被判为“已离开”，面板提前隐藏。 */
+  pointer-events: auto;
+  transition: opacity 120ms ease-out, visibility 120ms ease-out;
+}
+
+.inkchapter-image-actions-anchor:hover > .inkchapter-content-toolbar--image,
+.inkchapter-image-actions-anchor.inkchapter-image-actions-selected > .inkchapter-content-toolbar--image,
+.inkchapter-content-toolbar--image[data-visible='true'] {
+  opacity: 1;
+  visibility: visible;
+}
+
+.inkchapter-content-toolbar--image .inkchapter-content-toolbar__btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--ink-ui-bg-surface, #fff);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  color: var(--ink-ui-text-muted, #666);
+}
+
+.inkchapter-content-toolbar--image .inkchapter-content-toolbar__btn:hover {
+  background: var(--ink-ui-bg-hover, #ececec);
+  color: var(--ink-ui-text, #333);
+}
+
+.inkchapter-content-toolbar--image .inkchapter-content-toolbar__btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+  box-shadow: none;
+}
+
+.inkchapter-content-toolbar__feedback {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--ink-ui-text-muted, #666);
+  pointer-events: none;
+}
+
+.inkchapter-content-toolbar__feedback:empty {
+  display: none;
+}
+
+.inkchapter-content-toolbar__feedback.is-success {
+  color: var(--ink-ui-primary, #07a);
+}
+
+.inkchapter-content-toolbar__feedback.is-error {
+  color: var(--ink-ui-danger, #d00);
+}
+
+.inkchapter-content-toolbar__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  inset-inline-end: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 148px;
+  padding: 4px;
+  background: var(--ink-ui-bg-surface, #fff);
+  border: 1px solid var(--ink-ui-border, #ddd);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  pointer-events: auto;
+}
+
+.inkchapter-content-toolbar__menu[hidden] {
+  display: none;
+}
+
+.inkchapter-content-toolbar__menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink-ui-text, #333);
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.inkchapter-content-toolbar__menu-item:hover {
+  background: var(--ink-ui-bg-hover, #ececec);
+}
+
+.inkchapter-content-toolbar__menu-item:focus-visible {
+  outline: 2px solid var(--ink-ui-primary, #07a);
+  outline-offset: -1px;
+}
+
 @keyframes inkchapter-content-toolbar-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }

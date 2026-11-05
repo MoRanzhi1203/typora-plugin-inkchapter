@@ -14,7 +14,6 @@ import { createHash } from 'crypto'
 import * as path from 'path'
 import {
   parseMarkdownImageReferences,
-  type MarkdownImageReference,
 } from './image-asset-model'
 import { sha256File } from './image-asset-index'
 import type { ImageCacheService } from './image-cache-service'

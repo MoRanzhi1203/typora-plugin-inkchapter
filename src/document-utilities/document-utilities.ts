@@ -142,6 +142,10 @@ export interface DocumentUtilitiesSources {
     getPreviewLines?: () => 5 | 10
     /** 点击折叠代码块可见文字时是否自动展开（默认 true）。 */
     getAutoExpandOnEdit?: () => boolean
+    /** 当前文档目录：用于图片“复制本地路径”的解析。 */
+    getDocumentDir?: () => string | null
+    /** 图片资产扩展动作（图名 / 下载）；缺省时只保留复制菜单。 */
+    imageAssetActions?: import('./content-block-toolbar-controller').ContentBlockToolbarImageAssetActions
   }
 }
 
@@ -413,6 +417,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
           getMarkdown: () => sources.getMarkdown(),
           emitAudit: sources.contentBlockToolbar.emitAudit,
           getPreviewLines: sources.contentBlockToolbar.getPreviewLines,
+          imageAssetActions: sources.contentBlockToolbar.imageAssetActions,
         }
       : undefined,
     onBindDocument: (bind) => {

@@ -11,7 +11,7 @@
 | 当前分支 | `archive/codeblock-fold-intermittent-repair` |
 | 当前分支 HEAD | `95f2f04` feat: bottom fold chevron for foldable code blocks |
 | 主分支实际名称 | `main`（remote HEAD 指向 `origin/main`） |
-| 远程 | `origin` → `git@github.com:MoRanzhi1203/typora-plugin-inkchapter.git` |
+| 远程 | `origin` → `git@github.com:example-owner/typora-plugin-inkchapter.git` |
 | 上游跟踪 | 当前分支与 `origin/archive/codeblock-fold-intermittent-repair` 一致 |
 | 工作区 | clean（无未提交、无未跟踪文件） |
 | 暂存区 | 空 |
@@ -54,7 +54,7 @@ f46a786 feat: content block toolbar - code copy, image copy, manual folding (v1)
 | 类型检查 | `pnpm run typecheck` | 0 errors |
 | 自动化测试 | `pnpm run test` | 278 文件 / 5272 用例全部通过 |
 | 生产构建 | `pnpm run build` | 成功，生成 `dist/main.js`（2,433,557 B）与 `dist/style.css`（109,580 B） |
-| 文档一致性 | `pnpm run docs:verify` | FAIL（1 处既有断链：`docs/typora-startup-loading-audit.md` 指向 `build.js#L66-L78`，与本次合并无关，合并前即存在） |
+| 文档一致性 | `pnpm run docs:verify` | FAIL（1 处既有断链：历史启动审计文档指向 `build.js#L66-L78`，与本次合并无关，合并前即存在；该一次性文档已清理） |
 
 ## 4. 合并执行
 
