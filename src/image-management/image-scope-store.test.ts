@@ -106,3 +106,19 @@ describe('ImageScopeStore — resolution', () => {
     expect(resolved.appliedFolderPath).toBeNull()
   })
 })
+
+describe('ImageScopeStore — external file tolerance', () => {
+  it('reads a UTF-8 BOM file written by external editors', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'inkchapter-scope-bom-'))
+    tempDirs.push(dir)
+    const body = JSON.stringify({
+      schemaVersion: 1,
+      entries: [{ kind: 'document', path: DOC, overrides: { autoUpload: true }, updatedAt: '' }],
+    })
+    await fs.writeFile(path.join(dir, 'image-scopes.json'), `\uFEFF${body}`, 'utf8')
+    const store = new ImageScopeStore({ dataRoot: dir })
+    const entries = await store.list()
+    expect(entries).toHaveLength(1)
+    expect(entries[0].overrides).toEqual({ autoUpload: true })
+  })
+})

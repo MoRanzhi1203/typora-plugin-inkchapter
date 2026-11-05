@@ -75,7 +75,10 @@ export class ImageScopeStore {
   async load(force = false): Promise<ImageScopeStoreFile> {
     if (this.cache && !force) return this.cache
     try {
-      const text = await fs.promises.readFile(this.filePath, 'utf8')
+      const raw = await fs.promises.readFile(this.filePath, 'utf8')
+      // 外部编辑器 / PowerShell 可能写入 UTF-8 BOM；它必须被剥离，
+      // 否则 JSON.parse 失败会让整个作用域静默回退为空。
+      const text = raw.replace(/^\uFEFF/, '')
       this.cache = this.normalizeStore(JSON.parse(text))
     } catch {
       this.cache = emptyImageScopeStore()
