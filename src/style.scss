@@ -5261,3 +5261,189 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
     align-items: stretch;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   V5.1 — 右上角文档状态方块 + 统一文档管理中心
+   ══════════════════════════════════════════════════════════════════════ */
+.inkchapter-doc-status-host {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.inkchapter-doc-status {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.inkchapter-doc-status__square {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: #8b949e;
+  display: block;
+  transition: background-color 0.15s ease;
+}
+
+.inkchapter-doc-status__frame {
+  position: absolute;
+  left: 5px;
+  top: 5px;
+  width: 22px;
+  height: 22px;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.inkchapter-doc-status.is-locked .inkchapter-doc-status__frame {
+  border-style: solid;
+}
+
+.inkchapter-doc-status.is-locked .inkchapter-doc-status__square {
+  border-radius: 2px;
+}
+
+.inkchapter-doc-status:hover .inkchapter-doc-status__square,
+.inkchapter-doc-status:focus-visible .inkchapter-doc-status__square {
+  filter: brightness(1.15);
+}
+
+.inkchapter-doc-hub {
+  background: var(--bg-color, var(--background-primary, #fff));
+  color: inherit;
+  border: 1px solid rgba(127, 127, 127, 0.28);
+  border-radius: 10px;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.22);
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 0;
+}
+
+.inkchapter-doc-hub__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.18);
+  position: sticky;
+  top: 0;
+  background: inherit;
+  z-index: 1;
+}
+
+.inkchapter-doc-hub__title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.inkchapter-doc-hub__close {
+  border: 0;
+  background: transparent;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  opacity: 0.7;
+}
+
+.inkchapter-doc-hub__close:hover {
+  opacity: 1;
+}
+
+.inkchapter-doc-hub__document {
+  padding: 8px 12px;
+  font-size: 11.5px;
+  opacity: 0.75;
+  word-break: break-all;
+  border-bottom: 1px dashed rgba(127, 127, 127, 0.16);
+}
+
+.inkchapter-doc-hub__section {
+  padding: 9px 12px 10px;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.12);
+}
+
+.inkchapter-doc-hub__section:last-child {
+  border-bottom: none;
+}
+
+.inkchapter-doc-hub__section-title {
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 4px;
+  opacity: 0.9;
+}
+
+.inkchapter-doc-hub__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 1px 0;
+}
+
+.inkchapter-doc-hub__row-label {
+  opacity: 0.68;
+  white-space: nowrap;
+}
+
+.inkchapter-doc-hub__row-value {
+  text-align: right;
+  word-break: break-word;
+}
+
+.inkchapter-doc-hub__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.inkchapter-doc-hub__button {
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: rgba(127, 127, 127, 0.08);
+  font-size: 11.5px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.inkchapter-doc-hub__button:hover:not(:disabled) {
+  background: rgba(127, 127, 127, 0.16);
+}
+
+.inkchapter-doc-hub__button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.inkchapter-doc-hub__hint {
+  margin: 8px 12px 10px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  line-height: 1.55;
+  background: rgba(210, 153, 34, 0.12);
+  border: 1px solid rgba(210, 153, 34, 0.28);
+  opacity: 0.95;
+}
+
+/* V5.1 — 兼容节点绝不显示：状态方块是唯一可见入口。 */
+.inkchapter-doc-toolbar .inkchapter-problems-control[hidden],
+.inkchapter-doc-toolbar .inkchapter-doc-toolbar__btn--lock[hidden],
+.inkchapter-doc-toolbar .inkchapter-doc-toolbar__btn--diag[hidden] {
+  display: none !important;
+}

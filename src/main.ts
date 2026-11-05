@@ -43,6 +43,14 @@ import {
 } from './image-management/typora-uploader-switch'
 import { buildImageLibraryCenter, type ImageLibraryView } from './image-management/image-library-center'
 import { inspectDirectoryUsage, resolveImageProjectDirectory } from './image-management/image-path-policy'
+import { DocumentImageBatchService } from './image-management/document-image-batch-service'
+import {
+  buildDocumentImageBatchPreview,
+  summarizeImagePolicy,
+  type BatchReferenceKnowledge,
+} from './image-management/document-image-batch'
+import type { DocumentHubImageSummary } from './document-utilities/document-hub-model'
+import { parseImageSourceOccurrences } from './document-utilities/document-resource-scanner'
 import {
   FRAMEWORK_RIBBON_ENABLE_CLASS,
   INKCHAPTER_RIBBON_HIDDEN_CLASS,
@@ -296,6 +304,16 @@ export default class extends Plugin<InkChapterSettings> {
   private imageInsertionController?: ImageInsertionController
   /** 当前文档已解析的图片配置（供同步回调如 readSettings 使用）。 */
   private activeImageSettings: ImageSettings | null = null
+  /** V5.1 — 当前文档图片策略的作用域来源（面板展示）。 */
+  private activeImageScopeSource: 'global' | 'folder' | 'document' = 'global'
+  private activeImageScopeLabel = '全局默认'
+  /** V5.1 — 当前文档批量操作（预览 → 确认 → 执行）。 */
+  private documentImageBatchService?: DocumentImageBatchService
+  /** V5.1 — 已验证资产知识（rawDestination → 本地/远程状态）；异步刷新。 */
+  private documentHubAssetKnowledge = new Map<string, BatchReferenceKnowledge>()
+  private documentHubAssetKnowledgeAt = 0
+  /** V5.1 — 首次启用 / 变更提示的去重集合（本会话）。 */
+  private documentHubNoticeSeen = new Set<string>()
 
   /**
    * V5.0 — 当前文档的生效图片配置（global → folder → document）。
@@ -311,11 +329,147 @@ export default class extends Plugin<InkChapterSettings> {
     try {
       const resolved = await this.imageDocumentScopeService.resolve()
       this.activeImageSettings = resolved.settings
+      const origin = resolved.origins.find(item => item.key === 'documentResourceDirectory')?.origin ?? 'global'
+      this.activeImageScopeSource = origin
+      this.activeImageScopeLabel = origin === 'document'
+        ? '覆盖：当前文档'
+        : origin === 'folder'
+          ? '继承：当前文件夹'
+          : '全局默认'
       return resolved.settings
     } catch {
       this.activeImageSettings = globalSettings
+      this.activeImageScopeSource = 'global'
+      this.activeImageScopeLabel = '全局默认'
       return globalSettings
     }
+  }
+
+  /** V5.1 — 当前文档图片摘要（文档管理中心面板；只读，不创建目录）。 */
+  private buildDocumentHubImageSummary(): DocumentHubImageSummary | null {
+    const settings = this.activeImageSettings
+      ?? resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never)
+    if (!settings.enabled) return null
+    const documentPath = this.app.workspace.activeFile ?? null
+    let markdown: string | null = null
+    try { markdown = editor.getMarkdown() } catch { markdown = null }
+    const refs = markdown ? parseImageSourceOccurrences(markdown) : []
+    const knowledge = this.documentHubAssetKnowledge
+    const batchRefs = refs.map(ref => ({
+      rawDestination: ref.rawDestination,
+      isRemote: !ref.isLocal,
+      isLocal: ref.isLocal,
+      localExists: null,
+      assetKnown: knowledge.get(ref.rawDestination) ?? ('unknown' as const),
+    }))
+    const projectDirectory = documentPath
+      ? resolveImageProjectDirectory(documentPath, settings.documentResourceDirectory)
+      : null
+    const preview = buildDocumentImageBatchPreview({
+      references: batchRefs,
+      settings,
+      projectDirectory,
+      uploadAvailable: settings.uploadService === 'github',
+    })
+    // 异步刷新资产知识（不阻塞面板；失败保持 unknown，不冒充“已复用”）。
+    void this.refreshDocumentHubAssetKnowledge()
+    return {
+      enabled: true,
+      referenceCount: preview.totalReferences,
+      localCount: preview.localReferences,
+      remoteCount: preview.remoteReferences,
+      reuseLocalCount: preview.reuseLocalCount,
+      reuseRemoteCount: preview.reuseRemoteCount,
+      pendingUploadCount: preview.pendingUploadCount,
+      pendingDownloadCount: preview.pendingDownloadCount,
+      dualLinkCompleteCount: preview.dualLinkCompleteCount,
+      policyText: summarizeImagePolicy(settings),
+      scopeSource: this.activeImageScopeSource,
+      scopeLabel: this.activeImageScopeLabel,
+      projectDirectory,
+    }
+  }
+
+  /** V5.1 — 从资产索引刷新“已验证”知识（节流；只读）。 */
+  private async refreshDocumentHubAssetKnowledge(): Promise<void> {
+    const now = Date.now()
+    if (now - this.documentHubAssetKnowledgeAt < 5000) return
+    this.documentHubAssetKnowledgeAt = now
+    try {
+      const assets = await this.imageAssetService?.list() ?? []
+      const map = new Map<string, BatchReferenceKnowledge>()
+      for (const asset of assets) {
+        const hasLocal = asset.locations.some(loc => loc.type !== 'github' && loc.availability === 'available')
+        const hasRemote = asset.locations.some(loc => loc.type === 'github' && loc.availability === 'available')
+        const known: BatchReferenceKnowledge = hasLocal && hasRemote
+          ? 'both'
+          : hasLocal
+            ? 'local-verified'
+            : hasRemote
+              ? 'remote-verified'
+              : 'unknown'
+        for (const loc of asset.locations) {
+          if (loc.type === 'github') map.set(loc.locator, known)
+        }
+      }
+      this.documentHubAssetKnowledge = map
+    } catch { /* 索引不可用时保持 unknown */ }
+  }
+
+  /** V5.1 — 批量图片服务（预览只读；确认后才执行；默认不改写 Markdown）。 */
+  private getDocumentImageBatchService(): DocumentImageBatchService {
+    if (this.documentImageBatchService) return this.documentImageBatchService
+    const service = new DocumentImageBatchService({
+      getMarkdown: () => {
+        try { return editor.getMarkdown() } catch { return null }
+      },
+      getDocumentPath: () => this.app.workspace.activeFile ?? null,
+      getSettings: () => this.activeImageSettings
+        ?? resolveImageSettings(this.settings.get('image' as keyof InkChapterSettings) as never),
+      resolveProjectDirectory: (settings) => {
+        const documentPath = this.app.workspace.activeFile
+        if (!documentPath) return null
+        return resolveImageProjectDirectory(documentPath, settings.documentResourceDirectory)
+      },
+      getAssetKnowledge: () => this.documentHubAssetKnowledge,
+      upload: async (filePath) => {
+        const uploader = this.imageUploadService
+        if (!uploader) return { ok: false, message: 'UPLOAD_SERVICE_UNAVAILABLE' }
+        const result = await uploader.uploadLocalFile({ filePath })
+        return result.ok ? { ok: true, resultKind: result.resultKind } : { ok: false, message: result.message }
+      },
+      download: async (url) => {
+        const downloader = this.imageDownloadService
+        const documentPath = this.app.workspace.activeFile
+        if (!downloader || !documentPath) return { ok: false, message: 'DOWNLOAD_SERVICE_UNAVAILABLE' }
+        const settings = await this.resolveActiveImageSettings()
+        const projectDirectory = resolveImageProjectDirectory(documentPath, settings.documentResourceDirectory)
+        const result = await downloader.download({ url, documentPath, projectDirectory, placement: 'project' })
+        return result.ok ? { ok: true, resultKind: result.resultKind } : { ok: false, message: result.message }
+      },
+      confirm: (message) => window.confirm(message),
+      notify: (message, kind) => {
+        if (kind === 'error') Notice.error(`墨章：${message}`)
+        else Notice.info(`墨章：${message}`)
+      },
+    })
+    this.documentImageBatchService = service
+    return service
+  }
+
+  /** V5.1 — 面板提示：首次启用只提示一次；不改变任何配置。 */
+  private documentHubHint(): string | null {
+    const settings = this.activeImageSettings
+    if (!settings?.enabled) return null
+    const key = `image-hub:${settings.initialized ? 1 : 0}:${settings.uploadService}:${settings.referenceMode}`
+    if (this.documentHubNoticeSeen.has(key)) return null
+    this.documentHubNoticeSeen.add(key)
+    return '首次启用：批量操作会先显示预览，确认后才会上传/下载；默认不改写 Markdown。'
+  }
+
+  /** V5.1 — 图片设置入口（面板“图片设置…”）。 */
+  private openImageSettingsEntry(): void {
+    Notice.info('墨章：按 Ctrl+. 打开插件设置，选择「墨章 · 图片」调整图片策略。')
   }
 
   /** 文档切换 / 设置变化后刷新缓存，避免同步回调读到上一份文档的配置。 */
@@ -1236,6 +1390,15 @@ export default class extends Plugin<InkChapterSettings> {
             downloadTargets: () => this.imageDownloadTargets(),
             download: (input) => this.downloadImageFromToolbar(input),
           },
+        },
+        // V5.1 — 文档管理中心图片区：状态方块点击后展示当前文档策略与批量入口。
+        documentHub: {
+          getImageSummary: () => this.buildDocumentHubImageSummary(),
+          uploadAll: () => { void this.getDocumentImageBatchService().run('upload') },
+          downloadAll: () => { void this.getDocumentImageBatchService().run('download') },
+          checkDualLink: () => { void this.getDocumentImageBatchService().run('dual-link') },
+          openImageSettings: () => this.openImageSettingsEntry(),
+          getHint: () => this.documentHubHint(),
         },
         getActiveFilePath: () => this.app.workspace.activeFile ?? null,
         getDocumentKey: () => {

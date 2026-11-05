@@ -109,8 +109,13 @@ describe('UI-OVERLAY-4 drawer open/close does not touch document content', () =>
     document.body.appendChild(write)
     const h = mountHost()
     const before = write.innerHTML
-    const diagBtn = document.querySelector('.inkchapter-doc-toolbar__btn--diag') as HTMLButtonElement
-    diagBtn.click()
+    const status = document.querySelector('.inkchapter-doc-status') as HTMLButtonElement
+    expect(status).toBeTruthy()
+    status.click()
+    const details = Array.from(document.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-hub__button'))
+      .find(btn => btn.textContent === '查看详情')
+    expect(details).toBeTruthy()
+    details!.click()
     expect(document.querySelector('.inkchapter-doc-drawer')!.getAttribute('style')).toContain('display: flex')
     expect(write.innerHTML).toBe(before) // zero Markdown mutation
     const closeBtn = document.querySelector<HTMLButtonElement>('.inkchapter-doc-drawer__action--close')!
@@ -120,19 +125,26 @@ describe('UI-OVERLAY-4 drawer open/close does not touch document content', () =>
   })
 })
 
-describe('UI-OVERLAY lock button + per-document state', () => {
-  it('lock button toggles text 编辑 ↔ 已锁定', () => {
+describe('UI-OVERLAY document hub lock + per-document state', () => {
+  it('the hub lock action toggles the status square lock frame', () => {
     const write = document.createElement('div')
     write.id = 'write'
     write.setAttribute('contenteditable', 'true')
     document.body.appendChild(write)
     mountHost()
-    const lockBtn = document.querySelector('.inkchapter-doc-toolbar__btn--lock') as HTMLButtonElement
-    expect(lockBtn.textContent).toBe('编辑')
-    lockBtn.click()
-    expect(lockBtn.textContent).toBe('已锁定')
-    lockBtn.click()
-    expect(lockBtn.textContent).toBe('编辑')
+    const status = document.querySelector('.inkchapter-doc-status') as HTMLButtonElement
+    expect(status.classList.contains('is-locked')).toBe(false)
+    status.click()
+    const lock = Array.from(document.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-hub__button'))
+      .find(btn => btn.textContent === '锁定文档')
+    expect(lock).toBeTruthy()
+    lock!.click()
+    expect(status.classList.contains('is-locked')).toBe(true)
+    const unlock = Array.from(document.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-hub__button'))
+      .find(btn => btn.textContent === '解锁文档')
+    expect(unlock).toBeTruthy()
+    unlock!.click()
+    expect(status.classList.contains('is-locked')).toBe(false)
   })
 })
 

@@ -12,6 +12,10 @@
  */
 import { DocumentDiagnosticsAuthority } from './document-diagnostics-authority'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
+// V5.1 — 右上角状态方块 + 统一文档管理中心。
+import { DocumentHubController } from './document-hub-controller'
+import { buildDocumentHubModel, type DocumentHubImageSummary } from './document-hub-model'
+import { buildDocumentStatusView } from './document-status-indicator'
 import { DocumentDiagnosticLocator, prefersReducedMotion, DIAGNOSTIC_HIGHLIGHT_CLASS } from './document-diagnostic-locator'
 import type { DiagnosticLocateResult } from './document-diagnostic-locator'
 import {
@@ -1186,6 +1190,18 @@ function pseudoIsPainted(view: Window, el: HTMLElement, pseudo: '::before' | '::
 export interface DocumentUtilitiesOverlayOptions {
   ctx: DocumentUtilitiesContext
   providers: DocumentDiagnosticsProviders
+  /**
+   * V5.1 — 文档管理中心图片区（由插件 main.ts 注入；缺省时面板只显示检测/锁定）。
+   * provider 只读；批量动作只在用户点击面板按钮后执行。
+   */
+  documentHub?: {
+    getImageSummary: () => DocumentHubImageSummary | null
+    uploadAll: () => void
+    downloadAll: () => void
+    checkDualLink: () => void
+    openImageSettings: () => void
+    getHint?: () => string | null
+  }
   /** Recompute triggers wired by the caller (document switch etc.). */
   onBindDocument?: (bind: () => void) => void
   /**
@@ -2747,6 +2763,9 @@ export class DocumentUtilityOverlayHost {
   private drawerListEl: HTMLDivElement | null = null
   private problemsControlEl: HTMLDivElement | null = null
   private lockButtonEl: HTMLButtonElement | null = null
+  /** V5.1 — 右上角状态方块与统一文档管理中心。 */
+  private documentHub?: DocumentHubController
+  private documentHubMountEl: HTMLElement | null = null
   /** V1.1 — Drawer severity filter, shared with the Toolbar status segments. */
   private drawerFilter: DiagnosticsSeverityFilter = 'all'
   private drawerFiltersEl: HTMLDivElement | null = null
@@ -19426,7 +19445,7 @@ export class DocumentUtilityOverlayHost {
       terminalReason: reason,
       selectedDiagnosticBefore: selectedBefore,
       selectedDiagnosticAfter: this.lastLocatedDiagnosticId,
-      reopenAuthorityAvailable: !!this.problemsControlEl && this.problemsControlEl.isConnected,
+      reopenAuthorityAvailable: !!this.documentHub?.getStatusElement()?.isConnected,
       txVisualRetryCount: this.txVisualRetryCount,
       sessionVisualRecoveryCount: this.locateLayoutRecoveryCount,
     })
@@ -20922,15 +20941,12 @@ export class DocumentUtilityOverlayHost {
     this.syncEmptyWorkspaceUx()
   }
 
-  /** Empty-document projection cleanup: counts → 0, edit text → empty. */
+  /** Empty-document projection cleanup: the status square drops to GRAY. */
   private clearToolbarProjection(): void {
+    // Compatibility: the legacy hidden strip must be empty for EMPTY docs;
+    // the user-facing status square drops to GRAY via the refresh below.
     if (this.problemsControlEl) this.problemsControlEl.replaceChildren()
-    if (this.toolbarEl) {
-      for (const el of this.toolbarEl.querySelectorAll<HTMLElement>('.inkchapter-toolbar-segment__count')) el.textContent = '0'
-      const lockLabel = this.toolbarEl.querySelector<HTMLElement>('.inkchapter-editlock__label')
-      if (lockLabel) lockLabel.textContent = ''
-      if (this.lockButtonEl) this.lockButtonEl.classList.remove('is-locked')
-    }
+    this.refreshDocumentHub()
   }
 
   /** Read the REAL rendered-visibility chain for toolbar + problems control. */
@@ -20978,6 +20994,15 @@ export class DocumentUtilityOverlayHost {
       const lockLabel = tracked.querySelector<HTMLElement>('.inkchapter-editlock__label')?.textContent ?? ''
       if (tracked.querySelector('.inkchapter-editlock.is-locked') || /锁定/.test(lockLabel)) projectedEdit = 'LOCKED'
       else if (lockLabel.trim() !== '') projectedEdit = 'EDITABLE'
+      // V5.1 — the compact status square carries the SAME projection as data
+      // attributes (no numbers painted), so auditing stays authoritative.
+      const statusEl = tracked.querySelector<HTMLElement>('.inkchapter-doc-status')
+      if (statusEl) {
+        projectedError = Number.parseInt(statusEl.dataset.errorCount ?? '0', 10) || 0
+        projectedWarning = Number.parseInt(statusEl.dataset.warningCount ?? '0', 10) || 0
+        projectedHint = Number.parseInt(statusEl.dataset.hintCount ?? '0', 10) || 0
+        projectedEdit = statusEl.dataset.locked === '1' ? 'LOCKED' : 'EDITABLE'
+      }
     }
     const renderedToolbarCount = toolbarEls.filter(isRenderedVisible).length
     const renderedProblemsControlCount = problemsEls.filter(isRenderedVisible).length
@@ -22640,21 +22665,46 @@ export class DocumentUtilityOverlayHost {
     toolbar.style.position = 'absolute'
     toolbar.style.pointerEvents = 'auto'
 
-    // DocumentProblemsControl = StatusSegment(error) + StatusSegment(warning)
-    // + Divider + EditLockAction inside ONE shell. Segments are rebuilt on every
-    // diagnostics publish by renderDiagnosticsButton (Smart Summary).
+    // V5.1 — ONE compact status square replaces the always-expanded
+    // error/warning counts + edit/lock strip. Clicking it opens the unified
+    // document hub (detection + lock + current-document image policy/batch).
+    const mount = document.createElement('div')
+    mount.className = 'inkchapter-doc-status-host'
+    mount.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
+    toolbar.appendChild(mount)
+    this.documentHubMountEl = mount
+    this.documentHub = new DocumentHubController({
+      mountEl: mount,
+      actions: {
+        recheck: () => { void this.diagnostics.recompute('DOCUMENT_HUB_RECHECK') },
+        toggleLock: () => this.toggleLock(),
+        openDiagnostics: () => this.openDrawer('all'),
+        uploadAll: () => { this.opts.documentHub?.uploadAll() },
+        downloadAll: () => { this.opts.documentHub?.downloadAll() },
+        dualLink: () => { this.opts.documentHub?.checkDualLink() },
+        openImageSettings: () => { this.opts.documentHub?.openImageSettings() },
+      },
+      getHint: () => this.opts.documentHub?.getHint?.() ?? null,
+    })
+    this.documentHub.mount()
+
+    // V5.1 compatibility shell: legacy runtime probes/tests still address these
+    // nodes, but they are NEVER visible (hidden + aria-hidden). The compact
+    // status square above is the ONLY user-facing entry.
     const control = document.createElement('div')
     control.className = 'inkchapter-problems-control'
     control.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
-    this.problemsControlEl = control
+    control.hidden = true
+    control.setAttribute('aria-hidden', 'true')
     toolbar.appendChild(control)
+    this.problemsControlEl = control
 
     const lockBtn = document.createElement('button')
     lockBtn.type = 'button'
     lockBtn.className = 'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--lock inkchapter-editlock'
     lockBtn.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
-    lockBtn.setAttribute('aria-label', '编辑 / 已锁定')
-    lockBtn.title = '编辑 / 已锁定'
+    lockBtn.hidden = true
+    lockBtn.setAttribute('aria-hidden', 'true')
     lockBtn.addEventListener('click', () => this.toggleLock())
     this.lockButtonEl = lockBtn
     toolbar.appendChild(lockBtn)
@@ -22789,6 +22839,45 @@ export class DocumentUtilityOverlayHost {
       entry.addEventListener('click', () => this.openDrawer('all'))
       control.appendChild(entry)
     }
+    this.refreshDocumentHub()
+  }
+
+  /**
+   * V5.1 — push the authoritative status into the ONE status square / hub.
+   * Called on every diagnostics publish, document switch and lock transition.
+   */
+  private refreshDocumentHub(): void {
+    const hub = this.documentHub
+    if (!hub) return
+    const projection = deriveDocumentProblemsProjection(this.snapshot)
+    const state = deriveDiagnosticsState(this.snapshot)
+    const getDocumentKey = (this.opts.ctx.authority as { getDocumentKey?: () => string | null }).getDocumentKey
+    const documentKey = typeof getDocumentKey === 'function' ? getDocumentKey.call(this.opts.ctx.authority) : null
+    const documentPath =
+      (this.opts.ctx.authority as { getActiveFilePath?: () => string | null }).getActiveFilePath?.() ?? null
+    const locked = documentKey != null ? (this.lockState.get(documentKey) ?? false) : false
+    const noDoc = state.state === 'NO_ACTIVE_DOCUMENT' || state.state === 'EMPTY_DOCUMENT' || !projection.hasProjection
+    const facts = {
+      hasDocument: documentPath != null,
+      diagnosticsEnabled: true,
+      checking: false,
+      structuralVerified: this.snapshot?.structuralVerified !== false,
+      hasProjection: projection.hasProjection && !noDoc,
+      errorCount: projection.errorCount,
+      warningCount: projection.warningCount,
+      hintCount: projection.hintCount,
+    }
+    const view = buildDocumentStatusView(facts, locked)
+    const image = this.opts.documentHub?.getImageSummary?.() ?? null
+    const model = buildDocumentHubModel({
+      documentPath,
+      saved: documentPath != null,
+      status: view,
+      locked,
+      image,
+      diagnosticsAvailable: true,
+    })
+    hub.update(view, model)
   }
 
   /**
@@ -22888,6 +22977,7 @@ export class DocumentUtilityOverlayHost {
     const transition = resolveLockGuardTransition(locked, this.editGuard.isLocked())
     if (transition === 'LOCK') this.editGuard.lock()
     else if (transition === 'UNLOCK') this.editGuard.unlock()
+    this.refreshDocumentHub()
   }
 
   private lockState = new Map<string, boolean>()
@@ -31434,7 +31524,7 @@ export class DocumentUtilityOverlayHost {
           ? (requestedOpenAtTerminal ? 'COMMITTED_DRAWER_RESTORED' : 'COMMITTED_DRAWER_CLOSED_BY_USER')
           : 'COMMITTED_NO_VISUAL',
         terminalReason: completionReason,
-        reopenAuthorityAvailable: !!this.problemsControlEl && this.problemsControlEl.isConnected,
+        reopenAuthorityAvailable: !!this.documentHub?.getStatusElement()?.isConnected,
         txVisualRetryCount: this.txVisualRetryCount,
         sessionVisualRecoveryCount: this.locateLayoutRecoveryCount,
       })

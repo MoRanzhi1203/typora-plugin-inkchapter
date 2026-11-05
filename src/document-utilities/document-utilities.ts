@@ -147,6 +147,18 @@ export interface DocumentUtilitiesSources {
     /** 图片资产扩展动作（图名 / 下载）；缺省时只保留复制菜单。 */
     imageAssetActions?: import('./content-block-toolbar-controller').ContentBlockToolbarImageAssetActions
   }
+  /**
+   * V5.1 — 文档管理中心图片区（状态方块点击后的面板）。
+   * 缺省时面板只显示检测/锁定，不出现图片操作。
+   */
+  documentHub?: {
+    getImageSummary: () => import('./document-hub-model').DocumentHubImageSummary | null
+    uploadAll: () => void
+    downloadAll: () => void
+    checkDualLink: () => void
+    openImageSettings: () => void
+    getHint?: () => string | null
+  }
 }
 
 export interface DocumentUtilities {
@@ -420,6 +432,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
           imageAssetActions: sources.contentBlockToolbar.imageAssetActions,
         }
       : undefined,
+    documentHub: sources.documentHub,
     onBindDocument: (bind) => {
       sources.onDocumentSwitch(() => {
         indexHeadingIdentities()
