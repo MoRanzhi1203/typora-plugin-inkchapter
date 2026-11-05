@@ -21964,7 +21964,11 @@ export class DocumentUtilityOverlayHost {
     // (gutter → inset rail → hidden/NO_SAFE_PLACEMENT). Left/bottom-left
     // fallback is permanently forbidden.
     const navEligibility = this.resolveNavigatorActiveDocEligibility()
-    if (next.scrollable && navEligibility.eligible) {
+    // V5.1 fix — the navigator is a document-tool module, not a scroll-only
+    // affordance: it must stay MOUNTED AND VISIBLE for every active document.
+    // For a shorter-than-viewport document both arrows are simply disabled;
+    // hiding the whole module looked like the feature had been deleted.
+    if (navEligibility.eligible) {
       // True-Inset — measure the REAL scrollbar boundary BEFORE the rail.
       let scrollbarKnowledge: 'known' | 'unknown' = 'unknown'
       let scrollbarWidth: number | null = null

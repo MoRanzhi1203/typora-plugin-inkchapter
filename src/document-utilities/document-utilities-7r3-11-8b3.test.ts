@@ -120,28 +120,29 @@ describe('NAV-VIS-1/2/3 pure scrollability authority', () => {
 })
 
 describe('NAV-VIS-4/5/6 live visibility transitions (host level)', () => {
-  it('NAV-VIS-4: short → long → navigator appears', () => {
+  it('NAV-VIS-4: short → long → navigator stays mounted (module is document-constant)', () => {
     const { shell } = makeShell()
     const h = mountHost()
-    expect(navigatorDisplay(h)).toBe('none')
+    // V5.1 — 文档工具模块常驻：短文档也显示模块。
+    expect(navigatorDisplay(h)).toBe('flex')
     setScrollHeight(shell, 702) // user keeps typing → real container becomes scrollable
     window.dispatchEvent(new Event('resize')) // geometry re-measure
     expect(navigatorDisplay(h)).toBe('flex')
     h.dispose()
   })
 
-  it('NAV-VIS-5: long → short → navigator disappears', () => {
+  it('NAV-VIS-5: long → short → navigator stays visible', () => {
     const { shell } = makeShell()
     setScrollHeight(shell, 2000)
     const h = mountHost()
     expect(navigatorDisplay(h)).toBe('flex')
     setScrollHeight(shell, 700) // content deleted
     window.dispatchEvent(new Event('resize'))
-    expect(navigatorDisplay(h)).toBe('none')
+    expect(navigatorDisplay(h)).toBe('flex')
     h.dispose()
   })
 
-  it('NAV-VIS-6: document switch A(scrollable) → B(short) → B hidden (no stale)', () => {
+  it('NAV-VIS-6: document switch A(scrollable) → B(short) → navigator stays mounted (no stale)', () => {
     const { shell } = makeShell()
     setScrollHeight(shell, 2000)
     const h = mountHost()
@@ -149,7 +150,9 @@ describe('NAV-VIS-4/5/6 live visibility transitions (host level)', () => {
     // Doc B is short; bindDocument triggers a geometry re-measure.
     setScrollHeight(shell, 700)
     h.bindDocument()
-    expect(navigatorDisplay(h)).toBe('none')
+    expect(navigatorDisplay(h)).toBe('flex')
+    const nav = document.querySelector('.inkchapter-doc-navigator') as HTMLElement
+    expect(nav.style.left).toBe('')
     h.dispose()
   })
 })
