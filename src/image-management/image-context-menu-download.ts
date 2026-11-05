@@ -10,7 +10,7 @@
 import { buildImageActions } from '../document-utilities/content-block-toolbar-image-actions'
 
 export const IMAGE_DOWNLOAD_MENU_KEY = 'inkchapter-download-image'
-export const IMAGE_DOWNLOAD_MENU_LABEL = '下载图片（墨章）'
+export const IMAGE_DOWNLOAD_MENU_LABEL = '下载并转为本地引用（墨章）'
 
 export interface ImageContextMenuDownloadOptions {
   download: (image: HTMLImageElement) => void

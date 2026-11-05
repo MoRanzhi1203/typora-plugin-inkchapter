@@ -28,6 +28,7 @@ export type ImageUploadErrorCode =
   | 'PICGO_CONFIG_WRITE_FAILED'
   | 'PICGO_TOKEN_INJECTION_UNSUPPORTED'
   | 'PICGO_EMPTY_RESULT'
+  | 'PICGO_UPLOAD_FAILED'
   | 'PICGO_INVALID_URL'
   | 'INDEX_WRITE_FAILED'
 
@@ -39,6 +40,8 @@ export interface UploadSuccess {
 export interface UploadFailure {
   ok: false
   errorCode: ImageUploadErrorCode
+  /** 已截断的脱敏摘要；只用于诊断展示，不写入配置或凭据。 */
+  detail?: string
 }
 
 export type UploadOutcome = UploadSuccess | UploadFailure
@@ -46,10 +49,17 @@ export type UploadOutcome = UploadSuccess | UploadFailure
 /**
  * 从 PicGo 返回值中提取真实 URL。
  *
+ * PicGo 3.x 的 `upload()` 签名是 `Promise<IImgInfo[] | Error>`：失败时
+ * **可能返回 Error 对象而不是抛异常**。必须单独识别，否则会误报为空结果。
+ *
  * 兼容 PicGo 的 `IImgInfo`（`imgUrl`）与旧字段 `url`；只接受第一个通过
  * 安全校验的 URL，空数组/空字符串/本地路径/私网地址一律判失败。
  */
 export function evaluatePicGoResult(output: unknown): UploadOutcome {
+  if (output instanceof Error) {
+    const detail = output.message.trim().slice(0, 200)
+    return { ok: false, errorCode: 'PICGO_UPLOAD_FAILED', detail: detail || undefined }
+  }
   if (!Array.isArray(output) || output.length === 0) {
     return { ok: false, errorCode: 'PICGO_EMPTY_RESULT' }
   }

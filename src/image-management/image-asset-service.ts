@@ -69,6 +69,20 @@ export class ImageAssetService {
     return this.index.list()
   }
 
+  /**
+   * 把失效的本地位置标记为 missing；历史记录保留，便于诊断与后续修复。
+   * 只更新索引，不触碰用户文件。
+   */
+  async markLocationUnavailable(locationId: string): Promise<boolean> {
+    try {
+      await this.ensureLoaded()
+      await this.index.updateLocationAvailability(locationId, 'missing')
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /** 目录迁移成功后同步数据库中的本地位置。 */
   async rewriteLocalLocationRoot(fromRoot: string, toRoot: string): Promise<number> {
     await this.ensureLoaded()

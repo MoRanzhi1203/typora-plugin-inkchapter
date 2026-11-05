@@ -162,6 +162,21 @@ function buildDocumentView(input: ImageLibraryCenterInput): ImageLibraryView {
   }
 }
 
+function formatCheckedAt(value: string | null): string {
+  if (!value) return ''
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(value)
+  return match ? ` · 校验于 ${match[1]} ${match[2]}` : ''
+}
+
+function describeLocation(location: AssetLocationRecord): string {
+  if (location.type === 'github') {
+    const version = location.remoteVersion ? ` · ${truncateValue(location.remoteVersion, 16)}` : ''
+    return `github · ${location.remoteProfileId ?? ''} · ${location.remoteBranch ?? ''}`
+      + ` · ${truncateValue(location.remotePath ?? location.locator)}${version}${formatCheckedAt(location.lastCheckedAt)}`
+  }
+  return `${location.type} · ${truncateValue(location.locator)}${formatCheckedAt(location.lastCheckedAt)}`
+}
+
 function buildLocationView(
   definition: Pick<ImageLibraryView, 'id' | 'title' | 'description'>,
   input: ImageLibraryCenterInput,
@@ -174,7 +189,7 @@ function buildLocationView(
       if (!predicate(location)) continue
       entries.push({
         primary: asset.filename,
-        secondary: `${location.type} · ${truncateValue(location.locator)}`,
+        secondary: describeLocation(location),
         status: statusForAvailability(location.availability),
       })
     }
@@ -192,7 +207,9 @@ function buildTasksDiagnosticsView(input: ImageLibraryCenterInput): ImageLibrary
   const definition = IMAGE_LIBRARY_VIEWS[3]
   const taskRows: ImageLibraryCenterRow[] = input.tasks.map(task => ({
     primary: `${task.kind} · ${task.assetId}`,
-    secondary: `已尝试 ${task.attempt}/${task.maxAttempts} 次${task.errorCode ? ` · ${task.errorCode}` : ''}`,
+    secondary: `已尝试 ${task.attempt}/${task.maxAttempts} 次`
+      + `${task.resultKind ? ` · ${task.resultKind}` : ''}`
+      + `${task.errorCode ? ` · ${task.errorCode}` : ''}`,
     status: task.status,
   }))
 

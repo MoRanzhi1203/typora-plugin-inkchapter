@@ -2,11 +2,19 @@ import { describe, it, expect, afterEach } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { createRequire } from 'node:module'
 import { resolveImageDataPaths } from './image-data-paths'
 import { resolveImageSettings, type ImageSettings } from './image-settings'
 import { ImageAssetService } from './image-asset-service'
 import { ImageTransferTaskStore } from './image-transfer-task-store'
-import { ImageUploadService, buildPicGoPackageDirs, parseNpmPrefix, toPicGoImportSpecifier, type PicGoConstructorLike } from './image-upload-service'
+import {
+  ImageUploadService,
+  buildPicGoPackageDirs,
+  defaultPicGoLoader,
+  parseNpmPrefix,
+  toPicGoImportSpecifier,
+  type PicGoConstructorLike,
+} from './image-upload-service'
 import type { ImageCredentialStore } from './image-credential-store'
 
 const roots: string[] = []
@@ -101,10 +109,12 @@ async function setup(options: {
   settings?: ImageSettings
   result?: unknown
   withConfig?: boolean
+  config?: Record<string, unknown>
   credentials?: ImageCredentialStore
   githubRequest?: import('./github-connection-test').GitHubJsonRequester
   loadPicGo?: () => Promise<PicGoConstructorLike>
   persistToken?: boolean
+  remoteIndexEnabled?: boolean
 } = {}) {
   const root = await makeRoot()
   const settings = options.settings ?? makeSettings()
@@ -116,7 +126,7 @@ async function setup(options: {
     await fs.mkdir(path.dirname(path.join(paths.dataRoot, 'picgo', 'config.json')), { recursive: true })
     await fs.writeFile(
       path.join(paths.dataRoot, 'picgo', 'config.json'),
-      JSON.stringify({ picBed: { current: 'github' } }),
+      JSON.stringify(options.config ?? { picBed: { current: 'github' } }),
       'utf8',
     )
   }
@@ -137,6 +147,8 @@ async function setup(options: {
     tasks,
     credentials: options.credentials ?? fakeCredentials(),
     githubRequest: options.githubRequest,
+    // 单元测试默认关闭远程索引，避免访问真实 api.github.com；需要时显式开启。
+    remoteIndexEnabled: options.remoteIndexEnabled ?? false,
     readSettings: () => settings,
     loadPicGo: options.loadPicGo ?? loader,
     now: () => new Date(Date.UTC(2026, 10, 4, 1, 2, 3)),
@@ -202,6 +214,38 @@ describe('ImageUploadService', () => {
     expect(taskList[0].status).toBe('failed')
     expect(taskList[0].errorCode).toBe('PICGO_EMPTY_RESULT')
     expect(taskList[0].attempt).toBe(1)
+  })
+
+  it('surfaces a PicGo 3.x Error return instead of reporting an empty result', async () => {
+    const { sourcePath, service, tasks } = await setup({
+      result: new Error('GitHub API 401 Bad credentials'),
+    })
+    const result = await service.uploadLocalFile({ filePath: sourcePath })
+
+    expect(result).toEqual(expect.objectContaining({ ok: false, errorCode: 'PICGO_UPLOAD_FAILED' }))
+    if (result.ok) throw new Error('expected failure')
+    expect(result.message).toContain('401')
+    expect(result.message).not.toContain(SECRET)
+    await expect(fs.access(sourcePath)).resolves.toBeUndefined()
+    const taskList = await tasks.list()
+    expect(taskList[0].status).toBe('failed')
+    expect(taskList[0].errorCode).toBe('PICGO_UPLOAD_FAILED')
+  })
+
+  it('keeps an object-shaped PicGo uploader config intact', async () => {
+    const initialUploader = {
+      github: { configList: [{ repo: 'octocat/image-bed' }], defaultId: 'abc' },
+    }
+    const { paths, sourcePath, service } = await setup({
+      config: { picBed: { current: 'github' }, uploader: initialUploader, picgoPlugins: {} },
+    })
+    const result = await service.uploadLocalFile({ filePath: sourcePath })
+    expect(result.ok).toBe(true)
+
+    const config = JSON.parse(
+      await fs.readFile(path.join(paths.dataRoot, 'picgo', 'config.json'), 'utf8'),
+    ) as { uploader: unknown }
+    expect(config.uploader).toEqual(initialUploader)
   })
 
   it('refuses to upload when the service is none without touching the file', async () => {
@@ -407,6 +451,29 @@ describe('toPicGoImportSpecifier', () => {
 })
 
 describe('global PicGo discovery', () => {
+  it('loads a CJS PicGo module through the Typora reqnode loader', async () => {
+    const root = await makeRoot()
+    const modulePath = path.join(root, 'picgo-fake.cjs')
+    await fs.writeFile(modulePath, 'module.exports = { PicGo: class FakePicGo {} }', 'utf8')
+
+    const nodeRequire = createRequire(import.meta.url)
+    const globals = globalThis as { reqnode?: unknown; require?: unknown }
+    const previousReqnode = globals.reqnode
+    const previousEnv = process.env.INKCHAPTER_PICGO_MODULE
+    globals.reqnode = (id: string) => nodeRequire(id)
+    process.env.INKCHAPTER_PICGO_MODULE = modulePath
+    try {
+      const ctor = await defaultPicGoLoader()
+      expect(typeof ctor).toBe('function')
+      expect(ctor.name).toBe('FakePicGo')
+    } finally {
+      if (previousReqnode === undefined) delete globals.reqnode
+      else globals.reqnode = previousReqnode
+      if (previousEnv === undefined) delete process.env.INKCHAPTER_PICGO_MODULE
+      else process.env.INKCHAPTER_PICGO_MODULE = previousEnv
+    }
+  })
+
   it('parses npm prefix from .npmrc', () => {
     expect(parseNpmPrefix('registry=https://registry.npmjs.org/\nprefix=E:\\NodeJS\n')).toBe('E:\\NodeJS')
     expect(parseNpmPrefix('prefix = "D:/node"')).toBe('D:/node')
@@ -448,5 +515,154 @@ describe('global PicGo discovery', () => {
       npmrc: null,
     })
     expect(dirs).toContain(path.join(nodeDir, 'node_modules', 'picgo'))
+  })
+})
+
+const SOURCE_BYTES = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+
+/** 模拟 GitHub Contents API：目录列表 + 单文件 base64 内容。 */
+function fakeGitHub(contents: Record<string, Uint8Array>): import('./github-connection-test').GitHubJsonRequester {
+  const entries = Object.entries(contents).map(([remotePath, bytes]) => {
+    const name = remotePath.split('/').pop() ?? remotePath
+    return { type: 'file', name, path: remotePath, sha: `git-${name}`, size: bytes.byteLength }
+  })
+  return async ({ path }) => {
+    if (path.includes('/contents/images?')) return { status: 200, json: entries }
+    const match = /\/contents\/(.+?)\?ref=/.exec(path)
+    const target = match ? decodeURIComponent(match[1]) : ''
+    const bytes = contents[target]
+    if (!bytes) return { status: 404, json: null }
+    return {
+      status: 200,
+      json: {
+        encoding: 'base64',
+        content: Buffer.from(bytes).toString('base64'),
+        sha: `git-${target.split('/').pop() ?? target}`,
+        size: bytes.byteLength,
+      },
+    }
+  }
+}
+
+describe('ImageUploadService remote reuse (D2)', () => {
+  it('reuses a recorded remote location instead of uploading the same file twice', async () => {
+    const { sourcePath, service, uploaded } = await setup()
+    const first = await service.uploadLocalFile({ filePath: sourcePath })
+    const second = await service.uploadLocalFile({ filePath: sourcePath })
+
+    if (!first.ok || !second.ok) throw new Error('expected both uploads to succeed')
+    expect(uploaded).toHaveLength(1)
+    expect(second.url).toBe(first.url)
+    expect(second.resultKind).toBe('REUSED_REMOTE')
+    expect(second.uploadTransfers).toBe(0)
+    expect(second.verification).toBe('INDEX_RECORD')
+  })
+
+  it('reuses a same-content remote file with a different name after content verification', async () => {
+    const remotePath = 'images/renamed-copy.png'
+    const { sourcePath, service, uploaded, tasks } = await setup({
+      remoteIndexEnabled: true,
+      githubRequest: fakeGitHub({ [remotePath]: SOURCE_BYTES }),
+    })
+
+    const result = await service.uploadLocalFile({ filePath: sourcePath })
+
+    if (!result.ok) throw new Error(`expected reuse, got ${result.errorCode}`)
+    expect(uploaded).toHaveLength(0)
+    expect(result.resultKind).toBe('REUSED_REMOTE')
+    expect(result.verification).toBe('REMOTE_CONTENT')
+    expect(result.url).toBe('https://raw.githubusercontent.com/octocat/image-bed/main/images/renamed-copy.png')
+    expect(result.remotePath).toBe(remotePath)
+    expect((await tasks.list())[0]).toEqual(expect.objectContaining({
+      status: 'succeeded',
+      resultKind: 'REUSED_REMOTE',
+      attempt: 0,
+    }))
+  })
+
+  it('uploads new content when the remote same-size file has different bytes', async () => {
+    const { sourcePath, service, uploaded } = await setup({
+      remoteIndexEnabled: true,
+      githubRequest: fakeGitHub({ 'images/conflict.png': Uint8Array.from([9, 9, 9, 9, 9, 9, 9]) }),
+    })
+
+    const result = await service.uploadLocalFile({ filePath: sourcePath })
+
+    if (!result.ok) throw new Error('expected a new upload')
+    expect(result.resultKind).toBe('UPLOADED_NEW')
+    expect(result.uploadTransfers).toBe(1)
+    expect(uploaded).toHaveLength(1)
+  })
+
+  it('keeps scanning failures silent and still performs the requested upload', async () => {
+    const { sourcePath, service, uploaded } = await setup({
+      remoteIndexEnabled: true,
+      githubRequest: async () => ({ status: 403, json: null }),
+    })
+
+    const result = await service.uploadLocalFile({ filePath: sourcePath })
+
+    expect(result.ok).toBe(true)
+    expect(uploaded).toHaveLength(1)
+  })
+
+  it('merges concurrent uploads of the same content into one remote write', async () => {
+    const gate: { release: (() => void) | null } = { release: null }
+    const uploads: string[][] = []
+    const { sourcePath, service } = await setup({
+      loadPicGo: async () => {
+        class SlowPicGo {
+          setConfig(): void {}
+          unsetConfig(): void {}
+          async upload(files?: string[]): Promise<unknown> {
+            uploads.push(files ?? [])
+            await new Promise<void>(resolve => { gate.release = resolve })
+            return [{ imgUrl: 'https://example.test/images/ok.png' }]
+          }
+        }
+        return SlowPicGo as unknown as PicGoConstructorLike
+      },
+    })
+
+    const first = service.uploadLocalFile({ filePath: sourcePath })
+    const deadline = Date.now() + 5000
+    while (!gate.release && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    const second = service.uploadLocalFile({ filePath: sourcePath })
+    gate.release?.()
+    const [a, b] = await Promise.all([first, second])
+
+    if (!a.ok || !b.ok) throw new Error('expected both callers to succeed')
+    expect(uploads).toHaveLength(1)
+    expect(b.url).toBe(a.url)
+  })
+
+  it('does not reuse a recorded URL after the repository configuration changes', async () => {
+    const first = await setup({
+      result: [{ imgUrl: 'https://raw.githubusercontent.com/octocat/image-bed/main/images/ok.png' }],
+    })
+    const uploadedFirst = await first.service.uploadLocalFile({ filePath: first.sourcePath })
+    if (!uploadedFirst.ok) throw new Error('expected the first upload')
+
+    const settingsB = makeSettings({
+      remoteProfiles: [{ ...PROFILE, owner: 'other-user' }],
+      defaultRemoteProfileId: PROFILE.remoteProfileId,
+    })
+    const loaderB = fakeLoader([{ imgUrl: 'https://example.test/images/new.png' }])
+    const serviceB = new ImageUploadService({
+      paths: first.paths,
+      assets: first.assets,
+      tasks: first.tasks,
+      credentials: fakeCredentials(),
+      readSettings: () => settingsB,
+      loadPicGo: loaderB.loader,
+      remoteIndexEnabled: false,
+    })
+
+    const second = await serviceB.uploadLocalFile({ filePath: first.sourcePath })
+    if (!second.ok) throw new Error('expected a new upload for the changed repository')
+    expect(second.resultKind).toBe('UPLOADED_NEW')
+    expect(loaderB.uploaded).toHaveLength(1)
   })
 })

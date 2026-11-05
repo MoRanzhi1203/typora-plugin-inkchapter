@@ -12,8 +12,12 @@
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import type { ImageAssetService } from './image-asset-service'
-import { pickReusableLocalLocation, type AssetLocationType } from './image-asset-model'
-import { sha256File, type ImageAssetRecord } from './image-asset-index'
+import {
+  listLocalLocationsByReuseOrder,
+  type AssetLocationType,
+  type ReuseResultKind,
+} from './image-asset-model'
+import { sha256File, verifyLocalLocationContent, type ImageAssetRecord } from './image-asset-index'
 import type { ImageDataPaths } from './image-data-paths'
 import { sanitizeShareFilename } from './image-share-import'
 import type { ImageTransferTaskStore } from './image-transfer-task-store'
@@ -56,7 +60,16 @@ export interface ImageDownloadResult {
   sha256: string | null
   assetId: string | null
   locationId: string | null
+  /** 兼容旧调用方；等于 `resultKind !== 'DOWNLOADED_NEW'`。 */
   reused: boolean
+  /** 真实动作：复用本地 / 复制本地 / 新下载 / 失败。 */
+  resultKind: ReuseResultKind
+  /** 实际发生的网络下载次数（0 或 1）。 */
+  networkTransfers: number
+  /** 实际发生的本地文件复制次数（0 或 1）。 */
+  localCopies: number
+  /** 实际通过网络接收的字节数；复用为 0。 */
+  bytesTransferred: number
   taskId: string | null
 }
 
@@ -76,8 +89,23 @@ function fail(
   message: string,
   taskId: string | null = null,
   assetId: string | null = null,
+  extra: { networkTransfers?: number; bytesTransferred?: number } = {},
 ): ImageDownloadResult {
-  return { ok: false, code, message, filePath: null, sha256: null, assetId, locationId: null, reused: false, taskId }
+  return {
+    ok: false,
+    code,
+    message,
+    filePath: null,
+    sha256: null,
+    assetId,
+    locationId: null,
+    reused: false,
+    resultKind: 'TRANSFER_FAILED',
+    networkTransfers: extra.networkTransfers ?? 0,
+    localCopies: 0,
+    bytesTransferred: extra.bytesTransferred ?? 0,
+    taskId,
+  }
 }
 
 /** 文件头格式校验：MIME 可能撒谎，字节必须真的像图片。 */
@@ -185,14 +213,22 @@ export class ImageDownloadService {
     } catch {
       return fail('ASSET_RECORD_FAILED', '资产索引不可读，已取消下载')
     }
-    const reusable = asset ? pickReusableLocalLocation(asset.locations) : null
-
     let taskId: string | null = null
+    let networkTransfers = 0
+    let downloadedBytes = 0
     const failed = (code: ImageDownloadErrorCode, message: string): ImageDownloadResult => {
       if (taskId && this.options.tasks) {
-        void this.options.tasks.update(taskId, { status: 'failed', errorCode: code, attempt: 1 }).catch(() => undefined)
+        void this.options.tasks.update(taskId, {
+          status: 'failed',
+          errorCode: code,
+          attempt: 1,
+          resultKind: 'TRANSFER_FAILED',
+        }).catch(() => undefined)
       }
-      return fail(code, message, taskId, asset?.assetId ?? null)
+      return fail(code, message, taskId, asset?.assetId ?? null, {
+        networkTransfers,
+        bytesTransferred: downloadedBytes,
+      })
     }
     if (asset && this.options.tasks) {
       try {
@@ -209,20 +245,27 @@ export class ImageDownloadService {
     let sha256: string | null = null
     let extension: string | null = null
 
-    if (reusable) {
-      try {
-        await fs.access(reusable.locator)
-        sourcePath = reusable.locator
-        sha256 = reusable.sha256
-      } catch {
-        sourcePath = null
+    // 只复用内容校验通过的本地位置：文件被替换或缺失时标记失效，再尝试下一个。
+    if (asset) {
+      for (const candidate of listLocalLocationsByReuseOrder(asset.locations)) {
+        const state = await verifyLocalLocationContent(candidate)
+        if (state === 'verified') {
+          sourcePath = candidate.locator
+          sha256 = candidate.sha256
+          break
+        }
+        if (state === 'content-changed') {
+          await this.options.assets.markLocationUnavailable(candidate.locationId)
+        }
       }
     }
 
     if (!sourcePath) {
       if (!this.fetchImpl) return failed('NETWORK_ERROR', '当前环境不支持远程下载')
+      networkTransfers = 1
       const fetched = await fetchRemoteImage(this.fetchImpl, url, this.maxBytes)
       if (!fetched.ok) return failed(fetched.code, fetched.message)
+      downloadedBytes = fetched.bytes.byteLength
       const sniffed = sniffImageFormat(fetched.bytes)
       if (!sniffed) return failed('INVALID_IMAGE_BYTES', '下载内容不是受支持的图片格式')
       sourceBytes = fetched.bytes
@@ -250,9 +293,12 @@ export class ImageDownloadService {
     const target = await this.resolveTargetPath(dir, baseName, sha256)
     if (!target.ok) return failed('PATH_ESCAPE', '目标路径越过了下载目录')
 
-    let reused = false
+    let resultKind: Extract<ReuseResultKind, 'REUSED_LOCAL' | 'COPIED_EXISTING_LOCAL' | 'DOWNLOADED_NEW'> =
+      'DOWNLOADED_NEW'
+    let localCopies = 0
     if (target.existingSame) {
-      reused = true
+      // 目标位置已有同内容文件：零网络、零复制。
+      resultKind = 'REUSED_LOCAL'
       sha256 = target.existingSha ?? sha256
     } else {
       try {
@@ -261,10 +307,13 @@ export class ImageDownloadService {
           const temp = `${target.path}.${process.pid}.${Date.now()}.tmp`
           await fs.copyFile(sourcePath, temp)
           await fs.rename(temp, target.path)
+          localCopies = 1
+          resultKind = 'COPIED_EXISTING_LOCAL'
         } else if (sourceBytes) {
           const temp = `${target.path}.${process.pid}.${Date.now()}.tmp`
           await fs.writeFile(temp, sourceBytes)
           await fs.rename(temp, target.path)
+          resultKind = 'DOWNLOADED_NEW'
         } else {
           return failed('SOURCE_LOCATION_MISSING', '没有可复用的本地副本')
         }
@@ -336,18 +385,31 @@ export class ImageDownloadService {
     }
     if (taskId && this.options.tasks) {
       try {
-        await this.options.tasks.update(taskId, { status: 'succeeded', attempt: 1, locationId })
+        await this.options.tasks.update(taskId, {
+          status: 'succeeded',
+          attempt: 1,
+          locationId,
+          resultKind,
+        })
       } catch { /* 任务记录失败不影响下载结果 */ }
     }
 
     return {
       ok: true,
-      message: reused ? '已复用现有本地图片' : '图片已下载',
+      message: resultKind === 'REUSED_LOCAL'
+        ? '本地已有相同图片，已直接复用，无需重复下载'
+        : resultKind === 'COPIED_EXISTING_LOCAL'
+          ? '已复用本地已有图片并复制到目标目录，无需联网下载'
+          : '图片已下载',
       filePath: target.path,
       sha256,
       assetId: asset?.assetId ?? null,
       locationId,
-      reused,
+      reused: resultKind !== 'DOWNLOADED_NEW',
+      resultKind,
+      networkTransfers,
+      localCopies,
+      bytesTransferred: downloadedBytes,
       taskId,
     }
   }

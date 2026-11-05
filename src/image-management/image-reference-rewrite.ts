@@ -85,6 +85,29 @@ export function rewriteReferenceDestination(
   return markdown.slice(0, start) + destination + markdown.slice(end)
 }
 
+/**
+ * 引用改写的真实结果。
+ *
+ * `ALREADY_LINKED` 表示当前 Markdown 已经指向目标地址：此时 **不得** 重写正文
+ * （否则会制造无意义的撤销步骤，并可能扰动 alt / 图名 / 图号）。
+ */
+export type ReferenceRewriteOutcome =
+  | { kind: 'REWRITTEN'; markdown: string }
+  | { kind: 'ALREADY_LINKED'; markdown: string }
+
+/** 应用一次引用改写，并区分「已正确」与「真的改写」。 */
+export function applyReferenceDestination(
+  markdown: string,
+  reference: MarkdownImageReference,
+  newDestination: string,
+): ReferenceRewriteOutcome | null {
+  const next = rewriteReferenceDestination(markdown, reference, newDestination)
+  if (next == null) return null
+  return next === markdown
+    ? { kind: 'ALREADY_LINKED', markdown }
+    : { kind: 'REWRITTEN', markdown: next }
+}
+
 /** 生成 Markdown 可读相对路径（正斜杠）。 */
 export function relativeMarkdownImagePath(documentPath: string, filePath: string): string {
   const relative = path.relative(path.dirname(documentPath), filePath).replace(/\\/g, '/')

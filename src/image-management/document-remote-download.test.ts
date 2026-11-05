@@ -24,15 +24,22 @@ function markdown(): string {
   ].join('\n')
 }
 
-function result(input: DownloadImageInput, reused = false): ImageDownloadResult {
+function result(
+  input: DownloadImageInput,
+  kind: 'DOWNLOADED_NEW' | 'REUSED_LOCAL' | 'COPIED_EXISTING_LOCAL' = 'DOWNLOADED_NEW',
+): ImageDownloadResult {
   return {
     ok: true,
-    message: reused ? '已复用现有本地图片' : '图片已下载',
+    message: kind === 'DOWNLOADED_NEW' ? '图片已下载' : '已复用现有本地图片',
     filePath: `${projectDirectory}/${input.url.split('/').pop()}`,
     sha256: 'a'.repeat(64),
     assetId: `asset-${input.url}`,
     locationId: 'loc-1',
-    reused,
+    reused: kind !== 'DOWNLOADED_NEW',
+    resultKind: kind,
+    networkTransfers: kind === 'DOWNLOADED_NEW' ? 1 : 0,
+    localCopies: kind === 'COPIED_EXISTING_LOCAL' ? 1 : 0,
+    bytesTransferred: 0,
     taskId: 'task-1',
   }
 }
@@ -85,7 +92,7 @@ describe('downloadDocumentRemoteImages', () => {
         if (input.url.includes('b.jpg')) {
           return { ...result(input), ok: false, message: '网络失败', filePath: null }
         }
-        return result(input, true)
+        return result(input, 'REUSED_LOCAL')
       },
     })
 

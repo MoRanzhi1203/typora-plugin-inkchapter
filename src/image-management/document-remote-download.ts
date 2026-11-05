@@ -5,7 +5,7 @@
  * 下载去重复用 `ImageDownloadService` 的资产/远程 URL 匹配，并发受设置上限约束。
  */
 
-import { parseMarkdownImageReferences } from './image-asset-model'
+import { parseMarkdownImageReferences, type ReuseResultKind } from './image-asset-model'
 import type { DownloadImageInput, ImageDownloadResult } from './image-download-service'
 
 export interface DocumentRemoteImageTarget {
@@ -19,6 +19,9 @@ export interface DocumentRemoteDownloadItem {
   ok: boolean
   filePath: string | null
   reused: boolean
+  resultKind: ReuseResultKind
+  networkTransfers: number
+  localCopies: number
   message: string
 }
 
@@ -26,7 +29,9 @@ export interface DocumentRemoteDownloadSummary {
   total: number
   downloaded: number
   reused: number
+  copied: number
   failed: number
+  networkTransfers: number
   items: DocumentRemoteDownloadItem[]
 }
 
@@ -57,7 +62,7 @@ export async function downloadDocumentRemoteImages(input: {
 }): Promise<DocumentRemoteDownloadSummary> {
   const targets = collectDocumentRemoteImages(input.markdown, input.documentPath)
   if (targets.length === 0) {
-    return { total: 0, downloaded: 0, reused: 0, failed: 0, items: [] }
+    return { total: 0, downloaded: 0, reused: 0, copied: 0, failed: 0, networkTransfers: 0, items: [] }
   }
 
   const items: DocumentRemoteDownloadItem[] = new Array(targets.length)
@@ -85,6 +90,10 @@ export async function downloadDocumentRemoteImages(input: {
           assetId: null,
           locationId: null,
           reused: false,
+          resultKind: 'TRANSFER_FAILED',
+          networkTransfers: 0,
+          localCopies: 0,
+          bytesTransferred: 0,
           taskId: null,
         }
       }
@@ -94,6 +103,9 @@ export async function downloadDocumentRemoteImages(input: {
         ok: result.ok,
         filePath: result.filePath,
         reused: result.reused,
+        resultKind: result.resultKind,
+        networkTransfers: result.networkTransfers,
+        localCopies: result.localCopies,
         message: result.message,
       }
     }
@@ -101,13 +113,17 @@ export async function downloadDocumentRemoteImages(input: {
 
   await Promise.all(Array.from({ length: limit }, () => worker()))
 
-  const downloaded = items.filter(item => item.ok && !item.reused).length
-  const reused = items.filter(item => item.ok && item.reused).length
+  const downloaded = items.filter(item => item.ok && item.resultKind === 'DOWNLOADED_NEW').length
+  const copied = items.filter(item => item.ok && item.resultKind === 'COPIED_EXISTING_LOCAL').length
+  const reused = items.filter(item => item.ok && item.resultKind === 'REUSED_LOCAL').length
+  const networkTransfers = items.reduce((sum, item) => sum + item.networkTransfers, 0)
   return {
     total: items.length,
     downloaded,
     reused,
-    failed: items.length - downloaded - reused,
+    copied,
+    failed: items.length - downloaded - reused - copied,
+    networkTransfers,
     items,
   }
 }

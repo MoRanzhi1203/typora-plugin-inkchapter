@@ -212,4 +212,114 @@ describe('ImageDownloadService', () => {
     expect(result.filePath!.startsWith(h.projectDirectory)).toBe(true)
     expect(path.basename(result.filePath!)).toBe('evil.png')
   })
+
+  it('reuses an already indexed project copy with zero network and zero copies', async () => {
+    const h = await setup()
+    const url = 'https://example.test/images/a.png'
+    const projectFile = path.join(h.projectDirectory, 'a.png')
+    await fs.mkdir(h.projectDirectory, { recursive: true })
+    await fs.writeFile(projectFile, PNG)
+    const upserted = await h.assets.upsertLocalFile({ filePath: projectFile, locationType: 'project' })
+    await h.assets.recordLocation({
+      assetId: upserted.asset.assetId,
+      type: 'github',
+      locator: url,
+    })
+
+    const result = await h.service.download({
+      url,
+      documentPath: h.documentPath,
+      projectDirectory: h.projectDirectory,
+      placement: 'project',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.resultKind).toBe('REUSED_LOCAL')
+    expect(result.networkTransfers).toBe(0)
+    expect(result.localCopies).toBe(0)
+    expect(h.fetchCount()).toBe(0)
+    expect(result.filePath).toBe(projectFile)
+    const tasks = await h.tasks.list()
+    expect(tasks[0]).toEqual(expect.objectContaining({ status: 'succeeded', resultKind: 'REUSED_LOCAL' }))
+  })
+
+  it('copies a verified library copy into the project without network access', async () => {
+    const h = await setup()
+    const url = 'https://example.test/images/a.png'
+    const libraryFile = path.join(h.root, 'library', 'a.png')
+    await fs.mkdir(path.dirname(libraryFile), { recursive: true })
+    await fs.writeFile(libraryFile, PNG)
+    const upserted = await h.assets.upsertLocalFile({ filePath: libraryFile, locationType: 'library' })
+    await h.assets.recordLocation({ assetId: upserted.asset.assetId, type: 'github', locator: url })
+
+    const result = await h.service.download({
+      url,
+      documentPath: h.documentPath,
+      projectDirectory: h.projectDirectory,
+      placement: 'project',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.resultKind).toBe('COPIED_EXISTING_LOCAL')
+    expect(result.networkTransfers).toBe(0)
+    expect(result.localCopies).toBe(1)
+    expect(h.fetchCount()).toBe(0)
+    await expect(fs.readFile(result.filePath!)).resolves.toEqual(Buffer.from(PNG))
+    expect(result.filePath).toBe(path.join(h.projectDirectory, 'a.png'))
+  })
+
+  it('re-downloads when an indexed local file was modified and marks that location missing', async () => {
+    const h = await setup()
+    const url = 'https://example.test/images/a.png'
+    const projectFile = path.join(h.projectDirectory, 'a.png')
+    await fs.mkdir(h.projectDirectory, { recursive: true })
+    await fs.writeFile(projectFile, PNG)
+    const upserted = await h.assets.upsertLocalFile({ filePath: projectFile, locationType: 'project' })
+    await h.assets.recordLocation({ assetId: upserted.asset.assetId, type: 'github', locator: url })
+
+    const tampered = Uint8Array.from([...PNG, 9, 9, 9])
+    await fs.writeFile(projectFile, tampered)
+
+    const result = await h.service.download({
+      url,
+      documentPath: h.documentPath,
+      projectDirectory: h.projectDirectory,
+      placement: 'project',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.resultKind).toBe('DOWNLOADED_NEW')
+    expect(result.networkTransfers).toBe(1)
+    expect(h.fetchCount()).toBe(1)
+    expect(result.filePath).not.toBe(projectFile)
+    expect(path.basename(result.filePath!)).toMatch(/^a-[0-9a-f]{8}\.png$/)
+    // 被修改的旧文件绝不覆盖。
+    await expect(fs.readFile(projectFile)).resolves.toEqual(Buffer.from(tampered))
+
+    const asset = (await h.assets.list()).find(item => item.assetId === result.assetId)!
+    const stale = asset.locations.find(location => location.locator === projectFile)
+    expect(stale?.availability).toBe('missing')
+  })
+
+  it('does not trust a cache entry whose bytes no longer match the asset', async () => {
+    const h = await setup()
+    const url = 'https://example.test/images/a.png'
+    const cacheFile = path.join(h.root, 'cache', 'a.png')
+    await fs.mkdir(path.dirname(cacheFile), { recursive: true })
+    await fs.writeFile(cacheFile, PNG)
+    const upserted = await h.assets.upsertLocalFile({ filePath: cacheFile, locationType: 'cache' })
+    await h.assets.recordLocation({ assetId: upserted.asset.assetId, type: 'github', locator: url })
+    await fs.writeFile(cacheFile, Uint8Array.from([...PNG, 7]))
+
+    const result = await h.service.download({
+      url,
+      documentPath: h.documentPath,
+      projectDirectory: h.projectDirectory,
+      placement: 'project',
+    })
+
+    expect(result.ok).toBe(true)
+    expect(result.resultKind).toBe('DOWNLOADED_NEW')
+    expect(h.fetchCount()).toBe(1)
+  })
 })

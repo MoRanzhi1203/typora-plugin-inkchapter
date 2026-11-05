@@ -9,7 +9,7 @@
 
 import * as fs from 'fs/promises'
 import * as path from 'path'
-import type { TransferTask, TransferTaskKind, TransferTaskStatus } from './image-asset-model'
+import type { ReuseResultKind, TransferTask, TransferTaskKind, TransferTaskStatus } from './image-asset-model'
 
 export const TRANSFER_TASK_SCHEMA_VERSION = 1
 
@@ -31,6 +31,10 @@ export interface UpdateTransferTaskPatch {
   status?: TransferTaskStatus
   attempt?: number
   errorCode?: string | null
+  /** 脱敏后的异常摘要；只用于本机诊断。 */
+  errorDetail?: string | null
+  /** 真实结果：复用、新传输或失败；用于诊断视图与批量汇总。 */
+  resultKind?: ReuseResultKind | null
   locationId?: string | null
   now?: Date
 }
@@ -60,6 +64,8 @@ export class ImageTransferTaskStore {
       attempt: 0,
       maxAttempts: Math.max(1, input.maxAttempts ?? 3),
       errorCode: null,
+      errorDetail: null,
+      resultKind: null,
       createdAt: now,
       updatedAt: now,
     }
@@ -79,6 +85,8 @@ export class ImageTransferTaskStore {
       status: patch.status ?? current.status,
       attempt: patch.attempt ?? current.attempt,
       errorCode: patch.errorCode === undefined ? current.errorCode : patch.errorCode,
+      errorDetail: patch.errorDetail === undefined ? current.errorDetail : patch.errorDetail,
+      resultKind: patch.resultKind === undefined ? current.resultKind : patch.resultKind,
       locationId: patch.locationId === undefined ? current.locationId : patch.locationId,
       updatedAt: (patch.now ?? new Date()).toISOString(),
     }

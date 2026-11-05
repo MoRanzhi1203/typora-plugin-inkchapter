@@ -15,6 +15,7 @@ import * as os from 'os'
 import * as path from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import type { ImageAssetService } from './image-asset-service'
+import type { ReuseResultKind } from './image-asset-model'
 import { sha256File, type ImageAssetRecord } from './image-asset-index'
 import type { ImageDataPaths } from './image-data-paths'
 import type { ImageNamingStrategy, ImageRemoteProfile, ImageSettings } from './image-settings'
@@ -29,6 +30,14 @@ import {
   type UploadConflictResult,
 } from './image-upload-policy'
 import { buildUploadFileName, joinRemotePath } from './image-upload-naming'
+import {
+  findRemoteContentBySha256,
+  isRemoteUrlForProfile,
+  listRemoteImageEntries,
+  readRemoteFileVersion,
+  buildRemoteImageUrl,
+  type RemoteDirectoryIndex,
+} from './image-remote-index'
 import {
   resolveCredentialReferenceId,
   type ImageCredentialStore,
@@ -63,6 +72,13 @@ export interface ImageUploadServiceOptions {
   picgoConfigPath?: string
   /** Typora `profile.data`；默认 `%APPDATA%/Typora/profile.data`。 */
   typoraProfilePath?: string
+  /**
+   * 上传前扫描目标目录，复用远端同内容图片。默认开启；
+   * 扫描失败或结果不完整时**不会**据此断言“远端没有重复”，而是继续上传。
+   */
+  remoteIndexEnabled?: boolean
+  /** 远程目录索引缓存有效期；默认 5 分钟。 */
+  remoteIndexTtlMs?: number
   now?: () => Date
 }
 
@@ -73,12 +89,20 @@ export interface UploadLocalFileInput {
   strategy?: ImageNamingStrategy
 }
 
+/** 复用依据：本地索引记录 / 远程内容扫描 / 本次新上传。 */
+export type UploadReuseVerification = 'INDEX_RECORD' | 'REMOTE_CONTENT' | 'NEW_UPLOAD'
+
 export interface UploadLocalFileSuccess {
   ok: true
   url: string
   assetId: string
   remotePath: string
   taskId: string | null
+  /** 复用远端已有图片，还是本次真的发生了一次上传。 */
+  resultKind: Extract<ReuseResultKind, 'REUSED_REMOTE' | 'UPLOADED_NEW'>
+  /** 实际网络写入次数：复用为 0，新上传为 1。 */
+  uploadTransfers: number
+  verification: UploadReuseVerification
 }
 
 export interface UploadLocalFileFailure {
@@ -108,6 +132,7 @@ const ERROR_MESSAGES: Record<ImageUploadErrorCode, string> = {
   PICGO_CONFIG_WRITE_FAILED: '无法写入插件私有 PicGo 配置，未发起上传；源文件保持不变。',
   PICGO_TOKEN_INJECTION_UNSUPPORTED: '当前 PicGo 版本不支持运行时注入 Token，已阻止上传。',
   PICGO_EMPTY_RESULT: 'PicGo 未返回可用 URL，按失败处理；源文件保持不变。',
+  PICGO_UPLOAD_FAILED: 'PicGo 上传失败；源文件保持不变。',
   PICGO_INVALID_URL: 'PicGo 返回的 URL 非法或不可公开访问，按失败处理；源文件保持不变。',
   INDEX_WRITE_FAILED: '资产索引写入失败，请检查数据目录权限；源文件保持不变。',
 }
@@ -116,8 +141,26 @@ function failure(
   errorCode: ImageUploadErrorCode,
   assetId: string | null = null,
   taskId: string | null = null,
+  detail?: string,
 ): UploadLocalFileFailure {
-  return { ok: false, errorCode, message: ERROR_MESSAGES[errorCode], assetId, taskId }
+  const suffix = detail ? `（${detail}）` : ''
+  return { ok: false, errorCode, message: ERROR_MESSAGES[errorCode] + suffix, assetId, taskId }
+}
+
+/** 远端复用命中：URL 已被内容哈希或本机上传记录证明对应同一内容版本。 */
+interface RemoteReuseHit {
+  url: string
+  remotePath: string
+  remoteVersion: string | null
+  verification: Extract<UploadReuseVerification, 'INDEX_RECORD' | 'REMOTE_CONTENT'>
+}
+
+/** 历史位置必须仍位于当前配置的上传目录内，避免仓库目录改动后错误复用。 */
+function isRemotePathInDirectory(remotePath: string | null, directory: string): boolean {
+  if (!remotePath) return false
+  const dir = directory.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+  if (!dir) return true
+  return remotePath.replace(/\\/g, '/').startsWith(`${dir}/`)
 }
 
 /**
@@ -194,10 +237,16 @@ function extractPicGoConstructor(value: unknown): PicGoConstructorLike | null {
 }
 
 function requirePicGoIfAvailable(specifier: string): PicGoConstructorLike | null {
-  // 通过 globalThis 读取 Typora/Electron 注入的 require：直接调用裸 `require`
+  // Typora 渲染进程没有可用的全局 `require`，但暴露了 Node 模块加载器
+  // `reqnode`（框架其它模块也用它加载 Node 内置模块）。直接调用裸 `require`
   // 会让 esbuild 在 ESM 产物里插入 dynamic require 兼容层，破坏构造期门禁。
-  const nodeRequire = (globalThis as { require?: (id: string) => unknown }).require
-  if (typeof nodeRequire !== 'function') return null
+  const globals = globalThis as { reqnode?: unknown; require?: unknown }
+  const nodeRequire = typeof globals.reqnode === 'function'
+    ? globals.reqnode as (id: string) => unknown
+    : typeof globals.require === 'function'
+      ? globals.require as (id: string) => unknown
+      : null
+  if (!nodeRequire) return null
   const target = /^file:\/\//i.test(specifier)
     ? fileURLToPath(specifier)
     : path.isAbsolute(specifier)
@@ -268,6 +317,11 @@ export class ImageUploadService {
   private readonly picgoConfigPath: string
   private readonly typoraProfilePath: string
   private readonly loadPicGo: PicGoModuleLoader
+  /** 同内容 + 同目标位置的并发上传合并为一次真实写入。 */
+  private readonly inFlight = new Map<string, Promise<UploadLocalFileResult>>()
+  private readonly remoteIndexCache = new Map<string, { fetchedAt: number; index: RemoteDirectoryIndex }>()
+  private readonly remoteIndexEnabled: boolean
+  private readonly remoteIndexTtlMs: number
 
   constructor(private readonly options: ImageUploadServiceOptions) {
     this.picgoConfigPath = options.picgoConfigPath
@@ -278,6 +332,8 @@ export class ImageUploadService {
     this.typoraProfilePath = options.typoraProfilePath
       ?? (appData ? path.join(appData, 'Typora', 'profile.data') : '')
     this.loadPicGo = options.loadPicGo ?? defaultPicGoLoader
+    this.remoteIndexEnabled = options.remoteIndexEnabled !== false
+    this.remoteIndexTtlMs = Math.max(0, options.remoteIndexTtlMs ?? 5 * 60 * 1000)
   }
 
   getPicGoConfigPath(): string {
@@ -330,18 +386,14 @@ export class ImageUploadService {
       if (credential.code === 'CREDENTIAL_BACKEND_UNAVAILABLE') return failure('CREDENTIAL_UNAVAILABLE')
       return failure('CREDENTIAL_READ_FAILED')
     }
-    let token = credential.secret
-    const branch = await this.resolveUploadBranch(profile, token)
-    if (!branch) {
-      token = ''
-      return failure('REMOTE_BRANCH_UNRESOLVED')
-    }
+
+    const branch = await this.resolveUploadBranch(profile, credential.secret)
+    if (!branch) return failure('REMOTE_BRANCH_UNRESOLVED')
 
     let digest
     try {
       digest = await sha256File(input.filePath)
     } catch (error) {
-      token = ''
       return failure(classifyUploadThrownError(error))
     }
 
@@ -353,10 +405,39 @@ export class ImageUploadService {
       now: this.options.now?.() ?? new Date(),
     })
     const remotePath = joinRemotePath(profile.remoteDirectory, fileName)
-    if (!remotePath) {
-      token = ''
-      return failure('REMOTE_PATH_INVALID')
-    }
+    if (!remotePath) return failure('REMOTE_PATH_INVALID')
+
+    // 同一内容版本 + 同一目标仓库/分支/路径：并发任务只允许一条真实写入。
+    const key = [digest.sha256, profile.remoteProfileId, branch, remotePath].join('|')
+    const running = this.inFlight.get(key)
+    if (running) return running
+    const task = this.executeUpload({
+      input,
+      profile,
+      token: credential.secret,
+      branch,
+      digest,
+      originalFilename,
+      fileName,
+      remotePath,
+    }).finally(() => this.inFlight.delete(key))
+    this.inFlight.set(key, task)
+    return task
+  }
+
+  private async executeUpload(params: {
+    input: UploadLocalFileInput
+    profile: ImageRemoteProfile
+    token: string
+    branch: string
+    digest: { sha256: string; sizeBytes: number }
+    originalFilename: string
+    fileName: string
+    remotePath: string
+  }): Promise<UploadLocalFileResult> {
+    let token = params.token
+    const input = params.input
+    const { profile, branch, digest, originalFilename, fileName, remotePath } = params
 
     let assetId: string | null = null
     let taskId: string | null = null
@@ -372,6 +453,65 @@ export class ImageUploadService {
         assetId = upserted.asset.assetId
       } catch {
         return failure('INDEX_WRITE_FAILED')
+      }
+
+      // D2：先查找目标仓库/分支里是否已有同一内容版本。
+      // 命中则零上传直接复用；未命中或无法验证才继续真实上传。
+      let reuse: RemoteReuseHit | null = null
+      try {
+        reuse = await this.findReusableRemote({
+          profile,
+          branch,
+          token,
+          sha256: digest.sha256,
+          sizeBytes: digest.sizeBytes,
+          remotePath,
+        })
+      } catch {
+        reuse = null
+      }
+      if (reuse) {
+        let locationId: string | null = null
+        if (this.options.tasks) {
+          try {
+            const task = await this.options.tasks.enqueue({ kind: 'upload', assetId })
+            taskId = task.taskId
+          } catch {
+            taskId = null
+          }
+        }
+        try {
+          const updated = await this.options.assets.recordRemoteLocation({
+            assetId,
+            remoteProfileId: profile.remoteProfileId,
+            branch,
+            remotePath: reuse.remotePath,
+            remoteUrl: reuse.url,
+            remoteVersion: reuse.remoteVersion,
+            availability: 'available',
+          })
+          locationId = updated.locations.find(item => item.locator === reuse?.url)?.locationId ?? null
+        } catch { /* 复用结论已成立；索引写入失败只影响后续复用线索 */ }
+        if (taskId && this.options.tasks) {
+          try {
+            await this.options.tasks.update(taskId, {
+              status: 'succeeded',
+              attempt: 0,
+              locationId,
+              resultKind: 'REUSED_REMOTE',
+            })
+          } catch { /* 任务记录失败不影响复用结果 */ }
+        }
+        return {
+          ok: true,
+          url: reuse.url,
+          assetId,
+          remotePath: reuse.remotePath,
+          taskId,
+          resultKind: 'REUSED_REMOTE',
+          uploadTransfers: 0,
+          verification: reuse.verification,
+        }
       }
 
       if (this.options.tasks) {
@@ -411,7 +551,22 @@ export class ImageUploadService {
         })
         const output = await picgo.upload([stagedPath])
         const outcome = evaluatePicGoResult(output)
-        if (!outcome.ok) return this.failWithTask(outcome.errorCode, assetId, taskId)
+        if (!outcome.ok) {
+          // PicGo 3.x 失败时返回 Error；detail 只做展示，必须先把 Token 擦掉。
+          const detail = outcome.detail
+            ? (token ? outcome.detail.split(token).join('***') : outcome.detail)
+            : undefined
+          return this.failWithTask(outcome.errorCode, assetId, taskId, detail)
+        }
+
+        // 记录远端对象版本（Git blob SHA，不等于内容 SHA-256），供下次轻量校验。
+        let remoteVersion: string | null = null
+        if (this.remoteIndexEnabled) {
+          const request = this.options.githubRequest ?? defaultGitHubRequester
+          const version = await readRemoteFileVersion({ request, token, profile, branch }, remotePath)
+          remoteVersion = version?.gitSha ?? null
+        }
+        this.remoteIndexCache.delete(this.remoteIndexCacheKey(profile, branch))
 
         let location: ImageAssetRecord
         try {
@@ -421,6 +576,7 @@ export class ImageUploadService {
             branch,
             remotePath,
             remoteUrl: outcome.url,
+            remoteVersion,
             availability: 'available',
           })
         } catch {
@@ -437,12 +593,25 @@ export class ImageUploadService {
               status: 'succeeded',
               attempt: 1,
               locationId: recorded?.locationId ?? null,
+              resultKind: 'UPLOADED_NEW',
             })
           } catch { /* 任务记录失败不影响上传结果 */ }
         }
-        return { ok: true, url: outcome.url, assetId, remotePath, taskId }
+        return {
+          ok: true,
+          url: outcome.url,
+          assetId,
+          remotePath,
+          taskId,
+          resultKind: 'UPLOADED_NEW',
+          uploadTransfers: 1,
+          verification: 'NEW_UPLOAD',
+        }
       } catch (error) {
-        return this.failWithTask(classifyUploadThrownError(error), assetId, taskId)
+        const raw = error instanceof Error ? error.message : String(error)
+        const detail = raw.slice(0, 200)
+        const safe = token ? detail.split(token).join('***') : detail
+        return this.failWithTask(classifyUploadThrownError(error), assetId, taskId, safe)
       }
     } finally {
       // 凭据只活在本次上传的内存中：先清 Token，再丢弃实例与暂存文件。
@@ -458,6 +627,102 @@ export class ImageUploadService {
         try { await fs.rm(stagedDir, { recursive: true, force: true }) } catch { /* 暂存清理失败不影响源文件 */ }
       }
     }
+  }
+
+  /**
+   * 查找目标仓库/分支中与当前内容版本一致的远程图片。
+   *
+   * 顺序：
+   * 1. 本机索引中由墨章历史上传记录下来的位置（local SHA-256 + 上传结果）；
+   * 2. 目标目录的远程索引 + 候选内容 SHA-256 验证（覆盖其它工具上传的文件）。
+   * 无法证明一致时返回 null，绝不把“未找到”说成“已存在”。
+   */
+  private async findReusableRemote(input: {
+    profile: ImageRemoteProfile
+    branch: string
+    token: string
+    sha256: string
+    sizeBytes: number
+    remotePath: string
+  }): Promise<RemoteReuseHit | null> {
+    let assets: ImageAssetRecord[] = []
+    try {
+      assets = await this.options.assets.list()
+    } catch {
+      assets = []
+    }
+    for (const asset of assets) {
+      if (asset.sha256 !== input.sha256) continue
+      const location = asset.locations.find(item => item.type === 'github'
+        && item.remoteProfileId === input.profile.remoteProfileId
+        && item.remoteBranch === input.branch
+        && item.availability === 'available'
+        && !!item.locator
+        && isRemoteUrlForProfile(item.locator, input.profile)
+        && isRemotePathInDirectory(item.remotePath, input.profile.remoteDirectory))
+      if (location) {
+        return {
+          url: location.locator,
+          remotePath: location.remotePath || input.remotePath,
+          remoteVersion: location.remoteVersion,
+          verification: 'INDEX_RECORD',
+        }
+      }
+    }
+
+    if (!this.remoteIndexEnabled) return null
+    const index = await this.loadRemoteIndex(input.profile, input.branch, input.token)
+    if (!index.ok || index.entries.length === 0) return null
+
+    const request = this.options.githubRequest ?? defaultGitHubRequester
+    const match = await findRemoteContentBySha256({
+      request,
+      token: input.token,
+      profile: input.profile,
+      branch: input.branch,
+      entries: index.entries,
+      sha256: input.sha256,
+      sizeBytes: input.sizeBytes,
+    })
+    if (!match) return null
+    const url = buildRemoteImageUrl({
+      profile: input.profile,
+      branch: input.branch,
+      path: match.path,
+    })
+    if (!url) return null
+    return {
+      url,
+      remotePath: match.path,
+      remoteVersion: match.gitSha,
+      verification: 'REMOTE_CONTENT',
+    }
+  }
+
+  private remoteIndexCacheKey(profile: ImageRemoteProfile, branch: string): string {
+    return [profile.remoteProfileId, branch, profile.remoteDirectory].join('|')
+  }
+
+  /** 目录索引按 TTL 缓存；失败结果不缓存，下次上传重新尝试。 */
+  private async loadRemoteIndex(
+    profile: ImageRemoteProfile,
+    branch: string,
+    token: string,
+  ): Promise<RemoteDirectoryIndex> {
+    const key = this.remoteIndexCacheKey(profile, branch)
+    const cached = this.remoteIndexCache.get(key)
+    const now = Date.now()
+    if (cached && now - cached.fetchedAt < this.remoteIndexTtlMs) return cached.index
+    const request = this.options.githubRequest ?? defaultGitHubRequester
+    const index = await listRemoteImageEntries({
+      request,
+      token,
+      profile,
+      branch,
+      directory: profile.remoteDirectory,
+    })
+    if (index.ok) this.remoteIndexCache.set(key, { fetchedAt: now, index })
+    return index
   }
 
   /** 空分支时读取仓库真实默认分支；只读 API，不修改仓库。 */
@@ -534,7 +799,13 @@ export class ImageUploadService {
       customUrl: profile.urlStrategy === 'custom' ? profile.customUrlBase : '',
     })
     existing.picBed = { ...picBed, current: 'github', uploader: 'github', github }
-    existing.uploader = 'github'
+    // PicGo 3.x 的顶层 `uploader` 是对象（`{ github: { configList, defaultId } }`）。
+    // 覆盖成字符串会破坏其 uploader 配置读取，只在缺失或旧版字符串形态时写入。
+    existing.uploader = existing.uploader
+      && typeof existing.uploader === 'object'
+      && !Array.isArray(existing.uploader)
+      ? existing.uploader
+      : 'github'
     if (!existing.picgoPlugins || typeof existing.picgoPlugins !== 'object') existing.picgoPlugins = {}
 
     const temp = `${this.picgoConfigPath}.${process.pid}.${Date.now()}.tmp`
@@ -552,13 +823,19 @@ export class ImageUploadService {
     errorCode: ImageUploadErrorCode,
     assetId: string | null,
     taskId: string | null,
+    detail?: string,
   ): Promise<UploadLocalFileFailure> {
     if (taskId && this.options.tasks) {
       try {
-        await this.options.tasks.update(taskId, { status: 'failed', errorCode, attempt: 1 })
+        await this.options.tasks.update(taskId, {
+          status: 'failed',
+          errorCode,
+          attempt: 1,
+          errorDetail: detail ?? null,
+        })
       } catch { /* 任务写入失败不应掩盖原始上传错误 */ }
     }
-    return failure(errorCode, assetId, taskId)
+    return failure(errorCode, assetId, taskId, detail)
   }
 
   private resolveRemoteProfile(settings: ImageSettings) {

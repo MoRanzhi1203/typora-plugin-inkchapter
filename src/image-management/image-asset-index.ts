@@ -26,6 +26,7 @@ import {
   type AssetLocationRecord,
   type AssetStorageState,
   type AssetLocationType,
+  type LocalLocationVerification,
 } from './image-asset-model'
 
 export const IMAGE_INDEX_SCHEMA_VERSION = 2
@@ -134,6 +135,23 @@ export function guessMimeType(filename: string): string | null {
 export interface FileDigest {
   sha256: string
   sizeBytes: number
+}
+
+/**
+ * 校验本地位置仍对应当前资产内容。
+ *
+ * 只以重新计算的内容哈希为依据：文件名、mtime、大小与历史索引入口
+ * 都不能证明「还是同一张图」；不可读一律按不可用处理，避免错误复用。
+ */
+export async function verifyLocalLocationContent(
+  location: AssetLocationRecord,
+): Promise<LocalLocationVerification> {
+  try {
+    const digest = await sha256File(location.locator)
+    return digest.sha256 === location.sha256 ? 'verified' : 'content-changed'
+  } catch {
+    return 'missing'
+  }
 }
 
 /** 流式计算文件 SHA-256 与字节数（不把整张图读入内存）。 */

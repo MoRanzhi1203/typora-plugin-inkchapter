@@ -22,6 +22,26 @@ export type AssetLocationType = 'project' | 'library' | 'cache' | 'offline' | 'g
 export type AssetAvailability = 'available' | 'missing' | 'unknown'
 export type AssetStorageState = 'LOCAL_ONLY' | 'REMOTE_ONLY' | 'DUAL_AVAILABLE'
 
+/**
+ * 单个操作的真实结果类型。
+ *
+ * 必须区分「复用」与「传输」：同名、相同 alt、相同图号或仅 URL 存在
+ * 都不足以判为复用；只有经过内容校验的匹配才允许返回 REUSED_*。
+ */
+export type ReuseResultKind =
+  | 'REUSED_LOCAL'
+  | 'REUSED_REMOTE'
+  | 'COPIED_EXISTING_LOCAL'
+  | 'UPLOADED_NEW'
+  | 'DOWNLOADED_NEW'
+  | 'ALREADY_LINKED'
+  | 'NAME_CONFLICT'
+  | 'NOT_VERIFIED'
+  | 'TRANSFER_FAILED'
+
+/** 本地位置的内容校验结果；`content-changed` 表示文件已被替换，不能再当作同一资产。 */
+export type LocalLocationVerification = 'verified' | 'missing' | 'content-changed'
+
 /** 一个资产在某处的具体落点。 */
 export interface AssetLocationRecord {
   locationId: string
@@ -138,6 +158,19 @@ export function pickReusableLocalLocation(
     if (found) return found
   }
   return null
+}
+
+/** 按复用优先级列出全部候选本地位置；调用方仍需逐个做内容校验。 */
+export function listLocalLocationsByReuseOrder(
+  locations: readonly AssetLocationRecord[],
+): AssetLocationRecord[] {
+  const out: AssetLocationRecord[] = []
+  for (const type of LOCAL_REUSE_ORDER) {
+    for (const location of locations) {
+      if (location.type === type && location.availability === 'available') out.push(location)
+    }
+  }
+  return out
 }
 
 export type ResolvedImageDestinationKind =
@@ -257,6 +290,10 @@ export interface TransferTask {
   maxAttempts: number
   /** 错误分类码，不保存凭据或响应正文。 */
   errorCode: string | null
+  /** 脱敏后的异常摘要（最多 200 字符），仅用于本机诊断。 */
+  errorDetail?: string | null
+  /** 任务真实结果：复用 / 新传输 / 失败；用于诊断与批量汇总。 */
+  resultKind?: ReuseResultKind | null
   createdAt: string
   updatedAt: string
 }

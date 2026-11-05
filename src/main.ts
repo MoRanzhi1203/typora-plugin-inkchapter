@@ -27,8 +27,8 @@ import { ImageDownloadService } from './image-management/image-download-service'
 import { downloadDocumentRemoteImages } from './image-management/document-remote-download'
 import { ImageContextMenuDownload } from './image-management/image-context-menu-download'
 import {
+  applyReferenceDestination,
   relativeMarkdownImagePath,
-  rewriteReferenceDestination,
   selectMarkdownImageReference,
 } from './image-management/image-reference-rewrite'
 import {
@@ -387,19 +387,31 @@ export default class extends Plugin<InkChapterSettings> {
     if (!result.ok || !result.filePath) {
       return { ok: false, message: result.message }
     }
+    let alreadyLinked = false
     if (input.replaceReference) {
       const rewrite = this.rewriteImageReferenceToLocal(input.img, result.filePath)
       if (!rewrite.ok) {
         return { ok: false, message: `图片已下载，但 Markdown 引用替换失败：${rewrite.reason}` }
       }
+      alreadyLinked = rewrite.resultKind === 'ALREADY_LINKED'
     }
+    const action = result.resultKind === 'REUSED_LOCAL'
+      ? '本地已有相同图片，已直接复用，无需重复下载'
+      : result.resultKind === 'COPIED_EXISTING_LOCAL'
+        ? '已复用本地已有图片并复制到目标目录，无需联网下载'
+        : '已下载新图片'
+    const referenceNote = !input.replaceReference
+      ? ''
+      : alreadyLinked
+        ? '，当前引用已正确，无需修改'
+        : '，并已更新当前图片引用'
     return {
       ok: true,
-      message: input.replaceReference ? '已下载并替换为本地引用' : `已下载：${path.basename(result.filePath)}`,
+      message: `${action}${referenceNote}${input.replaceReference ? '' : `：${path.basename(result.filePath)}`}`,
     }
   }
 
-  /** 原生图片右键菜单「下载图片（墨章）」：下载到文档图片目录并替换当前引用。 */
+  /** 原生图片右键菜单「下载并转为本地引用（墨章）」：复用/下载后只改当前引用。 */
   private async downloadImageFromContextMenu(img: HTMLImageElement): Promise<void> {
     const wrapper = img.closest<HTMLElement>('.md-image')
     const url = wrapper?.getAttribute('data-src')?.trim() || img.getAttribute('src')?.trim() || ''
@@ -443,7 +455,8 @@ export default class extends Plugin<InkChapterSettings> {
       Notice.info('墨章：本文档没有远程图片')
       return
     }
-    const detail = `下载 ${summary.downloaded} 张，复用 ${summary.reused} 张，失败 ${summary.failed} 张`
+    const detail = `复用 ${summary.reused} 张、实际下载 ${summary.downloaded} 张、本地复制 ${summary.copied} 张、`
+      + `失败 ${summary.failed} 张（网络传输 ${summary.networkTransfers} 次）`
     if (summary.failed > 0) {
       Notice.error(`墨章：${detail}；Markdown 未改动，失败项可重试`)
     } else {
@@ -455,7 +468,7 @@ export default class extends Plugin<InkChapterSettings> {
   private rewriteImageReferenceToLocal(
     img: HTMLImageElement,
     filePath: string,
-  ): { ok: boolean; reason?: string } {
+  ): { ok: boolean; reason?: string; resultKind?: 'ALREADY_LINKED' | 'REWRITTEN' } {
     const documentPath = this.app.workspace.activeFile
     if (!documentPath) return { ok: false, reason: 'NO_ACTIVE_DOCUMENT' }
     const markdown = editor.getMarkdown()
@@ -469,15 +482,18 @@ export default class extends Plugin<InkChapterSettings> {
       occurrenceIndex: this.remoteImageOccurrenceIndex(img),
     })
     if (!selection.reference) return { ok: false, reason: selection.reason ?? 'NO_REFERENCE' }
-    const next = rewriteReferenceDestination(
+    const outcome = applyReferenceDestination(
       markdown,
       selection.reference,
       relativeMarkdownImagePath(documentPath, filePath),
     )
-    if (!next) return { ok: false, reason: 'INVALID_DESTINATION_RANGE' }
+    if (!outcome) return { ok: false, reason: 'INVALID_DESTINATION_RANGE' }
+    // 目标引用已经正确：返回 ALREADY_LINKED，不触发重载，避免无意义的正文
+    // 写入与撤销栈污染（alt / 图号 / 图名保持不变）。
+    if (outcome.kind === 'ALREADY_LINKED') return { ok: true, resultKind: 'ALREADY_LINKED' }
     // 第三参数 false：保留 Typora 撤销历史（与现有安全写回路径一致）。
-    File.reloadContent(next, false, false, false, true)
-    return { ok: true }
+    File.reloadContent(outcome.markdown, false, false, false, true)
+    return { ok: true, resultKind: 'REWRITTEN' }
   }
 
   /** 让 Typora 原生「上传图片」调用墨章 CLI（可逆：写入前自动备份 profile.data）。 */
@@ -587,7 +603,10 @@ export default class extends Plugin<InkChapterSettings> {
       await navigator.clipboard.writeText(result.url)
       copied = true
     } catch { /* 剪贴板不可用时仍展示 URL */ }
-    Notice.info(`墨章：上传成功${copied ? '，URL 已复制' : ''}：${result.url}`)
+    const action = result.resultKind === 'REUSED_REMOTE'
+      ? 'GitHub 已有相同图片，已直接复用云端链接，无需重复上传（0 次上传）'
+      : '已上传新图片（1 次上传）'
+    Notice.info(`墨章：${action}${copied ? '，URL 已复制' : ''}：${result.url}`)
   }
 
   /**

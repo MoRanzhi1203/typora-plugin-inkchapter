@@ -1530,7 +1530,9 @@ export function computeSourceOccurrenceOrdinals(
   for (let i = 0; i < links.length; i++) {
     const l = links[i]
     if (l.resourceKind !== 'image') continue
-    if (!isLocalRelativePath(l.target)) continue
+    // 远程 URL 与本地相对路径一样需要 occurrence 身份：
+    // 两个相同 URL 的引用必须得到不同的 rawLineOrdinal，
+    // 否则定位器会把第二处再次绑定到第一个 DOM 块，命中第一张图片。
     const lineText = normalizeSourceAnchorText(l.rawText ?? '')
     const lineKey = `${lineText}\u0000${l.startLine ?? -1}`
     let blockOrdinal = blockOrdinalByLine.get(lineKey)

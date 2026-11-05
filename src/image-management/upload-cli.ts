@@ -99,6 +99,12 @@ async function main(): Promise<void> {
       process.exitCode = 1
       return
     }
+    // 只写 stderr：Typora 只读 stdout 末尾的 URL；复用必须如实标注，不能冒充新上传。
+    process.stderr.write(
+      result.resultKind === 'REUSED_REMOTE'
+        ? `墨章上传器：已有图片，已直接复用，无需重复上传（0 次上传）→ ${result.url}\n`
+        : `墨章上传器：已上传新图片（1 次上传）→ ${result.url}\n`,
+    )
     urls.push(result.url)
   }
 
