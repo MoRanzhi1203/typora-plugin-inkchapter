@@ -2,7 +2,7 @@
 
 本文件记录墨章 InkChapter 面向用户的真实变更。
 
-- 版本号取自 `package.json` / `src/manifest.json`（当前 `0.1.0-alpha.1`）。项目**没有**发布版 git tag（唯一的 tag 是基线标记 `formula-render-restored-baseline-20260821`），因此不虚构 release 版本号。
+- 版本号取自 `package.json` / `src/manifest.json`（当前 `0.1.0-alpha.1`）。项目**没有**正式发布版本号；现有 git tag 为基线标记 `formula-render-restored-baseline-20260821` 与本地存档标记 `v5.1-document-status-image-batch-20261106`，因此不虚构 release 版本号。
 - 多轮反复修复同一问题的历史工作已**压缩为一条**用户可理解的记录；失败尝试只出现在模块文档的"历史设计决策"与 [docs/maintenance/prompt-consolidation-record.md](docs/maintenance/prompt-consolidation-record.md)，不进入本文件。
 - 仅由提示词提出、当前代码未实现的能力**不在此**，见 [docs/roadmap/known-gaps-and-deferred-work.md](docs/roadmap/known-gaps-and-deferred-work.md)。
 
