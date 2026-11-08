@@ -20668,6 +20668,9 @@ export class DocumentUtilityOverlayHost {
       ])
       const full = identityChanged || DOC_SWITCH_REASONS.has(reason)
       if (full) {
+        // V5.2 — a real document switch collapses the expandable toolbar and
+        // drops the previous document's detail list.
+        this.documentHub?.close()
         this.authorityReady = { canonical: false, caption: false }
         if (/CANONICAL/i.test(reason)) this.authorityReady.canonical = true
         this.cancelScrollOperation('CANCELLED_DOCUMENT_SWITCH')
@@ -22717,11 +22720,11 @@ export class DocumentUtilityOverlayHost {
       actions: {
         recheck: () => { void this.diagnostics.recompute('DOCUMENT_HUB_RECHECK') },
         toggleLock: () => this.toggleLock(),
-        openDiagnostics: () => this.openDrawer('all'),
         uploadAll: () => { this.opts.documentHub?.uploadAll() },
         downloadAll: () => { this.opts.documentHub?.downloadAll() },
         dualLink: () => { this.opts.documentHub?.checkDualLink() },
         openImageSettings: () => { this.opts.documentHub?.openImageSettings() },
+        locateDiagnostic: (diagnosticId) => this.locateDiagnostic(diagnosticId),
       },
       getHint: () => this.opts.documentHub?.getHint?.() ?? null,
     })
@@ -22885,6 +22888,11 @@ export class DocumentUtilityOverlayHost {
    * V5.1 — push the authoritative status into the ONE status square / hub.
    * Called on every diagnostics publish, document switch and lock transition.
    */
+
+  /**
+   * V5.1 — push the authoritative status into the ONE status square / hub.
+   * Called on every diagnostics publish, document switch and lock transition.
+   */
   private refreshDocumentHub(): void {
     try {
       this.refreshDocumentHubUnsafe()
@@ -22918,6 +22926,12 @@ export class DocumentUtilityOverlayHost {
     }
     const view = buildDocumentStatusView(facts, locked)
     const image = this.opts.documentHub?.getImageSummary?.() ?? null
+    // V5.2 — 检测详情视图直接消费当前快照，不再打开旧诊断浮窗。
+    const diagnostics = (this.snapshot?.diagnostics ?? []).map(d => ({
+      id: d.id,
+      severity: (d.severity === 'error' || d.severity === 'warning' ? d.severity : 'info') as 'error' | 'warning' | 'hint' | 'info',
+      message: d.message,
+    }))
     const model = buildDocumentHubModel({
       documentPath,
       saved: documentPath != null,
@@ -22925,6 +22939,7 @@ export class DocumentUtilityOverlayHost {
       locked,
       image,
       diagnosticsAvailable: true,
+      diagnostics,
     })
     hub.update(view, model)
   }
@@ -23028,6 +23043,7 @@ export class DocumentUtilityOverlayHost {
     else if (transition === 'UNLOCK') this.editGuard.unlock()
     this.refreshDocumentHub()
   }
+
 
   private lockState = new Map<string, boolean>()
 

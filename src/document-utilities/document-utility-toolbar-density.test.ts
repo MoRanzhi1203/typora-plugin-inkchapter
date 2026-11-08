@@ -234,12 +234,12 @@ describe('TB-DENSITY-4 one status/action shell', () => {
   it('the status square frame is drawn by CSS, never by inline borders', () => {
     mountHost()
     const square = document.querySelector('.inkchapter-doc-status') as HTMLElement
-    const frame = document.querySelector('.inkchapter-doc-status__frame') as HTMLElement
+    const frame = document.querySelector('.inkchapter-doc-status__lock-frame') as HTMLElement
     expect(square.style.borderLeft).toBe('')
     expect(square.style.borderRight).toBe('')
     expect(frame.style.borderLeft).toBe('')
     expect(frame.style.borderRight).toBe('')
-    const frameBodies = ruleBodies('.inkchapter-doc-status__frame').join('\n')
+    const frameBodies = ruleBodies('.inkchapter-doc-status__lock-frame').join('\n')
     expect(frameBodies).toMatch(/border/)
   })
 })
@@ -250,17 +250,20 @@ describe('TB-DENSITY-6/9 edit-lock semantics + locked state', () => {
     write.id = 'write'
     write.setAttribute('contenteditable', 'true')
     document.body.appendChild(write)
-    mountHost()
+    const h = mountHost()
     const square = document.querySelector('.inkchapter-doc-status') as HTMLButtonElement
     expect(square.classList.contains('is-locked')).toBe(false)
-    square.click()
-    const lockButton = Array.from(document.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-hub__button'))
+    const hub = (h as unknown as { documentHub: { open(): void; switchTab(tab: 'lock'): void; getPanelElement(): HTMLElement | null } }).documentHub
+    hub.open()
+    hub.switchTab('lock')
+    const panel = hub.getPanelElement()!
+    const lockButton = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
       .find(btn => btn.textContent === '锁定文档')
     expect(lockButton).toBeTruthy()
     lockButton!.click()
     expect(square.classList.contains('is-locked')).toBe(true)
     // 面板在锁定后重建为“解锁文档”
-    const unlock = Array.from(document.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-hub__button'))
+    const unlock = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
       .find(btn => btn.textContent === '解锁文档')
     expect(unlock).toBeTruthy()
     unlock!.click()

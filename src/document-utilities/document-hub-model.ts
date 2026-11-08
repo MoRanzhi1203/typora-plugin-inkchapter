@@ -23,6 +23,17 @@ export interface DocumentHubImageSummary {
   scopeSource: ImageScopeSource
   scopeLabel: string
   projectDirectory: string | null
+  /** 当前生效的 Typora 原生插入方式（只读展示）。 */
+  insertionModeText?: string
+  /** 自动同步状态（自动上传 / 自动本地化）。 */
+  autoSyncText?: string
+}
+
+/** 检测标签详情视图的一行（来自真实诊断快照）。 */
+export interface DocumentHubDiagnosticItem {
+  id: string
+  severity: 'error' | 'warning' | 'hint' | 'info'
+  message: string
 }
 
 export interface DocumentHubModelInput {
@@ -33,6 +44,8 @@ export interface DocumentHubModelInput {
   image: DocumentHubImageSummary | null
   /** 检测功能是否可用（诊断服务就绪）。 */
   diagnosticsAvailable: boolean
+  /** 当前文档诊断列表（详情视图；缺省为空）。 */
+  diagnostics?: readonly DocumentHubDiagnosticItem[]
 }
 
 export interface DocumentHubActionAvailability {
@@ -55,6 +68,8 @@ export interface DocumentHubModel {
   actions: DocumentHubActionAvailability
   /** 顶部一句摘要。 */
   headline: string
+  /** 检测标签详情视图的数据源（真实诊断快照）。 */
+  diagnostics: readonly DocumentHubDiagnosticItem[]
 }
 
 export function buildDocumentHubModel(input: DocumentHubModelInput): DocumentHubModel {
@@ -75,12 +90,13 @@ export function buildDocumentHubModel(input: DocumentHubModelInput): DocumentHub
       recheck: input.diagnosticsAvailable,
       toggleLock: hasDocument,
       openDiagnostics: hasDocument,
-      uploadAll: canReadImages && !input.locked,
-      downloadAll: canReadImages,
-      dualLink: canReadImages,
+      uploadAll: canReadImages && !input.locked && (input.image?.pendingUploadCount ?? 0) > 0,
+      downloadAll: canReadImages && (input.image?.pendingDownloadCount ?? 0) > 0,
+      dualLink: canReadImages && (input.image?.referenceCount ?? 0) > 0,
       openImageSettings: true,
     },
     headline: input.status.label,
+    diagnostics: input.diagnostics ?? [],
   }
 }
 

@@ -99,8 +99,11 @@ describe('INTERACTION-2 lock blocks edits, allows selection/copy/scroll, unlock 
     document.body.appendChild(write)
     const h = mountHost()
     const status = document.querySelector('.inkchapter-doc-status') as HTMLButtonElement
-    status.click()
-    const lock = Array.from(document.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-hub__button'))
+    const hub = (h as unknown as { documentHub: { open(): void; switchTab(tab: 'lock'): void; getPanelElement(): HTMLElement | null } }).documentHub
+    hub.open()
+    hub.switchTab('lock')
+    const panel = hub.getPanelElement()!
+    const lock = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
       .find(btn => btn.textContent === '锁定文档')!
     lock.click()
     expect(status.classList.contains('is-locked')).toBe(true)
@@ -139,7 +142,7 @@ describe('INTERACTION-2 lock blocks edits, allows selection/copy/scroll, unlock 
     expect(write.style.pointerEvents).not.toBe('none')
 
     // Unlock restores.
-    const unlock = Array.from(document.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-hub__button'))
+    const unlock = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
       .find(btn => btn.textContent === '解锁文档')!
     unlock.click()
     expect(status.classList.contains('is-locked')).toBe(false)

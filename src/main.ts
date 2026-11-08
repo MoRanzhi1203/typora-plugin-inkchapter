@@ -264,6 +264,23 @@ function subscribeActiveTabsTabToggle(
   }
 }
 
+/** V5.2 — 当前生效的 Typora 原生插入方式（只读展示，绝不改变原生行为）。 */
+function describeTyporaInsertionMode(settings: ImageSettings): string {
+  if (settings.uploadService === 'github') return '上传图片（GitHub）'
+  const dir = settings.documentResourceDirectory
+  if (dir === '' || dir === '.' || dir === './') return '复制到当前文件夹 ./'
+  if (dir === 'assets' || dir === './assets') return '复制到 ./assets'
+  if (dir.includes('${filename}.assets')) return '复制到 ./${filename}.assets'
+  return `复制到指定路径（${dir}）`
+}
+
+function describeAutoSync(settings: ImageSettings): string {
+  const parts: string[] = []
+  if (settings.autoUpload) parts.push('自动上传')
+  if (settings.autoLocalizeOnInsert) parts.push('自动本地化')
+  return parts.length > 0 ? parts.join(' / ') : '关闭'
+}
+
 export default class extends Plugin<InkChapterSettings> {
 
   private numberingService?: HeadingNumberingService
@@ -387,6 +404,8 @@ export default class extends Plugin<InkChapterSettings> {
       scopeSource: this.activeImageScopeSource,
       scopeLabel: this.activeImageScopeLabel,
       projectDirectory,
+      insertionModeText: describeTyporaInsertionMode(settings),
+      autoSyncText: describeAutoSync(settings),
     }
   }
 

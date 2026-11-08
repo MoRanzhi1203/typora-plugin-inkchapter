@@ -102,22 +102,28 @@ describe('UI-OVERLAY-3 outside Markdown business content', () => {
 })
 
 describe('UI-OVERLAY-4 drawer open/close does not touch document content', () => {
-  it('opening the drawer mutates only the overlay root, not #write', () => {
+  it('the toolbar details stay inside one container; the drawer itself never mutates #write', () => {
     const write = document.createElement('div')
     write.id = 'write'
     write.innerHTML = '<h1>标题</h1><p>正文</p>'
     document.body.appendChild(write)
     const h = mountHost()
     const before = write.innerHTML
-    const status = document.querySelector('.inkchapter-doc-status') as HTMLButtonElement
-    expect(status).toBeTruthy()
-    status.click()
-    const details = Array.from(document.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-hub__button'))
-      .find(btn => btn.textContent === '查看详情')
+    const hub = (h as unknown as { documentHub: { open(): void; getPanelElement(): HTMLElement | null } }).documentHub
+    hub.open()
+    const panel = hub.getPanelElement()!
+    const details = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
+      .find(btn => btn.textContent === '详情')
     expect(details).toBeTruthy()
     details!.click()
-    expect(document.querySelector('.inkchapter-doc-drawer')!.getAttribute('style')).toContain('display: flex')
+    // V5.2 — 详情在工具栏内部切换，绝不打开旧诊断浮窗。
+    expect(document.querySelector('.inkchapter-doc-drawer')!.getAttribute('style')).toContain('display: none')
+    expect(panel.querySelectorAll('.inkchapter-doc-expand__diag').length).toBeGreaterThanOrEqual(0)
     expect(write.innerHTML).toBe(before) // zero Markdown mutation
+
+    ;(h as unknown as { openDrawer(filter: string): void }).openDrawer('all')
+    expect(document.querySelector('.inkchapter-doc-drawer')!.getAttribute('style')).toContain('display: flex')
+    expect(write.innerHTML).toBe(before)
     const closeBtn = document.querySelector<HTMLButtonElement>('.inkchapter-doc-drawer__action--close')!
     closeBtn.click()
     expect(document.querySelector('.inkchapter-doc-drawer')!.getAttribute('style')).toContain('display: none')
@@ -131,16 +137,19 @@ describe('UI-OVERLAY document hub lock + per-document state', () => {
     write.id = 'write'
     write.setAttribute('contenteditable', 'true')
     document.body.appendChild(write)
-    mountHost()
+    const h = mountHost()
     const status = document.querySelector('.inkchapter-doc-status') as HTMLButtonElement
     expect(status.classList.contains('is-locked')).toBe(false)
-    status.click()
-    const lock = Array.from(document.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-hub__button'))
+    const hub = (h as unknown as { documentHub: { open(): void; switchTab(tab: 'lock'): void; getPanelElement(): HTMLElement | null } }).documentHub
+    hub.open()
+    hub.switchTab('lock')
+    const panel = hub.getPanelElement()!
+    const lock = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
       .find(btn => btn.textContent === '锁定文档')
     expect(lock).toBeTruthy()
     lock!.click()
     expect(status.classList.contains('is-locked')).toBe(true)
-    const unlock = Array.from(document.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-hub__button'))
+    const unlock = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
       .find(btn => btn.textContent === '解锁文档')
     expect(unlock).toBeTruthy()
     unlock!.click()
