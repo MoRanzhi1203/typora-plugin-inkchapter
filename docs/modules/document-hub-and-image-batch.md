@@ -91,6 +91,22 @@ V5.1/V5.2 的状态方块与标签栏都挂在这个容器内，所以只改内�
 - 点击行：调用 host 既有 `locateDiagnostic(diagnosticId)` 真实定位事务，随后收起工具栏。
 - 列表独立滚动（`max-height: min(380px, 可用面板高度 - 64px)`），空快照显示 `未发现问题`。
 
+### §3.2 状态权威（V5.2 STATUS-AUTHORITY）
+
+- 方块颜色与列表/筛选计数来自**同一份已准入快照**：列表先经 `selectDocumentDiagnostics`
+  （document 域）过滤，计数直接由列表条目派生；不再用第二套 projection 计数。
+- 颜色优先级（`resolveDocumentStatusCode`）：
+  1. 无文档 / 检测关闭 / 检测中 / 无投影 → GRAY `#89919b`
+  2. error > 0 → RED `#d55050`
+  3. warning > 0 → YELLOW `#d49320`（结构未验证也绝不吞掉已知警告）
+  4. hint > 0 → HINT `#637f96`（提示专用色，不冒充警告）
+  5. 0/0/0：结构已验证 → GREEN `#2e9869`；未验证 → GRAY（不冒充健康）
+- 文档身份防御：`snapshot.documentKey !== 当前 documentKey` 时视为 stale（GRAY + 空列表）；
+  正常准入由 `admitDiagnosticsSnapshot` 按 documentKey + revision 丢弃迟到结果。
+- 锁定只改外框（`currentColor` 细线），不参与颜色判定。
+- 回归：`document-hub-status-authority-v1.test.ts`（unverified+warning=YELLOW、颜色矩阵、
+  A→B→A、stale 隔离）+ `document-status-indicator.test.ts`。
+
 ## §4 图片标签与约束
 
 - 未启用：一行「图片管理未启用」+ 配置。

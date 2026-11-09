@@ -10,7 +10,7 @@
  * 锁定是**独立状态**：不改变检测颜色，只在外围加一圈外框。
  */
 
-export type DocumentStatusCode = 'GREEN' | 'YELLOW' | 'RED' | 'GRAY'
+export type DocumentStatusCode = 'GREEN' | 'YELLOW' | 'RED' | 'HINT' | 'GRAY'
 
 export interface DocumentStatusFacts {
   /** 是否有活动文档（已保存的 Markdown 才参与文档管理）。 */
@@ -43,18 +43,27 @@ export const DOCUMENT_STATUS_COLORS: Readonly<Record<DocumentStatusCode, string>
   GREEN: '#2e9869',
   YELLOW: '#d49320',
   RED: '#d55050',
+  HINT: '#637f96',
   GRAY: '#89919b',
 }
 
-/** 纯状态判定：GRAY 优先于一切，错误优先于警告。 */
+/**
+ * 纯状态判定。优先级（与列表计数共用同一快照）：
+ *   1. 无文档 / 检测关闭 / 检测中 / 无投影 → GRAY（未知）
+ *   2. error > 0 → RED
+ *   3. warning > 0 → YELLOW（即使结构未验证，已知警告也绝不被灰色吞掉）
+ *   4. hint > 0 → HINT（提示专用色，绝不冒充警告）
+ *   5. 0/0/0：结构已验证 → GREEN；未验证 → GRAY（不冒充健康）
+ */
 export function resolveDocumentStatusCode(facts: DocumentStatusFacts): DocumentStatusCode {
   if (!facts.hasDocument) return 'GRAY'
   if (!facts.diagnosticsEnabled) return 'GRAY'
   if (facts.checking) return 'GRAY'
-  if (!facts.structuralVerified) return 'GRAY'
   if (!facts.hasProjection) return 'GRAY'
   if (facts.errorCount > 0) return 'RED'
   if (facts.warningCount > 0) return 'YELLOW'
+  if (facts.hintCount > 0) return 'HINT'
+  if (!facts.structuralVerified) return 'GRAY'
   return 'GREEN'
 }
 
@@ -62,6 +71,7 @@ const STATUS_LABELS: Readonly<Record<DocumentStatusCode, string>> = {
   GREEN: '文档检测：未发现问题',
   YELLOW: '文档检测：存在警告',
   RED: '文档检测：存在错误',
+  HINT: '文档检测：存在提示',
   GRAY: '文档检测：未检查或不可用',
 }
 
@@ -76,7 +86,7 @@ export function buildDocumentStatusView(
   const base = STATUS_LABELS[code]
   const counts = code === 'GRAY'
     ? ''
-    : `（错误 ${facts.errorCount} / 警告 ${facts.warningCount}）`
+    : `（错误 ${facts.errorCount} / 警告 ${facts.warningCount} / 提示 ${facts.hintCount}）`
   return {
     code,
     color: DOCUMENT_STATUS_COLORS[code],

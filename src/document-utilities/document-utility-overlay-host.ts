@@ -22914,22 +22914,18 @@ export class DocumentUtilityOverlayHost {
     const documentPath =
       (this.opts.ctx.authority as { getActiveFilePath?: () => string | null }).getActiveFilePath?.() ?? null
     const locked = documentKey != null ? (this.lockState.get(documentKey) ?? false) : false
-    const noDoc = state.state === 'NO_ACTIVE_DOCUMENT' || state.state === 'EMPTY_DOCUMENT' || !projection.hasProjection
-    const facts = {
-      hasDocument: documentPath != null,
-      diagnosticsEnabled: true,
-      checking: false,
-      structuralVerified: this.snapshot?.structuralVerified !== false,
-      hasProjection: projection.hasProjection && !noDoc,
-      errorCount: projection.errorCount,
-      warningCount: projection.warningCount,
-      hintCount: projection.hintCount,
-    }
-    const view = buildDocumentStatusView(facts, locked)
-    const image = this.opts.documentHub?.getImageSummary?.() ?? null
-    // V5.2 — 检测列表直接消费「目标投影 + 文档位置排序 + 既有文案」权威：
-    // 目标组/多目标单行规则与排序完全复用历史实现，不重新计算诊断。
-    const snapshotDiagnostics = this.snapshot?.diagnostics ?? []
+    // V5.2 STATUS-AUTHORITY — a snapshot that belongs to ANOTHER document can
+    // never paint the current document's list/square. Admission already rejects
+    // those results; this is the presentation-side defense so a transitional
+    // frame shows GRAY/empty instead of the previous document's warning color.
+    const snapshotStale = this.snapshot?.documentKey != null
+      && documentKey != null
+      && this.snapshot.documentKey !== documentKey
+    const noDoc = snapshotStale || state.state === 'NO_ACTIVE_DOCUMENT' || !projection.hasProjection
+    // V5.2 STATUS-AUTHORITY — the visible list and the square counts come from
+    // the SAME admitted snapshot and the SAME document-domain projection.
+    // Duplicate/stale runtime diagnostics can no longer inflate one of them.
+    const snapshotDiagnostics = noDoc ? [] : selectDocumentDiagnostics(this.snapshot?.diagnostics ?? [])
     const diagnosticsById = new Map(snapshotDiagnostics.map(d => [d.id, d]))
     const projections = sortProjectionsByDocumentPosition(
       flattenDiagnosticsToProjections(snapshotDiagnostics),
@@ -22953,6 +22949,26 @@ export class DocumentUtilityOverlayHost {
         targetCount: projection.targetCount,
       }
     })
+    // Counts derive from the rendered list itself: the overview ("N 项警告"),
+    // the filter counts and the square color share ONE source of truth.
+    const counts = { error: 0, warning: 0, hint: 0 }
+    for (const item of diagnostics) {
+      if (item.severity === 'error') counts.error++
+      else if (item.severity === 'warning') counts.warning++
+      else counts.hint++
+    }
+    const facts = {
+      hasDocument: documentPath != null,
+      diagnosticsEnabled: true,
+      checking: false,
+      structuralVerified: this.snapshot?.structuralVerified !== false,
+      hasProjection: projection.hasProjection && !noDoc,
+      errorCount: counts.error,
+      warningCount: counts.warning,
+      hintCount: counts.hint,
+    }
+    const view = buildDocumentStatusView(facts, locked)
+    const image = this.opts.documentHub?.getImageSummary?.() ?? null
     const model = buildDocumentHubModel({
       documentPath,
       saved: documentPath != null,

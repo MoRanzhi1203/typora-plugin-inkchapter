@@ -38,16 +38,30 @@ describe('resolveDocumentStatusCode', () => {
     expect(resolveDocumentStatusCode(facts({ warningCount: 2 }))).toBe('YELLOW')
   })
 
-  it('returns GRAY when no document / diagnostics off / checking / unverified', () => {
+  it('returns GRAY when no document / diagnostics off / checking / no projection', () => {
     expect(resolveDocumentStatusCode(facts({ hasDocument: false }))).toBe('GRAY')
     expect(resolveDocumentStatusCode(facts({ diagnosticsEnabled: false }))).toBe('GRAY')
     expect(resolveDocumentStatusCode(facts({ checking: true }))).toBe('GRAY')
-    expect(resolveDocumentStatusCode(facts({ structuralVerified: false }))).toBe('GRAY')
     expect(resolveDocumentStatusCode(facts({ hasProjection: false }))).toBe('GRAY')
   })
 
-  it('does not treat hints as warnings', () => {
-    expect(resolveDocumentStatusCode(facts({ hintCount: 4 }))).toBe('GREEN')
+  it('known severities win over an unverified structure; only 0/0/0 unverified is GRAY', () => {
+    expect(resolveDocumentStatusCode(facts({ structuralVerified: false, errorCount: 1 }))).toBe('RED')
+    expect(resolveDocumentStatusCode(facts({ structuralVerified: false, warningCount: 1 }))).toBe('YELLOW')
+    expect(resolveDocumentStatusCode(facts({ structuralVerified: false, hintCount: 2 }))).toBe('HINT')
+    expect(resolveDocumentStatusCode(facts({ structuralVerified: false }))).toBe('GRAY')
+  })
+
+  it('uses the dedicated hint color when only hints exist', () => {
+    expect(resolveDocumentStatusCode(facts({ hintCount: 4 }))).toBe('HINT')
+    expect(buildDocumentStatusView(facts({ hintCount: 4 }), false).color).toBe('#637f96')
+  })
+
+  it('keeps the lock outline independent from every severity color', () => {
+    const locked = buildDocumentStatusView(facts({ warningCount: 1 }), true)
+    expect(locked.code).toBe('YELLOW')
+    expect(locked.color).toBe('#d49320')
+    expect(locked.label).toContain('已锁定')
   })
 })
 
