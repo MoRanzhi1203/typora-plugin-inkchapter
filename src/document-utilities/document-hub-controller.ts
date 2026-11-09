@@ -6,14 +6,11 @@
  *   ├─ .inkchapter-doc-expand__row        (横向：标签栏 + 状态方块)
  *   │   ├─ .inkchapter-doc-expand__tabs   (检测｜图片｜锁定，仅在展开时显示)
  *   │   └─ button.inkchapter-doc-status   (12px 纯色方块 + 32px 透明热区)
- *   └─ .inkchapter-doc-expand__panel      (唯一内容区，仅选中标签时显示，最小高度)
+ *   └─ .inkchapter-doc-expand__panel      (唯一内容区，仅选中标签时显示)
  *
- * 交互：
- *   - 收起：只有方块。
- *   - 单击方块：标签栏从方块左侧展开（默认选中检测，内容区为一行紧凑摘要）。
- *   - 再点当前标签：内容区收起（标签栏保留）；点其他标签切换。
- *   - 再次单击方块 / Esc / 外部点击 / 文档切换：整体收起。
- *   - 双击方块：只切换真实锁定（手势仲裁，不触发展开/收起）。
+ * V5.2 修订：检测标签不再有「摘要 → 详情」过渡页，展开后直接渲染诊断列表；
+ * 列表行来自 host 提供的「目标投影 + 文档位置排序 + 既有文案」权威，仅做视图
+ * 层严重级别筛选，不重新计算诊断。
  */
 import type { DocumentHubDiagnosticItem, DocumentHubModel } from './document-hub-model'
 import { explainBatchActionDisabled } from './document-hub-model'
@@ -21,7 +18,7 @@ import type { DocumentStatusView } from './document-status-indicator'
 
 export type DocumentToolbarTab = 'diagnostics' | 'images' | 'lock'
 export type DocumentToolbarMode = 'collapsed' | 'expanded'
-export type DocumentDetailView = 'summary' | 'diagnostic-details'
+export type DiagnosticSeverityFilter = 'all' | 'error' | 'warning' | 'info'
 
 export interface DocumentHubActions {
   recheck(): void
@@ -51,12 +48,6 @@ const TABS: readonly { id: DocumentToolbarTab; label: string }[] = [
   { id: 'images', label: '图片' },
   { id: 'lock', label: '锁定' },
 ]
-const SEVERITY_LABEL: Record<DocumentHubDiagnosticItem['severity'], string> = {
-  error: '错误',
-  warning: '警告',
-  hint: '提示',
-  info: '信息',
-}
 
 export class DocumentHubController {
   private rootEl: HTMLDivElement | null = null
@@ -68,13 +59,12 @@ export class DocumentHubController {
   private model: DocumentHubModel | null = null
   private mode: DocumentToolbarMode = 'collapsed'
   private tab: DocumentToolbarTab = 'diagnostics'
-  private detail: DocumentDetailView = 'summary'
+  private severityFilter: DiagnosticSeverityFilter = 'all'
   private pendingClickTimer: ReturnType<typeof setTimeout> | null = null
   private onDocMouseDown: ((event: MouseEvent) => void) | null = null
   private onKeyDown: ((event: KeyboardEvent) => void) | null = null
 
   constructor(private readonly options: DocumentHubControllerOptions) {}
-
 
   mount(): void {
     if (this.rootEl) return
@@ -184,8 +174,8 @@ export class DocumentHubController {
     return this.tab
   }
 
-  getDetailView(): DocumentDetailView {
-    return this.detail
+  getSeverityFilter(): DiagnosticSeverityFilter {
+    return this.severityFilter
   }
 
   private handleStatusClick(): void {
@@ -211,7 +201,7 @@ export class DocumentHubController {
     if (this.mode === 'expanded') return
     this.mode = 'expanded'
     this.tab = 'diagnostics'
-    this.detail = 'summary'
+    this.severityFilter = 'all'
     this.tabsEl!.hidden = false
     this.positionRoot()
     this.renderTabs()
@@ -239,7 +229,7 @@ export class DocumentHubController {
       return
     }
     this.tab = tab
-    this.detail = 'summary'
+    if (tab === 'diagnostics') this.severityFilter = 'all'
     this.renderTabs()
     this.renderPanel()
   }
@@ -257,8 +247,6 @@ export class DocumentHubController {
   private positionRoot(): void {
     const root = this.rootEl
     if (!root) return
-    // 以承载节点（toolbar 内的 32px host）为锚点：root 是 fixed，
-    // 若用自身 rect 会在收起态形成循环依赖。
     const rect = this.options.mountEl.getBoundingClientRect()
     if (rect.width <= 0 && rect.height <= 0) return
     const right = Math.max(8, window.innerWidth - rect.right)
@@ -286,8 +274,7 @@ export class DocumentHubController {
     panel.replaceChildren()
     panel.hidden = false
     if (this.tab === 'diagnostics') {
-      if (this.detail === 'diagnostic-details') panel.appendChild(this.buildDiagnosticsDetail(model))
-      else panel.appendChild(this.buildDiagnosticsSummary(model))
+      panel.appendChild(this.buildDiagnosticsList(model))
       return
     }
     if (this.tab === 'images') {
@@ -297,63 +284,110 @@ export class DocumentHubController {
     panel.appendChild(this.buildLockTab(model))
   }
 
-  private buildDiagnosticsSummary(model: DocumentHubModel): HTMLElement {
-    const line = this.buildLine()
-    const status = model.status
-    const summary = document.createElement('span')
-    summary.className = 'inkchapter-doc-expand__summary'
-    summary.textContent = status.code === 'GRAY'
-      ? '尚未检测'
-      : `${status.errorCount} 错误 · ${status.warningCount} 警告`
-    line.appendChild(summary)
-    line.append(
-      this.buildButton('刷新', model.actions.recheck, () => this.options.actions.recheck()),
-      this.buildButton('详情', model.actions.openDiagnostics, () => {
-        this.detail = 'diagnostic-details'
-        this.renderPanel()
-      }),
-    )
+  /**
+   * 诊断列表：直接渲染真实快照（无摘要过渡页、无详情/返回按钮）。
+   * 排序与目标组语义由 host 的投影/排序权威提供；这里的筛选只做视图过滤。
+   */
+  private buildDiagnosticsList(model: DocumentHubModel): HTMLElement {
     const box = this.buildBox()
-    box.appendChild(line)
-    return box
-  }
+    if (!model.actions.openDiagnostics) {
+      box.appendChild(this.buildEmptyLine('当前没有可用的检测结果'))
+      return box
+    }
 
-  private buildDiagnosticsDetail(model: DocumentHubModel): HTMLElement {
-    const box = this.buildBox()
-    const line = this.buildLine()
-    line.appendChild(this.buildButton('返回', true, () => {
-      this.detail = 'summary'
-      this.renderPanel()
-    }))
-    box.appendChild(line)
+    const counts = {
+      error: model.diagnostics.filter(item => item.severity === 'error').length,
+      warning: model.diagnostics.filter(item => item.severity === 'warning').length,
+      info: model.diagnostics.filter(item => item.severity === 'info' || item.severity === 'hint').length,
+    }
+    box.appendChild(this.buildFilterLine(model, counts))
+
+    const filtered = this.severityFilter === 'all'
+      ? model.diagnostics
+      : model.diagnostics.filter(item => item.severity === this.severityFilter
+        || (this.severityFilter === 'info' && item.severity === 'hint'))
 
     const list = document.createElement('div')
     list.className = 'inkchapter-doc-expand__list'
-    if (!model.actions.openDiagnostics) {
-      list.textContent = '当前没有可用的检测结果'
-    } else if (model.diagnostics.length === 0) {
-      list.textContent = '未发现问题'
+    if (filtered.length === 0) {
+      list.appendChild(this.buildEmptyLine(model.diagnostics.length === 0 ? '未发现问题' : '没有该级别的诊断'))
     } else {
-      for (const item of model.diagnostics) {
-        const row = document.createElement('button')
-        row.type = 'button'
-        row.className = `inkchapter-doc-expand__diag is-${item.severity}`
-        const badge = document.createElement('span')
-        badge.className = 'inkchapter-doc-expand__diag-severity'
-        badge.textContent = SEVERITY_LABEL[item.severity]
-        const text = document.createElement('span')
-        text.className = 'inkchapter-doc-expand__diag-message'
-        text.textContent = item.message
-        row.append(badge, text)
-        row.addEventListener('click', () => {
-          this.close()
-          this.options.actions.locateDiagnostic?.(item.id)
-        })
-        list.appendChild(row)
+      for (const item of filtered) {
+        list.appendChild(this.buildDiagnosticRow(item))
       }
     }
     box.appendChild(list)
     return box
+  }
+
+  private buildFilterLine(
+    model: DocumentHubModel,
+    counts: { error: number; warning: number; info: number },
+  ): HTMLElement {
+    const line = this.buildLine()
+    const filters: { id: DiagnosticSeverityFilter; label: string; count: number }[] = [
+      { id: 'all', label: '全部', count: model.diagnostics.length },
+      { id: 'error', label: '错误', count: counts.error },
+      { id: 'warning', label: '警告', count: counts.warning },
+      { id: 'info', label: '提示', count: counts.info },
+    ]
+    for (const filter of filters) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'inkchapter-doc-expand__filter'
+      button.dataset['filter'] = filter.id
+      button.textContent = `${filter.label} ${filter.count}`
+      button.classList.toggle('is-active', this.severityFilter === filter.id)
+      button.setAttribute('aria-pressed', String(this.severityFilter === filter.id))
+      button.addEventListener('click', () => {
+        this.severityFilter = filter.id
+        this.renderPanel()
+      })
+      line.appendChild(button)
+    }
+    line.append(
+      this.buildButton('刷新', model.actions.recheck, () => this.options.actions.recheck()),
+    )
+    return line
+  }
+
+  private buildDiagnosticRow(item: DocumentHubDiagnosticItem): HTMLButtonElement {
+    const row = document.createElement('button')
+    row.type = 'button'
+    row.className = `inkchapter-doc-expand__diag is-${item.severity}`
+    row.dataset['severity'] = item.severity
+    row.dataset['diagnosticId'] = item.id
+
+    const dot = document.createElement('span')
+    dot.className = 'inkchapter-doc-expand__diag-dot'
+    dot.setAttribute('aria-hidden', 'true')
+
+    const body = document.createElement('span')
+    body.className = 'inkchapter-doc-expand__diag-body'
+    const title = document.createElement('span')
+    title.className = 'inkchapter-doc-expand__diag-title'
+    title.textContent = item.title
+    body.appendChild(title)
+    if (item.detail && item.detail !== item.title) {
+      const detail = document.createElement('span')
+      detail.className = 'inkchapter-doc-expand__diag-detail'
+      detail.textContent = item.detail
+      body.appendChild(detail)
+    }
+    row.append(dot, body)
+
+    if (item.line != null) {
+      const loc = document.createElement('span')
+      loc.className = 'inkchapter-doc-expand__diag-loc'
+      loc.textContent = `L${item.line}`
+      row.appendChild(loc)
+    }
+    row.title = item.line != null ? `${item.title}（第 ${item.line} 行）` : item.title
+    row.addEventListener('click', () => {
+      this.close()
+      this.options.actions.locateDiagnostic?.(item.id)
+    })
+    return row
   }
 
   private buildImagesTab(model: DocumentHubModel): HTMLElement {
@@ -413,6 +447,15 @@ export class DocumentHubController {
     ))
     box.appendChild(line)
     return box
+  }
+
+  private buildEmptyLine(text: string): HTMLElement {
+    const line = this.buildLine()
+    const span = document.createElement('span')
+    span.className = 'inkchapter-doc-expand__empty'
+    span.textContent = text
+    line.appendChild(span)
+    return line
   }
 
   private buildBox(): HTMLElement {

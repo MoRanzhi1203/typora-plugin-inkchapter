@@ -1,22 +1,21 @@
 // @vitest-environment jsdom
 /**
- * V5.2 — 可展开文档状态工具栏（ExpandableDocumentStatusToolbar）契约。
+ * V5.2 — 一体化文档状态工具栏 + 直接诊断列表。
  *
  * 覆盖：
  *  - 收起仅纯色方块（无白壳/背景/边框/阴影）+ 透明 32px 热区
  *  - 锁定仅细外框且颜色不变；焦点不触发锁定
- *  - 单击展开/收起；双击只切换一次锁定（手势仲裁）
- *  - 三个标签共用一个内容区、默认检测；详情在容器内部切换
- *  - 图片标签压缩状态与真实回调/禁用原因
- *  - Esc / 外部点击 / 文档切换关闭；dispose 释放监听；单实例
- *  - 不进入 #write
- *  - CSS 契约（透明热区、12px 方块、1.5px 锁框、reduced-motion）
+ *  - 单击展开/收起；双击只切换一次锁定
+ *  - 展开后直接渲染诊断列表（无摘要过渡页、无「详情」「返回」按钮）
+ *  - 列表行 = 真实快照；筛选只做视图过滤；点击行调用真实定位后收起
+ *  - 图片/锁定标签保持；Esc/外部关闭；单实例；不进入 #write
+ *  - CSS 契约（透明热区、12px 方块、1.5px 锁框、紧凑列表、reduced-motion）
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { DocumentHubController } from './document-hub-controller'
-import { buildDocumentHubModel } from './document-hub-model'
+import { buildDocumentHubModel, type DocumentHubDiagnosticItem } from './document-hub-model'
 import { buildDocumentStatusView, type DocumentStatusFacts } from './document-status-indicator'
 
 const SCSS = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
@@ -37,10 +36,15 @@ const FACTS: DocumentStatusFacts = {
   checking: false,
   structuralVerified: true,
   hasProjection: true,
-  errorCount: 0,
-  warningCount: 2,
-  hintCount: 1,
+  errorCount: 1,
+  warningCount: 1,
+  hintCount: 0,
 }
+
+const DIAGNOSTICS: readonly DocumentHubDiagnosticItem[] = [
+  { id: 'd1', severity: 'error', title: '未闭合代码围栏', detail: '缺少结束标记', line: 3 },
+  { id: 'd2', severity: 'warning', title: '标题层级跳跃', detail: 'H1 后直接 H3', line: 7 },
+]
 
 const IMAGE = {
   enabled: true,
@@ -60,7 +64,7 @@ const IMAGE = {
   autoSyncText: '关闭',
 }
 
-function model(locked = false, image: typeof IMAGE | null = IMAGE) {
+function model(locked = false, image: typeof IMAGE | null = IMAGE, diagnostics = DIAGNOSTICS) {
   return buildDocumentHubModel({
     documentPath: 'D:/vault/notes/doc.md',
     saved: true,
@@ -68,10 +72,7 @@ function model(locked = false, image: typeof IMAGE | null = IMAGE) {
     locked,
     image,
     diagnosticsAvailable: true,
-    diagnostics: [
-      { id: 'd1', severity: 'error', message: '错误一' },
-      { id: 'd2', severity: 'warning', message: '警告一' },
-    ],
+    diagnostics,
   })
 }
 
@@ -119,25 +120,23 @@ afterEach(() => {
 describe('V5.2 collapsed status square', () => {
   it('mounts exactly one transparent 32px hot zone with a 12px square', () => {
     const { controller, mountEl } = mount()
-    const nodes = mountEl.querySelectorAll('.inkchapter-doc-toolbar-ui')
-    expect(nodes).toHaveLength(1)
+    expect(mountEl.querySelectorAll('.inkchapter-doc-toolbar-ui')).toHaveLength(1)
     const el = status(controller)
     expect(el.style.background).toBe('')
     expect(el.style.boxShadow).toBe('')
     expect(el.style.border).toBe('')
     const square = mountEl.querySelector('.inkchapter-doc-status__square') as HTMLElement
     expect(square).not.toBeNull()
-    expect(square.style.backgroundColor).toBe('rgb(210, 153, 34)')
+    expect(square.style.backgroundColor).toBe('rgb(207, 34, 46)')
   })
 
-  it('maps status colors and keeps the lock frame neutral + color-stable', () => {
+  it('keeps the lock frame neutral + color-stable', () => {
     const { controller, mountEl } = mount()
     controller.update(buildDocumentStatusView({ ...FACTS, errorCount: 3 }, true), model(true))
     const el = status(controller)
     expect(el.dataset.status).toBe('RED')
     expect(el.classList.contains('is-locked')).toBe(true)
     const frame = mountEl.querySelector('.inkchapter-doc-status__lock-frame') as HTMLElement
-    // 锁定外框不跟随诊断颜色：使用中性 currentColor。
     expect(frame.style.borderColor.toLowerCase()).toBe('currentcolor')
     const square = mountEl.querySelector('.inkchapter-doc-status__square') as HTMLElement
     expect(square.style.backgroundColor).toBe('rgb(207, 34, 46)')
@@ -152,7 +151,7 @@ describe('V5.2 collapsed status square', () => {
     expect(el.dataset.locked).toBe('0')
   })
 
-  it('CSS contract: transparent hot zone, 12px square, 1.5px lock frame, reduced motion', () => {
+  it('CSS contract: transparent hot zone, 12px square, 1.5px lock frame, compact list, reduced motion', () => {
     const statusBody = ruleBodies('.inkchapter-doc-status')
     expect(statusBody).toContain('background: transparent')
     expect(statusBody).toContain('box-shadow: none')
@@ -166,6 +165,8 @@ describe('V5.2 collapsed status square', () => {
     expect(SCSS).toContain('prefers-reduced-motion')
     expect(ruleBodies('.inkchapter-doc-expand__tabs').length).toBeGreaterThan(0)
     expect(ruleBodies('.inkchapter-doc-expand__panel').length).toBeGreaterThan(0)
+    expect(ruleBodies('.inkchapter-doc-expand__diag')).toMatch(/padding/)
+    expect(ruleBodies('.inkchapter-doc-expand__list')).toContain('max-height')
   })
 })
 
@@ -192,7 +193,7 @@ describe('V5.2 single-click expand / double-click lock arbitration', () => {
     expect(controller.isOpen()).toBe(false)
   })
 
-  it('does not fake a locked state when the lock action fails (state comes from update)', () => {
+  it('does not fake a locked state when the lock action fails', () => {
     const { controller } = mount()
     const el = status(controller)
     el.click()
@@ -215,79 +216,101 @@ describe('V5.2 single-click expand / double-click lock arbitration', () => {
   })
 })
 
-describe('V5.2 three tabs, one content area', () => {
-  it('renders diagnostics by default and switches tabs inside one panel', () => {
-    const { controller, mountEl } = mount()
+describe('V5.2 diagnostics list (no summary page)', () => {
+  it('expands directly into the diagnostic list (no summary / 详情 / 返回)', () => {
+    const { controller } = mount()
     status(controller).click()
     vi.advanceTimersByTime(300)
-    const tabs = mountEl.querySelectorAll('.inkchapter-doc-expand__tab')
-    expect(Array.from(tabs).map(t => t.textContent)).toEqual(['检测', '图片', '锁定'])
-    const panels = mountEl.querySelectorAll('.inkchapter-doc-expand__panel')
-    expect(panels).toHaveLength(1)
-    expect(panel(controller).textContent).toContain('2 警告')
-    ;(tabs[2] as HTMLButtonElement).click()
-    expect(controller.getActiveTab()).toBe('lock')
-    expect(mountEl.querySelectorAll('.inkchapter-doc-expand__panel')).toHaveLength(1)
-    expect(panel(controller).textContent).toContain('编辑中')
+    const text = panel(controller).textContent ?? ''
+    expect(text).not.toContain('详情')
+    expect(text).not.toContain('返回')
+    expect(text).not.toContain('错误 · ')
+    const rows = panel(controller).querySelectorAll('.inkchapter-doc-expand__diag')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].getAttribute('data-diagnostic-id')).toBe('d1')
+    expect(rows[1].getAttribute('data-diagnostic-id')).toBe('d2')
+    expect(rows[0].textContent).toContain('未闭合代码围栏')
+    expect(rows[0].textContent).toContain('L3')
+    expect(rows[1].textContent).toContain('L7')
   })
 
-  it('details render in the same panel and locating closes the toolbar (no legacy drawer)', () => {
-    const { controller, mountEl, actions: a } = mount()
+  it('clicking a diagnostic row locates it and closes the toolbar', () => {
+    const { controller, actions: a } = mount()
     status(controller).click()
     vi.advanceTimersByTime(300)
-    const details = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '详情')!
-    details.click()
-    expect(controller.getDetailView()).toBe('diagnostic-details')
-    expect(panel(controller).querySelectorAll('.inkchapter-doc-expand__diag')).toHaveLength(2)
-    expect(document.querySelector('.inkchapter-doc-hub')).toBeNull()
-    expect(document.querySelector('.inkchapter-doc-drawer')).toBeNull()
-    ;(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__diag')[0]).click()
-    expect(a.locateDiagnostic).toHaveBeenCalledWith('d1')
+    ;(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__diag')[1]).click()
+    expect(a.locateDiagnostic).toHaveBeenCalledWith('d2')
     expect(controller.isOpen()).toBe(false)
-    void mountEl
   })
 
-  it('images tab shows a compact disabled line when image management is off', () => {
+  it('severity filters only filter the view (data unchanged) and keep one container', () => {
     const { controller, mountEl } = mount()
+    status(controller).click()
+    vi.advanceTimersByTime(300)
+    const filters = panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__filter')
+    expect(Array.from(filters).map(f => f.dataset['filter'])).toEqual(['all', 'error', 'warning', 'info'])
+    ;(Array.from(filters).find(f => f.dataset['filter'] === 'error') as HTMLButtonElement).click()
+    expect(controller.getSeverityFilter()).toBe('error')
+    expect(panel(controller).querySelectorAll('.inkchapter-doc-expand__diag')).toHaveLength(1)
+    expect(mountEl.querySelectorAll('.inkchapter-doc-expand__panel')).toHaveLength(1)
+    const all = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__filter'))
+      .find(f => f.dataset['filter'] === 'all')!
+    all.click()
+    expect(panel(controller).querySelectorAll('.inkchapter-doc-expand__diag')).toHaveLength(2)
+  })
+
+  it('shows an empty state when the snapshot has no diagnostics', () => {
+    const { controller } = mount()
+    controller.update(buildDocumentStatusView({ ...FACTS, errorCount: 0, warningCount: 0 }, false), model(false, IMAGE, []))
+    status(controller).click()
+    vi.advanceTimersByTime(300)
+    expect(panel(controller).textContent).toContain('未发现问题')
+    expect(panel(controller).querySelectorAll('.inkchapter-doc-expand__diag')).toHaveLength(0)
+  })
+})
+
+describe('V5.2 images / lock tabs unchanged', () => {
+  it('images tab: disabled compact line, then real batch callbacks', () => {
+    const { controller, actions: a } = mount()
     controller.update(buildDocumentStatusView(FACTS, false), model(false, { ...IMAGE, enabled: false }))
     status(controller).click()
     vi.advanceTimersByTime(300)
-    ;(mountEl.querySelectorAll('.inkchapter-doc-expand__tab')[1] as HTMLButtonElement).click()
+    ;(document.querySelectorAll('.inkchapter-doc-expand__tab')[1] as HTMLButtonElement).click()
     expect(panel(controller).textContent).toContain('图片管理未启用')
-    const configure = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '配置')!
-    configure.click()
-    expect(controller['options'].actions.openImageSettings).toHaveBeenCalledTimes(1)
+    ;(Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
+      .find(b => b.textContent === '配置') as HTMLButtonElement).click()
+    expect(a.openImageSettings).toHaveBeenCalledTimes(1)
+
+    controller.update(buildDocumentStatusView(FACTS, false), model())
+    ;(document.querySelectorAll('.inkchapter-doc-expand__tab')[1] as HTMLButtonElement).click()
+    expect(panel(controller).textContent).toContain('覆盖：当前文档 · 4 处引用')
+    ;(Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
+      .find(b => b.textContent === '上传全部') as HTMLButtonElement).click()
+    expect(a.uploadAll).toHaveBeenCalledTimes(1)
   })
 
-  it('images tab exposes real batch callbacks and disabled reasons', () => {
-    const { controller, mountEl, actions: a } = mount()
+  it('images tab: empty document shows a compact empty state without zero counts', () => {
+    const { controller } = mount()
+    controller.update(
+      buildDocumentStatusView(FACTS, false),
+      model(false, { ...IMAGE, referenceCount: 0, localCount: 0, remoteCount: 0, pendingUploadCount: 0, pendingDownloadCount: 0 }),
+    )
     status(controller).click()
     vi.advanceTimersByTime(300)
-    ;(mountEl.querySelectorAll('.inkchapter-doc-expand__tab')[1] as HTMLButtonElement).click()
-    expect(panel(controller).textContent).toContain('覆盖：当前文档')
-    expect(panel(controller).textContent).toContain('4 处引用')
-    const upload = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '上传全部')!
-    const download = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '下载全部')!
-    upload.click()
-    download.click()
-    expect(a.uploadAll).toHaveBeenCalledTimes(1)
-    expect(a.downloadAll).toHaveBeenCalledTimes(1)
+    ;(document.querySelectorAll('.inkchapter-doc-expand__tab')[1] as HTMLButtonElement).click()
+    expect(panel(controller).textContent).toContain('当前文档没有图片')
+    expect(panel(controller).textContent).not.toContain('0 处引用')
+  })
 
-    const idle = buildDocumentHubModel({
-      documentPath: 'D:/vault/notes/doc.md', saved: true,
-      status: buildDocumentStatusView(FACTS, false), locked: false,
-      image: { ...IMAGE, pendingUploadCount: 0 },
-      diagnosticsAvailable: true, diagnostics: [],
-    })
-    controller.update(buildDocumentStatusView(FACTS, false), idle)
-    const upload2 = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '上传全部')!
-    expect(upload2.disabled).toBe(true)
-    expect(upload2.title).toContain('没有待上传')
+  it('lock tab: single line state + real lock action', () => {
+    const { controller, actions: a } = mount()
+    status(controller).click()
+    vi.advanceTimersByTime(300)
+    ;(document.querySelectorAll('.inkchapter-doc-expand__tab')[2] as HTMLButtonElement).click()
+    expect(panel(controller).textContent).toContain('编辑中')
+    ;(Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
+      .find(b => b.textContent === '锁定') as HTMLButtonElement).click()
+    expect(a.toggleLock).toHaveBeenCalledTimes(1)
   })
 })
 

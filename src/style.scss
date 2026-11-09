@@ -5455,33 +5455,70 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 .inkchapter-doc-expand__list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  max-height: 220px;
+  gap: 0;
+  max-height: 260px;
   overflow-y: auto;
   margin-top: 2px;
+  padding: 0;
 }
 
 .inkchapter-doc-expand__diag {
   appearance: none;
   display: flex;
-  gap: 6px;
   align-items: flex-start;
+  gap: 6px;
   width: 100%;
   text-align: left;
   border: 0;
+  border-radius: 4px;
   background: transparent;
   color: inherit;
   padding: 3px 4px;
-  border-radius: 4px;
   cursor: pointer;
-  font-size: 11.5px;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
-.inkchapter-doc-expand__diag:hover { background: rgba(127, 127, 127, 0.12); }
-.inkchapter-doc-expand__diag-severity { flex: 0 0 auto; font-size: 10.5px; opacity: 0.75; }
-.inkchapter-doc-expand__diag.is-error .inkchapter-doc-expand__diag-severity { color: #cf222e; }
-.inkchapter-doc-expand__diag.is-warning .inkchapter-doc-expand__diag-severity { color: #d29922; }
-.inkchapter-doc-expand__diag-message { flex: 1 1 auto; word-break: break-word; }
+.inkchapter-doc-expand__diag:hover { background: rgba(127, 127, 127, 0.10); }
+.inkchapter-doc-expand__diag:focus-visible { outline: 1px solid var(--text-accent, #4a8cff); outline-offset: -1px; }
+.inkchapter-doc-expand__diag.is-error:hover { background: rgba(207, 34, 46, 0.08); }
+.inkchapter-doc-expand__diag.is-warning:hover { background: rgba(210, 153, 34, 0.10); }
+
+.inkchapter-doc-expand__diag-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: rgba(127, 127, 127, 0.55);
+}
+.inkchapter-doc-expand__diag.is-error .inkchapter-doc-expand__diag-dot { background: #cf222e; }
+.inkchapter-doc-expand__diag.is-warning .inkchapter-doc-expand__diag-dot { background: #d29922; }
+.inkchapter-doc-expand__diag.is-hint .inkchapter-doc-expand__diag-dot { background: #5d7181; }
+
+.inkchapter-doc-expand__diag-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.inkchapter-doc-expand__diag-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inkchapter-doc-expand__diag-detail { font-size: 11px; opacity: 0.62; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inkchapter-doc-expand__diag-loc { flex: 0 0 auto; font-size: 10.5px; opacity: 0.5; margin-top: 1px; }
+
+.inkchapter-doc-expand__filter {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 1px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.65;
+  white-space: nowrap;
+}
+.inkchapter-doc-expand__filter:hover { opacity: 1; background: rgba(127, 127, 127, 0.10); }
+.inkchapter-doc-expand__filter.is-active { opacity: 1; background: rgba(127, 127, 127, 0.16); font-weight: 600; }
+.inkchapter-doc-expand__filter:focus-visible { outline: 1px solid var(--text-accent, #4a8cff); outline-offset: -1px; }
+
+.inkchapter-doc-expand__empty { flex: 1 1 auto; opacity: 0.6; font-size: 11.5px; }
 
 /* 旧计数条 / 锁定按钮（隐藏兼容节点）不显示。 */
 .inkchapter-doc-toolbar .inkchapter-problems-control[hidden],

@@ -29,11 +29,19 @@ export interface DocumentHubImageSummary {
   autoSyncText?: string
 }
 
-/** 检测标签详情视图的一行（来自真实诊断快照）。 */
+/** 检测标签列表的一行（来自真实诊断快照 + 既有文案/排序权威）。 */
 export interface DocumentHubDiagnosticItem {
   id: string
   severity: 'error' | 'warning' | 'hint' | 'info'
-  message: string
+  /** 规范化单行标题（resolveDiagnosticCopy.title）。 */
+  title: string
+  /** 可选一行说明（resolveDiagnosticCopy.description）。 */
+  detail?: string
+  /** 文档位置行号（1 基；未知为 null）。 */
+  line: number | null
+  /** 目标组/多目标语义（保留既有投影规则）。 */
+  targetIndex?: number
+  targetCount?: number
 }
 
 export interface DocumentHubModelInput {

@@ -590,6 +590,7 @@ import {
   type DocumentPositionContext,
   type DrawerOrderV514R1Counters,
 } from './document-diagnostic-drawer-order-v514-r1'
+import { resolveDiagnosticCopy } from './document-diagnostic-copy-v1'
 // View Order V1 — the ONE sort-mode / type-filter / grouping authority for the
 // Drawer list (default = Markdown source position). Pure, no DOM.
 import {
@@ -22926,12 +22927,32 @@ export class DocumentUtilityOverlayHost {
     }
     const view = buildDocumentStatusView(facts, locked)
     const image = this.opts.documentHub?.getImageSummary?.() ?? null
-    // V5.2 — 检测详情视图直接消费当前快照，不再打开旧诊断浮窗。
-    const diagnostics = (this.snapshot?.diagnostics ?? []).map(d => ({
-      id: d.id,
-      severity: (d.severity === 'error' || d.severity === 'warning' ? d.severity : 'info') as 'error' | 'warning' | 'hint' | 'info',
-      message: d.message,
-    }))
+    // V5.2 — 检测列表直接消费「目标投影 + 文档位置排序 + 既有文案」权威：
+    // 目标组/多目标单行规则与排序完全复用历史实现，不重新计算诊断。
+    const snapshotDiagnostics = this.snapshot?.diagnostics ?? []
+    const diagnosticsById = new Map(snapshotDiagnostics.map(d => [d.id, d]))
+    const projections = sortProjectionsByDocumentPosition(
+      flattenDiagnosticsToProjections(snapshotDiagnostics),
+    )
+    const diagnostics = projections.map((projection) => {
+      const diagnostic = diagnosticsById.get(projection.diagnosticId)
+      const copy = resolveDiagnosticCopy({
+        code: projection.ruleId,
+        message: diagnostic?.message ?? null,
+        detail: diagnostic?.detail ?? null,
+        severity: projection.severity,
+        category: diagnostic?.category ?? null,
+      })
+      return {
+        id: projection.diagnosticId,
+        severity: (projection.severity === 'error' || projection.severity === 'warning' ? projection.severity : 'info') as 'error' | 'warning' | 'hint' | 'info',
+        title: copy.title,
+        detail: copy.description,
+        line: projection.sourceLine,
+        targetIndex: projection.targetIndex,
+        targetCount: projection.targetCount,
+      }
+    })
     const model = buildDocumentHubModel({
       documentPath,
       saved: documentPath != null,

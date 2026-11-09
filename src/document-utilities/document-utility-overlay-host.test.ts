@@ -102,7 +102,7 @@ describe('UI-OVERLAY-3 outside Markdown business content', () => {
 })
 
 describe('UI-OVERLAY-4 drawer open/close does not touch document content', () => {
-  it('the toolbar details stay inside one container; the drawer itself never mutates #write', () => {
+  it('the toolbar renders the diagnostic list directly; the drawer itself never mutates #write', () => {
     const write = document.createElement('div')
     write.id = 'write'
     write.innerHTML = '<h1>标题</h1><p>正文</p>'
@@ -112,13 +112,11 @@ describe('UI-OVERLAY-4 drawer open/close does not touch document content', () =>
     const hub = (h as unknown as { documentHub: { open(): void; getPanelElement(): HTMLElement | null } }).documentHub
     hub.open()
     const panel = hub.getPanelElement()!
-    const details = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '详情')
-    expect(details).toBeTruthy()
-    details!.click()
-    // V5.2 — 详情在工具栏内部切换，绝不打开旧诊断浮窗。
+    // V5.2 — 展开即诊断列表，不再有「详情」过渡按钮，也不打开旧诊断浮窗。
+    expect(panel.textContent).not.toContain('详情')
+    expect(panel.textContent).not.toContain('返回')
+    expect(panel.querySelector('.inkchapter-doc-expand__list')).not.toBeNull()
     expect(document.querySelector('.inkchapter-doc-drawer')!.getAttribute('style')).toContain('display: none')
-    expect(panel.querySelectorAll('.inkchapter-doc-expand__diag').length).toBeGreaterThanOrEqual(0)
     expect(write.innerHTML).toBe(before) // zero Markdown mutation
 
     ;(h as unknown as { openDrawer(filter: string): void }).openDrawer('all')
