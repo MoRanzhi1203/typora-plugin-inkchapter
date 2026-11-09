@@ -151,7 +151,12 @@ describe('DRAWER-TEXT-V54 — drawer text bounds never follow panel geometry', (
   it('DRAWER-TEXT-V54-1/2/3: active row = full-width; text highlight independent; no content-column clip in CSS', () => {
     // Row active is the ONLY full-width drawer wash; no text/segment clip rules.
     expect(scss).not.toMatch(/inkchapter-doc-drawer__item[^{}]*\{[^}]*overflow:\s*hidden/)
-    const active = scss.slice(scss.indexOf('.inkchapter-doc-drawer__item--error.is-selected,'))
+    // Scope the assertion to the drawer active-row rule block: later, unrelated
+    // overlay rules (e.g. the document-hub filter popup) legitimately use
+    // `right: 0` and must not be attributed to the drawer row.
+    const activeStart = scss.indexOf('.inkchapter-doc-drawer__item--error.is-selected,')
+    const activeEnd = scss.indexOf('}', activeStart) + 1
+    const active = scss.slice(activeStart, activeEnd > 0 ? activeEnd : undefined)
     expect(active).toContain('background: color-mix(')
     // Active background is bounded but NEVER positioned off the text bounds.
     expect(active).not.toContain('right: 0')

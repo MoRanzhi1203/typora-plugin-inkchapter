@@ -1,6 +1,6 @@
 # Document Hub & Image Batch（状态方块 / 一体化可展开工具栏 / 图片批量 / 导航器规则）
 
-> 适用版本：V5.2（一体化重构 + V5.2 布局重设计）。
+> 适用版本：V5.2（一体化重构 + Fluent Compact 精修）。
 > 相关源码：`src/document-utilities/document-status-indicator.ts`、`document-hub-model.ts`、
 > `document-hub-controller.ts`、`document-utility-overlay-host.ts`；
 > `src/image-management/document-image-batch.ts`、`document-image-batch-service.ts`；
@@ -28,74 +28,84 @@ V5.1/V5.2 的状态方块与标签栏都挂在这个容器内，所以只改内�
   `box-shadow: none`），**保留**历史 geometry 需要的 32px/4px 尺寸契约；
 - 承载节点 `.inkchapter-doc-status-host` 显式 `32px × 32px`，避免 toolbar 宽度归零导致
   “不可渲染”判定；
-- 组件根 `.inkchapter-doc-toolbar-ui` 以 host 的 rect 锚定（`right/top`），不占用 rAF 队列；
+- 组件根 `.inkchapter-doc-toolbar-ui` 以 host 的 rect 锚定 `top`，整个组件使用固定的
+  `right: 12px` inset（不再由方块单独决定右端位置）；
 - 旧 `.inkchapter-doc-toolbar` 仅作为 32×32 锚点容器，不再承担任何宽度/背景职责。
 
 ## §2 收起态：一个纯色方块
 
-- 12px 纯色方块（圆角 2px），32px 透明热区：`background: transparent`、`border: 0`、`box-shadow: none`。
-- 颜色：`GREEN` / `YELLOW` / `RED` / `GRAY`（错误优先；未检查/检测中/结构未验证不冒充绿色）。
-- 锁定时仅在方块外显示 1.5px 中性细线框（20×20 框、`currentColor`），不改变三色；
+- 15px 纯色方块（圆角 3px），32px 透明热区：`background: transparent`、`border: 0`、`box-shadow: none`。
+- 颜色：`GREEN #2e9869` / `YELLOW #d49320` / `RED #d55050` / `GRAY #89919b`
+  （错误优先；未检查/检测中/结构未验证不冒充绿色）。
+- 锁定时仅在方块外显示 1.5px 中性细线框（22×22 框、`currentColor`），不改变三色；
   `focus-visible` 用虚线轮廓，与锁定实线框区分。
-- 收起态布局宽度固定 32px，`root` 为 `pointer-events: none`，仅 32×32 状态按钮可命中；
-  **不存在 360px 透明覆盖层**，不遮挡 Markdown 编辑区。
+- 收起态 layout 宽 40px、高 34px（`root` 为 `pointer-events: none`），仅状态按钮的 32×32
+  热区可命中；布局在 `pointer-events` 上不覆盖编辑区，点击热区外 20px 即命中编辑器。
+- **收起/展开方块位置稳定**：header 的 grid 列由 `tabs { grid-column: 1 }` 与
+  `status { grid-column: 2 }` 显式固定；tabs 隐藏时状态按钮仍留在 38px 状态列，不会自动
+  落入第一列造成方块漂移。
 
-## §3 展开态：单一等宽布局权威
+## §3 展开态：单一等宽布局权威 + Fluent Compact 视觉
 
 ```text
-.inkchapter-doc-toolbar-ui                 (fixed，右/上锚定，唯一 DOM 宿主；不承载宽度)
-└─ .inkchapter-doc-expand__layout          (唯一宽度权威：收起 32px / 展开 min(360px, 可用))
-   ├─ .inkchapter-doc-expand__row          (header，width:100%；grid = 1fr + 32px 状态热区)
-   │   ├─ .inkchapter-doc-expand__tabs     (3 等分标签，仅展开时 display:grid)
-   │   └─ button.inkchapter-doc-status     (12px 色块 + 32px 透明热区，热区计入 header 总宽)
+.inkchapter-doc-toolbar-ui                 (fixed，right:12px / top 锚定；不承载宽度)
+└─ .inkchapter-doc-expand__layout          (唯一宽度权威：收起 40px / 展开 min(360px, 可用))
+   ├─ .inkchapter-doc-expand__row          (header，height 34px；grid = 1fr + 38px 状态列)
+   │   ├─ .inkchapter-doc-expand__tabs     (3 等分 Segmented 标签，grid-column:1)
+   │   └─ button.inkchapter-doc-status     (32px 热区、15px 方块，grid-column:2)
    └─ .inkchapter-doc-expand__panel        (content，width:100%；唯一内容区)
 ```
 
 - **P0 几何契约**：header 与 content 是同一 layout 的两个 `width:100%`、`box-sizing:border-box`
-  子项；`abs(left 差) / abs(right 差) / abs(width 差)` 均必须 ≤ 1 CSS px。状态热区是 header
-  grid 的第二列（32px），绝不悬挂在 header 外侧。
-- 展开宽度由 JS 写入 `--inkchapter-toolbar-available`（视口 - 右锚点 - 8px），CSS
-  `width: min(360px, var(...))` 只收缩不移动右锚点；窗口 resize 时重算。
-- 单击色块：`data-expanded=true` 立即切换布局宽度（不做宽度动画，避免动画帧节流造成测量/视觉
-  漂移）；tabs 以 `clip-path` 从右向左揭示（180ms）、panel 淡入（120ms），右端色块不动。
+  子项；`abs(left 差) / abs(right 差) / abs(width 差)` 均 ≤ 1 CSS px。状态列（38px，含
+  32px 热区与方块右侧留白）计入 header 总宽度。
+- 展开宽度由 JS 写入 `--inkchapter-toolbar-available`，CSS `width: min(360px, var(...))`
+  只收缩不移动右锚点；窗口 resize 时重算。
+- 单击色块：`data-expanded=true` 立即切换布局宽度（无宽度动画），tabs 以 `clip-path`
+  从右向左揭示（180ms）、panel 淡入（120ms）；右端方块不动。
 - 再次点击当前标签不再制造空白内容区；点其他标签只替换同一 `content` 内的内容。
-- 再次单击色块 / Esc / 外部点击 / 切换文档：整体收起；收起时 `tabs/panel` 均 `hidden`，
-  layout 缩回 32px，不拦截指针；不重建 DOM。
-- 双击色块：只切换真实锁定（260ms 手势仲裁，不触发展开/收起闪烁）。
-- 内容区背景为单一浅色面（浅色 `#fafafa` / 深色 `#262626`），无边框、无阴影、无重复卡片；
-  高度由内容自然决定，列表超出时内部滚动。
+- 再次单击色块 / Esc / 外部点击 / 切换文档：整体收起；tabs/panel `hidden`，layout 缩回
+  40px，不拦截指针；不重建 DOM。
+- 双击色块：只切换真实锁定（260ms 手势仲裁）。
+- 视觉 tokens（局部 `.inkchapter-doc-toolbar-ui`，浅色）：`--ink-doc-surface #fafaf9`、
+  `--ink-doc-hairline #e7e9ec`、`--ink-doc-text #293241`、`--ink-doc-secondary #737d89`、
+  `--ink-doc-selection #e9eef4`、`--ink-doc-radius 6px`；深色覆盖为 `#252526 / #3a3a3a /
+  #e6e6e6 / #a0a0a0 / #333333`。
+- 面板为单一浅色面：`background: var(--ink-doc-surface)`、1px hairline、6px 圆角、无阴影；
+  header 34px，三标签 12.5px，选中为低饱和 `--ink-doc-selection` 背景 + 主文字色（Fluent
+  Segmented 感），未选中为 secondary 色。
 
 ### §3.1 检测标签（直接诊断列表）
 
 - **没有**摘要页、没有「详情」「返回」按钮、没有第二个诊断抽屉；展开即列表。
-- 顶部只保留：真实非零数量概要（如 `3 错误 · 11 警告`）、四个严重级别筛选
-  （`全部/错误/警告/提示`，带真实计数）、一个重新检测图标按钮；**不重复“文档检测”大标题**。
-- 每行三列栅格：6px 严重级别色点 / 标题 + 可选说明 / 右对齐行号（`L<行号>`，固定 34px 列，
-  行号列空时也占位以保持对齐）。
-- 标题约 12.5px 单行截断；说明约 11px、最多两行（`-webkit-line-clamp:2`），缺失时不产生空白行。
+- 顶部只保留：真实非零数量概要（如 `11 项警告`、混合 `1 项错误 · 11 项警告`）、筛选
+  popup 入口（漏斗图标）与重新检测图标；**不重复“文档检测”大标题**。
+- 每行三列栅格：6px 严重级别色点 / 标题 + 可选说明 / 稳定 40px 右对齐行号
+  （`L<行号>`，空行号也占位）；标题 12.5px 单行截断，说明 11.5px、最多两行。
 - 数据来源：host 用 `flattenDiagnosticsToProjections` + `sortProjectionsByDocumentPosition`
   生成列表（目标组/多目标单行规则与文档位置排序完全复用历史实现），
   再以 `resolveDiagnosticCopy` 取标题/说明；**不重新计算诊断**。
-- 筛选：仅做视图过滤（`severityFilter`），不改变快照、不重排幸存条目；默认 `全部`。
-- 点击行：调用 host 既有 `locateDiagnostic(diagnosticId)` 真实定位事务，随后收起工具栏；
-  不会在同一次操作中打开旧诊断抽屉。
-- 列表独立滚动（`max-height: min(340px, 可用面板高度 - 64px)`），空快照显示「未发现问题」，
-  不显示 0 计数卡片。
+- 筛选：点击漏斗打开 Fluent 菜单 popup（`全部/错误/警告/提示` + 计数），选择只做视图过滤；
+  Esc 或面板内其他位置点击关闭 popup（不关闭工具栏）；空筛选结果显示 `没有匹配项`，
+  不用“未发现问题”冒充扫描成功。
+- 点击行：调用 host 既有 `locateDiagnostic(diagnosticId)` 真实定位事务，随后收起工具栏。
+- 列表独立滚动（`max-height: min(380px, 可用面板高度 - 64px)`），空快照显示 `未发现问题`。
 
 ## §4 图片标签与约束
 
 - 未启用：一行「图片管理未启用」+ 配置。
-- 当前文档无图片：一行「当前文档没有图片」+ 设置；批量按钮保留但禁用，`title/aria-description`
+- 当前文档无图片：一行「当前文档无图片」+ 设置；批量按钮保留但禁用，`title/aria-description`
   给出原因（不显示 0 计数行）。
-- 有图片：概要为「范围 · N 处引用」，可选一行 `插入：… · 自动同步：…` 摘要；
-  主操作行「上传全部」「下载全部」，次级行「检查并补齐双链」「文档设置」。
-  批量操作沿用 `预检 → 用户确认 → 执行`，复用 `REUSED_*`/`NEW` 语义，默认不改写 Markdown；
+- 有图片：概要为「范围 · N 处引用 · N 待上传 · N 待下载」（pending 仅非零时显示），
+  可选一行 `插入：… · 自动同步：…` 摘要；主操作两列等宽「上传全部」「下载全部」，
+  次级行「检查并补齐双链」「当前文档设置」。
+- 批量操作沿用 `预检 → 用户确认 → 执行`，复用 `REUSED_*`/`NEW` 语义，默认不改写 Markdown；
   预检不创建任何目录，实际落盘必须经用户确认。
 - 详细配置进入完整设置页，不在工具栏内展开表单。
 
 ## §4.1 锁定标签
 
-- 仅一行：`当前文档可编辑` / `当前文档已锁定` + `锁定` / `解锁` 按钮。
+- 仅一行：锁图标 + `编辑中` / `已锁定` + 右侧 `锁定` / `解锁` 按钮。
 - 与色块双击共用同一 `editGuard` 锁定服务；锁定成功后色块细框同步，失败保持旧状态并提示。
 - 内容区宽度始终等于检测/图片标签，仅高度随内容变小。
 
@@ -111,18 +121,21 @@ V5.1/V5.2 的状态方块与标签栏都挂在这个容器内，所以只改内�
 ## §6 测试
 
 - `document-hub-controller.test.ts`：收起无白壳、锁框中性、单击/双击仲裁、三标签单内容区、
-  等宽布局权威（header/content 同父 + width:100% + 状态热区在 header 内）、CSS 契约
-  （layout 360/32、tabs 三等分、panel 无 max-width）、measureLayout 差值契约、方向键焦点、
-  图片空状态与禁用原因、锁定文案、Esc/外部关闭、单实例。
-- `document-hub-model.test.ts`、`document-status-indicator.test.ts`、批量服务测试、
-  `document-utility-navigator-document-switch.test.ts`、host 集成与密度测试。
+  等宽布局权威（header/content 同父 + width:100% + 状态列在 header 内）、Fluent tokens
+  与深浅主题、15px 方块 / 34px header、筛选 popup 交互与空结果、图片等宽主操作与空状态、
+  锁定单行与图标、方向键焦点、Esc/外部关闭、单实例。
+- `document-status-indicator.test.ts`：新语义色 `#2e9869/#d49320/#d55050/#89919b`。
+- `document-hub-model.test.ts`、批量服务测试、`document-utility-navigator-document-switch.test.ts`、
+  host 集成与密度测试。
 
-## §7 真实 GUI 验收（本轮已完成 / 待人工）
+## §7 真实 GUI 验收（本轮）
 
 - 已完成：浅色 125% DPI、100% DPI、150% DPI 下展开测量 header/content 左/右/宽度差均为 0；
-  收起态 32px 命中区与纯色方块；检测/图片/锁定切换同宽；诊断行点击后工具栏关闭并真实滚动
-  （scrollTop 0 → 889.6）；双击色块锁定/解锁并写入 `#write.inkchapter-document-locked`；
-  长文档（scrollHeight 1846 > clientHeight 586）导航器显示；深色主题（#262626 + 浅色文字）。
-- 待人工：真实窗口由大变小/侧栏拖拽后复测（自动化窗口 resize 在遮挡窗口下渲染进程不重排）；
-  短文档导航器隐藏（需切换短文档）；图片真实上传/下载/补链（需凭据/网络，默认不自动执行）；
-  锁定状态下真实键入阻断（避免修改 Markdown，未做真实按键注入）。
+  收起/展开状态方块位置一致（status x 1488.2–1520.2，方块 1496.7–1511.7），root 收起仅
+  40×35.6、热区外 20px 命中编辑器；三标签切换同宽（deltas 0）；筛选 popup 4 项与选中态；
+  诊断行点击后面板关闭并真实滚动（scrollTop 0 → 612.8）；双击色块锁定/解锁并写入
+  `#write.inkchapter-document-locked`；有图文档图片标签 `2 处引用 · 2 待下载`；长文档导航器
+  显示；深色主题 `#252526 / #3a3a3a / #333333`。
+- 待人工：真实窗口拖拽缩放/侧栏拖拽后复测（自动化窗口 resize 在遮挡窗口下渲染进程不重排）；
+  短文档导航器隐藏（需切到短文档）；锁定状态下真实键入阻断（避免改 Markdown，未注入按键）；
+  图片真实上传/下载/补链（需凭据/网络）。

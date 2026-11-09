@@ -61,10 +61,10 @@ describe('buildDocumentStatusView', () => {
   })
 
   it('exposes the documented colors', () => {
-    expect(buildDocumentStatusView(facts(), false).color).toBe('#2ea043')
-    expect(buildDocumentStatusView(facts({ warningCount: 1 }), false).color).toBe('#d29922')
-    expect(buildDocumentStatusView(facts({ errorCount: 1 }), false).color).toBe('#cf222e')
-    expect(buildDocumentStatusView(facts({ hasDocument: false }), false).color).toBe('#8b949e')
+    expect(buildDocumentStatusView(facts(), false).color).toBe('#2e9869')
+    expect(buildDocumentStatusView(facts({ warningCount: 1 }), false).color).toBe('#d49320')
+    expect(buildDocumentStatusView(facts({ errorCount: 1 }), false).color).toBe('#d55050')
+    expect(buildDocumentStatusView(facts({ hasDocument: false }), false).color).toBe('#89919b')
   })
 })
 

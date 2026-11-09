@@ -122,7 +122,7 @@ afterEach(() => {
 })
 
 describe('V5.2 collapsed status square', () => {
-  it('mounts exactly one transparent 32px hot zone with a 12px square', () => {
+  it('mounts exactly one transparent 32px hot zone with a 15px square', () => {
     const { controller, mountEl } = mount()
     expect(mountEl.querySelectorAll('.inkchapter-doc-toolbar-ui')).toHaveLength(1)
     const el = status(controller)
@@ -131,7 +131,7 @@ describe('V5.2 collapsed status square', () => {
     expect(el.style.border).toBe('')
     const square = mountEl.querySelector('.inkchapter-doc-status__square') as HTMLElement
     expect(square).not.toBeNull()
-    expect(square.style.backgroundColor).toBe('rgb(207, 34, 46)')
+    expect(square.style.backgroundColor).toBe('rgb(213, 80, 80)')
   })
 
   it('keeps the lock frame neutral + color-stable', () => {
@@ -143,7 +143,7 @@ describe('V5.2 collapsed status square', () => {
     const frame = mountEl.querySelector('.inkchapter-doc-status__lock-frame') as HTMLElement
     expect(frame.style.borderColor.toLowerCase()).toBe('currentcolor')
     const square = mountEl.querySelector('.inkchapter-doc-status__square') as HTMLElement
-    expect(square.style.backgroundColor).toBe('rgb(207, 34, 46)')
+    expect(square.style.backgroundColor).toBe('rgb(213, 80, 80)')
   })
 
   it('does not mark the document locked on focus', () => {
@@ -155,15 +155,15 @@ describe('V5.2 collapsed status square', () => {
     expect(el.dataset.locked).toBe('0')
   })
 
-  it('CSS contract: transparent hot zone, 12px square, 1.5px lock frame, compact list, reduced motion', () => {
+  it('CSS contract: transparent hot zone, 15px square, 1.5px lock frame, compact list, reduced motion', () => {
     const statusBody = ruleBodies('.inkchapter-doc-status')
     expect(statusBody).toContain('background: transparent')
     expect(statusBody).toContain('box-shadow: none')
     expect(statusBody).toContain('border: 0')
     const squareBody = ruleBodies('.inkchapter-doc-status__square')
-    expect(squareBody).toContain('width: 12px')
-    expect(squareBody).toContain('height: 12px')
-    expect(squareBody).toContain('border-radius: 2px')
+    expect(squareBody).toContain('width: 15px')
+    expect(squareBody).toContain('height: 15px')
+    expect(squareBody).toContain('border-radius: 3px')
     const frameBody = ruleBodies('.inkchapter-doc-status__lock-frame')
     expect(frameBody).toContain('1.5px solid transparent')
     expect(SCSS).toContain('prefers-reduced-motion')
@@ -191,14 +191,14 @@ describe('V5.2 single equal-width layout authority', () => {
 
   it('CSS: layout is the only width authority; header/content both width:100% + border-box', () => {
     const layoutBody = ruleBodies('.inkchapter-doc-expand__layout')
-    expect(layoutBody).toContain('width: 32px')
+    expect(layoutBody).toContain('width: 40px')
     expect(layoutBody).toContain('gap: 5px')
     expect(layoutBody).toContain('box-sizing: border-box')
     const expandedBody = ruleBodies('.inkchapter-doc-toolbar-ui[data-expanded="true"] .inkchapter-doc-expand__layout')
     expect(expandedBody).toContain('width: min(360px')
 
     const headerBody = ruleBodies('.inkchapter-doc-expand__row')
-    expect(headerBody).toContain('grid-template-columns: minmax(0, 1fr) 32px')
+    expect(headerBody).toContain('grid-template-columns: minmax(0, 1fr) 38px')
     expect(headerBody).toContain('width: 100%')
     expect(headerBody).toContain('box-sizing: border-box')
 
@@ -219,14 +219,14 @@ describe('V5.2 single equal-width layout authority', () => {
     expect(ruleBodies('.inkchapter-doc-expand__panel')).not.toContain('left:')
   })
 
-  it('collapsed layout is 32px wide, transparent, and exposes only the status hotspot', () => {
+  it('collapsed layout is 40px wide, transparent, and exposes only the status hotspot', () => {
     const { controller } = mount()
     const els = controller.getLayoutElements()
     expect(els.root!.getAttribute('data-expanded')).toBe('false')
     expect((controller.getPanelElement() as HTMLElement).hidden).toBe(true)
     const tabs = els.header!.querySelector('.inkchapter-doc-expand__tabs') as HTMLElement
     expect(tabs.hidden).toBe(true)
-    expect(ruleBodies('.inkchapter-doc-expand__layout')).toContain('width: 32px')
+    expect(ruleBodies('.inkchapter-doc-expand__layout')).toContain('width: 40px')
     expect(ruleBodies('.inkchapter-doc-expand__layout')).toContain('background: transparent')
   })
 
@@ -330,7 +330,7 @@ describe('V5.2 diagnostics list (no summary page)', () => {
     expect(text).not.toContain('返回')
     // V5.2 layout redesign: the compact REAL-count overview is the only
     // summary; the old summary→detail→back page stays gone.
-    expect(text).toContain('1 错误 · 1 警告')
+    expect(text).toContain('1 项错误 · 1 项警告')
     expect(text).not.toContain('文档检测')
     expect(panel(controller).querySelector('.inkchapter-doc-expand__overview')).not.toBeNull()
     const rows = panel(controller).querySelectorAll('.inkchapter-doc-expand__diag')
@@ -351,20 +351,61 @@ describe('V5.2 diagnostics list (no summary page)', () => {
     expect(controller.isOpen()).toBe(false)
   })
 
-  it('severity filters only filter the view (data unchanged) and keep one container', () => {
+  it('severity filter popup only filters the view, keeps one container, and closes', () => {
     const { controller, mountEl } = mount()
     status(controller).click()
     vi.advanceTimersByTime(300)
-    const filters = panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__filter')
-    expect(Array.from(filters).map(f => f.dataset['filter'])).toEqual(['all', 'error', 'warning', 'info'])
-    ;(Array.from(filters).find(f => f.dataset['filter'] === 'error') as HTMLButtonElement).click()
+    // Fluent Compact: no row of four cramped filter buttons by default.
+    expect(panel(controller).querySelectorAll('.inkchapter-doc-expand__filter-option')).toHaveLength(0)
+    const filterButton = panel(controller).querySelector<HTMLButtonElement>('.inkchapter-doc-expand__filter-button')!
+    expect(filterButton).not.toBeNull()
+    filterButton.click()
+    expect(controller.isFilterPopupOpen()).toBe(true)
+    const options = panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__filter-option')
+    expect(Array.from(options).map(o => o.dataset['filter'])).toEqual(['all', 'error', 'warning', 'info'])
+    expect(options[0].getAttribute('aria-checked')).toBe('true')
+    ;(Array.from(options).find(o => o.dataset['filter'] === 'error') as HTMLButtonElement).click()
     expect(controller.getSeverityFilter()).toBe('error')
+    expect(controller.isFilterPopupOpen()).toBe(false)
     expect(panel(controller).querySelectorAll('.inkchapter-doc-expand__diag')).toHaveLength(1)
     expect(mountEl.querySelectorAll('.inkchapter-doc-expand__panel')).toHaveLength(1)
-    const all = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__filter'))
-      .find(f => f.dataset['filter'] === 'all')!
-    all.click()
+    // Reopen and restore "all".
+    panel(controller).querySelector<HTMLButtonElement>('.inkchapter-doc-expand__filter-button')!.click()
+    ;(Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__filter-option'))
+      .find(o => o.dataset['filter'] === 'all') as HTMLButtonElement).click()
     expect(panel(controller).querySelectorAll('.inkchapter-doc-expand__diag')).toHaveLength(2)
+  })
+
+  it('filter popup closes on Escape and on a click inside the panel, never closing the toolbar', () => {
+    const { controller } = mount()
+    status(controller).click()
+    vi.advanceTimersByTime(300)
+    panel(controller).querySelector<HTMLButtonElement>('.inkchapter-doc-expand__filter-button')!.click()
+    expect(controller.isFilterPopupOpen()).toBe(true)
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    expect(controller.isFilterPopupOpen()).toBe(false)
+    expect(controller.isOpen()).toBe(true)
+
+    panel(controller).querySelector<HTMLButtonElement>('.inkchapter-doc-expand__filter-button')!.click()
+    panel(controller).querySelector('.inkchapter-doc-expand__list')!
+      .dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    expect(controller.isFilterPopupOpen()).toBe(false)
+    expect(controller.isOpen()).toBe(true)
+  })
+
+  it('empty filtered result says "没有匹配项" instead of claiming a clean scan', () => {
+    const { controller } = mount()
+    controller.update(
+      buildDocumentStatusView({ ...FACTS, warningCount: 0 }, false),
+      model(false, IMAGE, [DIAGNOSTICS[0]]),
+    )
+    status(controller).click()
+    vi.advanceTimersByTime(300)
+    panel(controller).querySelector<HTMLButtonElement>('.inkchapter-doc-expand__filter-button')!.click()
+    ;(Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__filter-option'))
+      .find(o => o.dataset['filter'] === 'warning') as HTMLButtonElement).click()
+    expect(panel(controller).textContent).toContain('没有匹配项')
+    expect(panel(controller).textContent).not.toContain('未发现问题')
   })
 
   it('shows an empty state when the snapshot has no diagnostics', () => {
@@ -406,7 +447,7 @@ describe('V5.2 images / lock tabs unchanged', () => {
     status(controller).click()
     vi.advanceTimersByTime(300)
     ;(document.querySelectorAll('.inkchapter-doc-expand__tab')[1] as HTMLButtonElement).click()
-    expect(panel(controller).textContent).toContain('当前文档没有图片')
+    expect(panel(controller).textContent).toContain('当前文档无图片')
     expect(panel(controller).textContent).not.toContain('0 处引用')
   })
 
@@ -415,13 +456,68 @@ describe('V5.2 images / lock tabs unchanged', () => {
     status(controller).click()
     vi.advanceTimersByTime(300)
     ;(document.querySelectorAll('.inkchapter-doc-expand__tab')[2] as HTMLButtonElement).click()
-    expect(panel(controller).textContent).toContain('当前文档可编辑')
+    expect(panel(controller).textContent).toContain('编辑中')
+    expect(panel(controller).querySelector('.inkchapter-doc-expand__lock-icon')).not.toBeNull()
     ;(Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
       .find(b => b.textContent === '锁定') as HTMLButtonElement).click()
     expect(a.toggleLock).toHaveBeenCalledTimes(1)
     controller.update(buildDocumentStatusView(FACTS, true), model(true))
-    expect(panel(controller).textContent).toContain('当前文档已锁定')
+    expect(panel(controller).textContent).toContain('已锁定')
     expect(panel(controller).textContent).toContain('解锁')
+  })
+})
+
+describe('V5.2 Fluent Compact visual contract', () => {
+  it('defines scoped Fluent tokens for light and dark themes', () => {
+    const rootBody = ruleBodies('.inkchapter-doc-toolbar-ui')
+    expect(rootBody).toContain('--ink-doc-surface: #fafaf9')
+    expect(rootBody).toContain('--ink-doc-hairline: #e7e9ec')
+    expect(rootBody).toContain('--ink-doc-text: #293241')
+    expect(rootBody).toContain('--ink-doc-secondary: #737d89')
+    expect(rootBody).toContain('--ink-doc-selection: #e9eef4')
+    expect(rootBody).toContain('--ink-doc-warning: #d49320')
+    expect(rootBody).toContain('--ink-doc-error: #d55050')
+    expect(rootBody).toContain('--ink-doc-success: #2e9869')
+    expect(rootBody).toContain('--ink-doc-hint: #637f96')
+    expect(rootBody).toContain('--ink-doc-radius: 6px')
+    // Dark theme overrides the same scoped surface token, not a second panel.
+    expect(SCSS).toContain('--ink-doc-surface: #252526')
+    expect(SCSS).toContain('--ink-doc-text: #e6e6e6')
+  })
+
+  it('header is 34px tall; square is 15px inside a 32px hit region with a separate lock outline', () => {
+    expect(ruleBodies('.inkchapter-doc-expand__row')).toContain('height: 34px')
+    const statusBody = ruleBodies('.inkchapter-doc-status')
+    expect(statusBody).toContain('width: 32px')
+    expect(statusBody).toContain('height: 32px')
+    expect(ruleBodies('.inkchapter-doc-status__square')).toContain('width: 15px')
+    expect(ruleBodies('.inkchapter-doc-status__lock-frame')).toContain('width: 22px')
+  })
+
+  it('panel uses the one quiet Fluent surface with a 1px hairline and 6px radius', () => {
+    const layoutBody = ruleBodies('.inkchapter-doc-expand__layout')
+    expect(layoutBody).toContain('border: 1px solid transparent')
+    expect(layoutBody).toContain('border-radius: var(--ink-doc-radius)')
+    const expandedBody = ruleBodies('.inkchapter-doc-toolbar-ui[data-expanded="true"] .inkchapter-doc-expand__layout')
+    expect(expandedBody).toContain('background: var(--ink-doc-surface)')
+    expect(expandedBody).toContain('border-color: var(--ink-doc-hairline)')
+    expect(expandedBody).not.toContain('box-shadow')
+    expect(ruleBodies('.inkchapter-doc-expand__panel')).toContain('padding: 8px 10px 9px')
+  })
+
+  it('image primary actions are an equal two-column grid; filter is a popup menu', () => {
+    expect(ruleBodies('.inkchapter-doc-expand__actions.is-primary-actions'))
+      .toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
+    expect(ruleBodies('.inkchapter-doc-expand__filter-popup')).toContain('position: absolute')
+    expect(ruleBodies('.inkchapter-doc-expand__filter-option')).toContain('grid-template-columns')
+    // The old inline four-button filter row must not come back.
+    expect(ruleBodies('.inkchapter-doc-expand__filter')).not.toContain('display:')
+  })
+
+  it('diagnostics use a stable 40px right-aligned location cell', () => {
+    const diagBody = ruleBodies('.inkchapter-doc-expand__diag')
+    expect(diagBody).toContain('grid-template-columns: 6px minmax(0, 1fr) 40px')
+    expect(ruleBodies('.inkchapter-doc-expand__diag-loc')).toContain('text-align: right')
   })
 })
 

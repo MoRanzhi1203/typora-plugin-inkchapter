@@ -5263,16 +5263,52 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 }
 
 /* ══════════════════════════════════════════════════════════════════════
-   V5.2 — 一体化可展开文档状态工具栏（单一等宽布局权威）
+   V5.2 — InkChapter Fluent Compact（单一等宽布局权威 + Fluent 2 视觉）
    ──────────────────────────────────────────────────────────────────────
    结构：
      .inkchapter-doc-toolbar-ui            fixed 右/上锚点（不承载宽度）
-       └─ .inkchapter-doc-expand__layout   唯一宽度权威
-            ├─ .inkchapter-doc-expand__row    header（100% 宽，含 32px 状态热区）
+       └─ .inkchapter-doc-expand__layout   唯一宽度权威（收起 38 / 展开 360）
+            ├─ .inkchapter-doc-expand__row    header（100% 宽；1fr + 38px 状态列）
             └─ .inkchapter-doc-expand__panel  content（100% 宽，唯一内容区）
-   测量契约：header.left/right/width 与 content 完全一致（同一 layout 子项，
+   几何契约：header.left/right/width 与 content 完全一致（同一 layout 子项，
    width:100% + box-sizing:border-box）。状态热区在 header 内，不悬挂外部。
+   视觉语言：Microsoft Fluent 2 的中性面 / 细分隔 / 克制选中态；不引入框架。
    ══════════════════════════════════════════════════════════════════════ */
+
+/* ── 局部设计 tokens（只作用于工具栏根，不污染 #write / 全局） ─────── */
+.inkchapter-doc-toolbar-ui {
+  --ink-doc-surface: #fafaf9;
+  --ink-doc-surface-strong: #ffffff;
+  --ink-doc-hairline: #e7e9ec;
+  --ink-doc-text: #293241;
+  --ink-doc-secondary: #737d89;
+  --ink-doc-selection: #e9eef4;
+  --ink-doc-hover: rgba(41, 50, 65, 0.055);
+  --ink-doc-warning: #d49320;
+  --ink-doc-error: #d55050;
+  --ink-doc-success: #2e9869;
+  --ink-doc-hint: #637f96;
+  --ink-doc-radius: 6px;
+  --ink-doc-radius-sm: 4px;
+  position: fixed;
+  z-index: 2147483000;
+  box-sizing: border-box;
+  pointer-events: none;
+  color: var(--ink-doc-text);
+  -webkit-app-region: no-drag;
+}
+
+@media (prefers-color-scheme: dark) {
+  .inkchapter-doc-toolbar-ui {
+    --ink-doc-surface: #252526;
+    --ink-doc-surface-strong: #2f2f30;
+    --ink-doc-hairline: #3a3a3a;
+    --ink-doc-text: #e6e6e6;
+    --ink-doc-secondary: #a0a0a0;
+    --ink-doc-selection: #333333;
+    --ink-doc-hover: rgba(255, 255, 255, 0.06);
+  }
+}
 
 /* 承载节点必须有真实尺寸，否则 toolbar 宽度为 0，运行时会判定不可渲染。 */
 .inkchapter-doc-status-host {
@@ -5291,60 +5327,52 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   box-shadow: none;
 }
 
-/* 根节点只负责锚点与叠层；宽度完全由 layout 决定（fixed + shrink-to-fit）。 */
-.inkchapter-doc-toolbar-ui {
-  position: fixed;
-  z-index: 2147483000;
-  box-sizing: border-box;
-  pointer-events: none;
-  -webkit-app-region: no-drag;
-}
-
 /* ── 唯一宽度权威 ───────────────────────────────────────────────────── */
 .inkchapter-doc-expand__layout {
   display: flex;
   flex-direction: column;
   gap: 5px;
   box-sizing: border-box;
-  width: 32px;
+  width: 40px;
   min-width: 0;
   pointer-events: auto;
-  border-radius: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--ink-doc-radius);
   background: transparent;
   box-shadow: none;
-  overflow: hidden;
 }
 
 .inkchapter-doc-toolbar-ui[data-expanded="true"] .inkchapter-doc-expand__layout {
   width: min(360px, var(--inkchapter-toolbar-available, 360px));
-  /* One opaque, shallow sheet: the panel floats over prose. No border/shadow. */
-  background: #fafafa;
+  background: var(--ink-doc-surface);
+  border-color: var(--ink-doc-hairline);
 }
 
-/* ── header：100% 宽，三标签等分 + 32px 状态热区 ───────────────────── */
+/* ── header：34px 高；三标签等分 + 38px 状态列（热区 32 居中） ─────── */
 .inkchapter-doc-expand__row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 32px;
+  grid-template-columns: minmax(0, 1fr) 38px;
   align-items: center;
   width: 100%;
-  height: 32px;
+  height: 34px;
   min-width: 0;
   box-sizing: border-box;
 }
 
 .inkchapter-doc-expand__tabs {
+  grid-column: 1;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: center;
   gap: 2px;
-  padding: 0 2px;
+  padding: 0 4px 0 6px;
   width: 100%;
   min-width: 0;
   height: 100%;
   box-sizing: border-box;
   opacity: 0;
   clip-path: inset(0 0 0 100%);
-  transition: opacity 120ms ease, clip-path 180ms ease;
+  transition: opacity 140ms ease, clip-path 180ms ease;
   pointer-events: none;
 }
 
@@ -5363,26 +5391,27 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   appearance: none;
   border: 0;
   background: transparent;
-  color: inherit;
-  height: 26px;
+  color: var(--ink-doc-secondary);
+  height: 28px;
   padding: 0 4px;
-  border-radius: 4px;
-  font-size: 12px;
-  line-height: 26px;
+  border-radius: var(--ink-doc-radius-sm);
+  font-size: 12.5px;
+  line-height: 28px;
   text-align: center;
   cursor: pointer;
-  opacity: 0.72;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
-.inkchapter-doc-expand__tab:hover { opacity: 1; background: rgba(127, 127, 127, 0.12); }
-.inkchapter-doc-expand__tab.is-active { opacity: 1; background: rgba(127, 127, 127, 0.16); font-weight: 600; }
+.inkchapter-doc-expand__tab:hover { color: var(--ink-doc-text); background: var(--ink-doc-hover); }
+.inkchapter-doc-expand__tab.is-active { color: var(--ink-doc-text); background: var(--ink-doc-selection); font-weight: 600; }
 .inkchapter-doc-expand__tab:focus-visible { outline: 2px solid var(--text-accent, #4a8cff); outline-offset: -2px; }
 
-/* ── 状态方块：32px 透明热区，12px 纯色方块，无白壳 ───────────────── */
+/* ── 状态方块：32px 透明热区；15px 方块；无白壳 ───────────────────── */
 .inkchapter-doc-status {
+  grid-column: 2;
   appearance: none;
   -webkit-appearance: none;
   width: 32px;
@@ -5390,6 +5419,7 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  justify-self: center;
   padding: 0;
   margin: 0;
   border: 0;
@@ -5403,28 +5433,28 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 }
 
 .inkchapter-doc-status__square {
-  width: 12px;
-  height: 12px;
-  border-radius: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
   display: block;
-  background: #8b949e;
+  background: #89919b;
   transition: background-color 120ms ease, filter 120ms ease;
 }
 
 .inkchapter-doc-status__lock-frame {
   position: absolute;
-  left: 6px;
-  top: 6px;
-  width: 20px;
-  height: 20px;
+  left: 5px;
+  top: 5px;
+  width: 22px;
+  height: 22px;
   box-sizing: border-box;
   border: 1.5px solid transparent;
-  border-radius: 3px;
+  border-radius: 4px;
   pointer-events: none;
 }
 
-.inkchapter-doc-status:hover .inkchapter-doc-status__square { filter: brightness(1.18); }
-.inkchapter-doc-status:active .inkchapter-doc-status__square { filter: brightness(0.92); }
+.inkchapter-doc-status:hover .inkchapter-doc-status__square { filter: brightness(1.12); }
+.inkchapter-doc-status:active .inkchapter-doc-status__square { filter: brightness(0.94); }
 
 .inkchapter-doc-status:focus-visible {
   outline: 2px dashed var(--text-accent, #4a8cff);
@@ -5437,19 +5467,17 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   width: 100%;
   min-width: 0;
   margin-top: 0;
-  padding: 2px 4px 5px;
+  padding: 8px 10px 9px;
   box-sizing: border-box;
-  border-radius: 0 0 8px 8px;
   background: transparent;
   color: inherit;
   font-size: 12px;
   line-height: 1.5;
   opacity: 0;
   transform: translateY(-2px);
-  transition: opacity 100ms ease, transform 120ms ease;
+  transition: opacity 120ms ease, transform 140ms ease;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
   max-height: var(--inkchapter-toolbar-panel-max, calc(100vh - 140px));
 }
 
@@ -5461,9 +5489,10 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 .inkchapter-doc-expand__panel[hidden] { display: none !important; }
 
 .inkchapter-doc-expand__section {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 6px;
   min-width: 0;
   min-height: 0;
 }
@@ -5471,26 +5500,29 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 .inkchapter-doc-expand__line {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
-  min-height: 18px;
+  min-height: 20px;
 }
 
 .inkchapter-doc-expand__overview {
   justify-content: space-between;
-  min-height: 20px;
+  min-height: 24px;
 }
 
-.inkchapter-doc-expand__filters {
-  flex-wrap: wrap;
+.inkchapter-doc-expand__overview-actions {
+  display: inline-flex;
+  align-items: center;
   gap: 2px;
-  min-height: 18px;
+  flex: 0 0 auto;
 }
 
 .inkchapter-doc-expand__summary {
   flex: 1 1 auto;
   min-width: 0;
-  opacity: 0.88;
+  color: var(--ink-doc-text);
+  font-size: 12px;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5500,7 +5532,7 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   min-width: 0;
   font-size: 10.5px;
   line-height: 1.45;
-  opacity: 0.58;
+  color: var(--ink-doc-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5508,24 +5540,30 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 
 .inkchapter-doc-expand__actions { gap: 6px; }
 .inkchapter-doc-expand__actions.is-secondary { margin-top: 1px; }
+.inkchapter-doc-expand__actions.is-primary-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
 
 .inkchapter-doc-expand__button {
   appearance: none;
   flex: 0 0 auto;
-  padding: 1px 7px;
-  border-radius: 4px;
-  border: 1px solid rgba(127, 127, 127, 0.28);
-  background: rgba(127, 127, 127, 0.06);
-  color: inherit;
-  font-size: 11px;
-  line-height: 1.5;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: var(--ink-doc-radius-sm);
+  border: 1px solid var(--ink-doc-hairline);
+  background: transparent;
+  color: var(--ink-doc-text);
+  font-size: 11.5px;
+  line-height: 1.4;
   cursor: pointer;
   white-space: nowrap;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .inkchapter-doc-expand__button.is-primary {
-  border-color: rgba(127, 127, 127, 0.36);
-  background: rgba(127, 127, 127, 0.12);
+  background: var(--ink-doc-surface-strong);
 }
 
 .inkchapter-doc-expand__button.is-link,
@@ -5534,12 +5572,13 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   background: transparent;
   padding-left: 2px;
   padding-right: 2px;
-  opacity: 0.78;
+  color: var(--ink-doc-secondary);
+  min-height: 22px;
 }
 
-.inkchapter-doc-expand__button:hover:not(:disabled) { background: rgba(127, 127, 127, 0.16); }
+.inkchapter-doc-expand__button:hover:not(:disabled) { background: var(--ink-doc-hover); }
 .inkchapter-doc-expand__button.is-link:hover:not(:disabled),
-.inkchapter-doc-expand__button.is-ghost:hover:not(:disabled) { background: transparent; opacity: 1; }
+.inkchapter-doc-expand__button.is-ghost:hover:not(:disabled) { background: transparent; color: var(--ink-doc-text); }
 .inkchapter-doc-expand__button:disabled { opacity: 0.42; cursor: not-allowed; }
 .inkchapter-doc-expand__button:focus-visible { outline: 2px solid var(--text-accent, #4a8cff); outline-offset: 1px; }
 
@@ -5549,74 +5588,121 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--ink-doc-radius-sm);
   background: transparent;
-  color: inherit;
-  opacity: 0.62;
+  color: var(--ink-doc-secondary);
   cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
 }
-.inkchapter-doc-expand__icon-button:hover:not(:disabled) { opacity: 1; background: rgba(127, 127, 127, 0.12); }
+.inkchapter-doc-expand__icon-button:hover:not(:disabled) { color: var(--ink-doc-text); background: var(--ink-doc-hover); }
 .inkchapter-doc-expand__icon-button:disabled { opacity: 0.32; cursor: not-allowed; }
 .inkchapter-doc-expand__icon-button:focus-visible { outline: 2px solid var(--text-accent, #4a8cff); outline-offset: 1px; }
 .inkchapter-doc-expand__icon-button svg { display: block; }
+.inkchapter-doc-expand__filter-button.is-active { color: var(--ink-doc-text); background: var(--ink-doc-selection); }
 
-/* ── 诊断列表：三列栅格（色点 / 标题+说明 / 右对齐行号） ───────────── */
+/* ── 筛选 popup（Fluent 菜单，非四按钮排） ─────────────────────────── */
+.inkchapter-doc-expand__filter-popup {
+  position: absolute;
+  top: 30px;
+  right: 0;
+  z-index: 2;
+  min-width: 168px;
+  padding: 4px;
+  box-sizing: border-box;
+  border: 1px solid var(--ink-doc-hairline);
+  border-radius: var(--ink-doc-radius);
+  background: var(--ink-doc-surface);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.10);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.inkchapter-doc-expand__filter-option {
+  appearance: none;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: var(--ink-doc-radius-sm);
+  background: transparent;
+  color: var(--ink-doc-text);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+.inkchapter-doc-expand__filter-option:hover { background: var(--ink-doc-hover); }
+.inkchapter-doc-expand__filter-option[aria-checked="true"] { background: var(--ink-doc-selection); }
+.inkchapter-doc-expand__filter-option:focus-visible { outline: 2px solid var(--text-accent, #4a8cff); outline-offset: -2px; }
+.inkchapter-doc-expand__filter-check { width: 14px; font-size: 11px; color: var(--ink-doc-secondary); }
+.inkchapter-doc-expand__filter-label { min-width: 0; }
+.inkchapter-doc-expand__filter-count {
+  color: var(--ink-doc-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 诊断列表：色点 / 标题+说明 / 40px 右对齐行号 ─────────────────── */
 .inkchapter-doc-expand__list {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  max-height: min(340px, calc(var(--inkchapter-toolbar-panel-max, 600px) - 64px));
+  gap: 1px;
+  max-height: min(380px, calc(var(--inkchapter-toolbar-panel-max, 600px) - 64px));
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   margin-top: 2px;
-  padding: 0;
+  padding: 0 2px 0 0;
   scrollbar-gutter: stable;
 }
 
-.inkchapter-doc-expand__list::-webkit-scrollbar { width: 8px; }
+.inkchapter-doc-expand__list::-webkit-scrollbar { width: 6px; }
 .inkchapter-doc-expand__list::-webkit-scrollbar-thumb {
-  background: rgba(127, 127, 127, 0.28);
-  border-radius: 4px;
+  background: rgba(41, 50, 65, 0.22);
+  border-radius: 3px;
 }
 .inkchapter-doc-expand__list::-webkit-scrollbar-track { background: transparent; }
 
 .inkchapter-doc-expand__diag {
   appearance: none;
   display: grid;
-  grid-template-columns: 6px minmax(0, 1fr) 34px;
+  grid-template-columns: 6px minmax(0, 1fr) 40px;
   column-gap: 8px;
   align-items: start;
   width: 100%;
   text-align: left;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--ink-doc-radius-sm);
   background: transparent;
   color: inherit;
-  padding: 4px 5px;
+  padding: 7px 8px;
   cursor: pointer;
   font-size: 12.5px;
-  line-height: 1.45;
+  line-height: 1.4;
 }
 
-.inkchapter-doc-expand__diag:hover { background: rgba(127, 127, 127, 0.10); }
-.inkchapter-doc-expand__diag:focus-visible { outline: 1px solid var(--text-accent, #4a8cff); outline-offset: -1px; }
+.inkchapter-doc-expand__diag:hover { background: var(--ink-doc-hover); }
+.inkchapter-doc-expand__diag:focus-visible { outline: 2px solid var(--text-accent, #4a8cff); outline-offset: -2px; }
 
 .inkchapter-doc-expand__diag-dot {
   width: 6px;
   height: 6px;
   margin-top: 5px;
   border-radius: 50%;
-  background: rgba(127, 127, 127, 0.55);
+  background: var(--ink-doc-hint);
 }
-.inkchapter-doc-expand__diag.is-error .inkchapter-doc-expand__diag-dot { background: #cf222e; }
-.inkchapter-doc-expand__diag.is-warning .inkchapter-doc-expand__diag-dot { background: #d29922; }
+.inkchapter-doc-expand__diag.is-error .inkchapter-doc-expand__diag-dot { background: var(--ink-doc-error); }
+.inkchapter-doc-expand__diag.is-warning .inkchapter-doc-expand__diag-dot { background: var(--ink-doc-warning); }
 .inkchapter-doc-expand__diag.is-hint .inkchapter-doc-expand__diag-dot,
-.inkchapter-doc-expand__diag.is-info .inkchapter-doc-expand__diag-dot { background: #5d7181; }
+.inkchapter-doc-expand__diag.is-info .inkchapter-doc-expand__diag-dot { background: var(--ink-doc-hint); }
 
 .inkchapter-doc-expand__diag-body {
   min-width: 0;
@@ -5626,15 +5712,17 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 }
 
 .inkchapter-doc-expand__diag-title {
+  color: var(--ink-doc-text);
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .inkchapter-doc-expand__diag-detail {
-  font-size: 11px;
-  line-height: 1.35;
-  opacity: 0.62;
+  color: var(--ink-doc-secondary);
+  font-size: 11.5px;
+  line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -5643,38 +5731,38 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 }
 
 .inkchapter-doc-expand__diag-loc {
-  font-size: 10.5px;
-  line-height: 1.5;
-  opacity: 0.5;
+  color: var(--ink-doc-secondary);
+  font-size: 11px;
+  line-height: 1.45;
   text-align: right;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   margin-top: 1px;
 }
 
-.inkchapter-doc-expand__filter {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font-size: 10.5px;
-  line-height: 1.4;
-  padding: 1px 6px;
-  border-radius: 4px;
-  cursor: pointer;
-  opacity: 0.62;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.inkchapter-doc-expand__filter:hover { opacity: 0.92; background: rgba(127, 127, 127, 0.10); }
-.inkchapter-doc-expand__filter.is-active { opacity: 1; background: rgba(127, 127, 127, 0.16); font-weight: 600; }
-.inkchapter-doc-expand__filter:focus-visible { outline: 1px solid var(--text-accent, #4a8cff); outline-offset: -1px; }
-
 .inkchapter-doc-expand__empty {
   flex: 1 1 auto;
-  opacity: 0.6;
-  font-size: 11.5px;
-  padding: 2px 1px;
+  color: var(--ink-doc-secondary);
+  font-size: 12px;
+  padding: 4px 1px;
+}
+
+/* ── 锁定标签：一行状态 + 右侧按钮 ───────────────────────────────── */
+.inkchapter-doc-expand__lock-line {
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 26px;
+}
+.inkchapter-doc-expand__lock-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.inkchapter-doc-expand__lock-icon {
+  display: inline-flex;
+  color: var(--ink-doc-secondary);
 }
 
 /* 旧计数条 / 锁定按钮（隐藏兼容节点）不显示。 */
@@ -5689,25 +5777,6 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 .inkchapter-doc-toolbar-ui .inkchapter-doc-expand__row,
 .inkchapter-doc-toolbar-ui .inkchapter-doc-status {
   -webkit-app-region: no-drag;
-}
-
-/* ── 深色主题：同一 alpha 体系，仅提高对比度（无霓虹/发光） ───────── */
-@media (prefers-color-scheme: dark) {
-  .inkchapter-doc-toolbar-ui[data-expanded="true"] .inkchapter-doc-expand__layout {
-    background: #262626;
-    color: #d8d8d8;
-  }
-
-  .inkchapter-doc-status { color: #b8c0c8; }
-  .inkchapter-doc-expand__tab:hover { background: rgba(255, 255, 255, 0.10); }
-  .inkchapter-doc-expand__tab.is-active { background: rgba(255, 255, 255, 0.14); }
-  .inkchapter-doc-expand__button { border-color: rgba(255, 255, 255, 0.18); background: rgba(255, 255, 255, 0.05); }
-  .inkchapter-doc-expand__button.is-primary { border-color: rgba(255, 255, 255, 0.24); background: rgba(255, 255, 255, 0.10); }
-  .inkchapter-doc-expand__button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.12); }
-  .inkchapter-doc-expand__diag:hover { background: rgba(255, 255, 255, 0.07); }
-  .inkchapter-doc-expand__filter:hover { background: rgba(255, 255, 255, 0.08); }
-  .inkchapter-doc-expand__filter.is-active { background: rgba(255, 255, 255, 0.13); }
-  .inkchapter-doc-expand__list::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.24); }
 }
 
 /* ── 减弱动效 ─────────────────────────────────────────────────────── */
