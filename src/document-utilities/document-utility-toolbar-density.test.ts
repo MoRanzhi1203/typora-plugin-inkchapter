@@ -258,13 +258,13 @@ describe('TB-DENSITY-6/9 edit-lock semantics + locked state', () => {
     hub.switchTab('lock')
     const panel = hub.getPanelElement()!
     const lockButton = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '锁定文档')
+      .find(btn => btn.textContent === '锁定')
     expect(lockButton).toBeTruthy()
     lockButton!.click()
     expect(square.classList.contains('is-locked')).toBe(true)
     // 面板在锁定后重建为“解锁文档”
     const unlock = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '解锁文档')
+      .find(btn => btn.textContent === '解锁')
     expect(unlock).toBeTruthy()
     unlock!.click()
     expect(square.classList.contains('is-locked')).toBe(false)

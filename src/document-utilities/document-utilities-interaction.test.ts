@@ -104,7 +104,7 @@ describe('INTERACTION-2 lock blocks edits, allows selection/copy/scroll, unlock 
     hub.switchTab('lock')
     const panel = hub.getPanelElement()!
     const lock = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '锁定文档')!
+      .find(btn => btn.textContent === '锁定')!
     lock.click()
     expect(status.classList.contains('is-locked')).toBe(true)
 
@@ -143,7 +143,7 @@ describe('INTERACTION-2 lock blocks edits, allows selection/copy/scroll, unlock 
 
     // Unlock restores.
     const unlock = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '解锁文档')!
+      .find(btn => btn.textContent === '解锁')!
     unlock.click()
     expect(status.classList.contains('is-locked')).toBe(false)
     expect(beforeInput('insertText').defaultPrevented).toBe(false)

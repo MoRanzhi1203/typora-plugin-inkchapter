@@ -1,74 +1,90 @@
-# Document Hub & Image Batch（状态方块 / 可展开工具栏 / 图片批量 / 导航器规则）
+# Document Hub & Image Batch（状态方块 / 一体化可展开工具栏 / 图片批量 / 导航器规则）
 
-> 适用版本：V5.2（提交见 Git 历史）。
+> 适用版本：V5.2（一体化重构）。
 > 相关源码：`src/document-utilities/document-status-indicator.ts`、`document-hub-model.ts`、
 > `document-hub-controller.ts`、`document-utility-overlay-host.ts`；
 > `src/image-management/document-image-batch.ts`、`document-image-batch-service.ts`；
 > 设置页 `src/settings/image-management-setting-tab.ts` 及三级作用域服务。
 
-## §1 收起态：纯色状态方块
+## §1 视觉根因（白色外壳）
 
-- 右上角唯一常驻入口是 `.inkchapter-doc-status`（32px 透明热区）。
-- 收起时只显示 12px 纯色方块（圆角 2px）：`GREEN` / `YELLOW` / `RED` / `GRAY`。
-  颜色语义与 V5.1 一致：错误优先于警告；未检查/检测中/结构未验证不冒充绿色。
-- 热区 `background: transparent`、`border: 0`、`box-shadow: none`，没有白色圆角外壳；
-  hover 只做轻微亮度变化，激活/展开不恢复白框。
-- **只有真实锁定**才在方块外约 3px 显示 1.5px 中性色细线方框（`__lock-frame`），
-  锁定不改变三色；`focus-visible` 使用虚线焦点轮廓，与锁定实线框区分。
-- 方块以 `data-status / data-error-count / data-warning-count / data-hint-count / data-locked`
-  暴露投影；不显示常驻数字或「编辑」按钮。
+右侧“白色圆角按钮/浮窗”并不是方块自身的样式，而是**祖先节点**：
 
-## §2 展开态：左向标签栏 + 单一内容区
+```scss
+/* src/style.scss（历史规则） */
+.inkchapter-doc-toolbar {
+  background: var(--ink-ui-utility-surface, #fff);
+  border: 1px solid var(--ink-ui-utility-border, #ddd);
+  border-radius: var(--ink-ui-utility-radius-toolbar, 6px);
+  box-shadow: var(--ink-ui-shadow-float, 0 2px 10px rgba(0, 0, 0, .12));
+  padding: 1px 4px;
+}
+```
 
-- 单击色块（260ms 仲裁窗口后）展开横向标签栏：**检测（默认）｜图片｜锁定**；
-  右端锚定在色块，内容向左展开（`clip-path + transform + opacity`，180ms；支持
-  `prefers-reduced-motion`）。
-- 再次单击、Esc、点击外部、切换文档都会收起。
-- 三个标签共用**一个**内容区（`.inkchapter-doc-expand__panel`），切换标签只替换该容器内容；
-  不创建第二层浮窗，不打开旧诊断抽屉。
-- 双击色块只切换真实锁定一次：手势仲裁器取消待执行的单击展开，不产生「展开→收起」闪烁。
-  锁定失败时不会本地伪装成已锁定（状态只由 host 的 `update()` 推送真实状态）。
-- 锁定标签与双击共用同一个 `toggleLock` 入口；锁定后仍可查看检测与图片状态。
+V5.1/V5.2 的状态方块与标签栏都挂在这个容器内，所以只改内部方块会留下“白壳”。
+V5.2 的修复：
 
-### 检测标签
+- `.inkchapter-doc-toolbar` 只中和视觉外壳（`background: transparent`、`border-color: transparent`、
+  `box-shadow: none`），**保留**历史 geometry 需要的尺寸/密度契约；
+- 承载节点 `.inkchapter-doc-status-host` 显式 `32px × 32px`，避免 toolbar 宽度归零导致
+  “不可渲染”判定；
+- 组件根 `.inkchapter-doc-toolbar-ui` 以 host 的 rect 锚定（`right/top`），不占用 rAF 队列。
 
-- 默认紧凑摘要：`N 错误 · M 警告`（未检查显示「尚未检测或检测不可用」）；
-  按钮「重新检测」与「详情」。
-- 「详情」在同容器内切换为诊断列表（来自真实快照，可滚动）；点击条目不打开旧抽屉，
-  关闭工具栏后调用现有定位入口。列表为空显示「未发现问题」。
+## §2 收起态：一个纯色方块
 
-### 图片标签
+- 12px 纯色方块（圆角 2px），32px 透明热区：`background: transparent`、`border: 0`、`box-shadow: none`。
+- 颜色：`GREEN` / `YELLOW` / `RED` / `GRAY`（错误优先；未检查/检测中/结构未验证不冒充绿色）。
+- 锁定时仅在方块外约 3px 显示 1.5px 中性细线框（`currentColor`），不改变三色；
+  `focus-visible` 用虚线轮廓，与锁定实线框区分。
+- hover 只做亮度变化，不产生白色按钮外壳。
 
-- 未启用：一行「图片管理未启用」+「配置当前文档」。
-- 已启用：生效来源、当前生效的 Typora 原生插入方式（只读展示）、自动同步、引用统计、
-  可复用、待传输；按钮「上传本文图片」「下载本文图片」「检查并补齐双链」「当前文档高级设置」。
-- 无待传项时按钮禁用并给出 `title` 原因；锁定时上传需先解锁。
-- 只打开标签/查看预检**不创建任何目录、不传文件、不改写 Markdown**；实际落盘必须经
-  `预检 → 用户确认 → 执行`，沿用 V4.0 SHA-256 去重与 `REUSED_*` / `NEW` 语义。
+## §3 展开态：一体化横向工具栏
 
-## §3 生命周期与隔离
+```text
+.inkchapter-doc-toolbar-ui           (fixed，右端锚定，唯一 DOM 宿主)
+├─ .inkchapter-doc-expand__row        (横向：标签栏 + 方块)
+│   ├─ .inkchapter-doc-expand__tabs   (检测｜图片｜锁定，仅展开时显示)
+│   └─ button.inkchapter-doc-status   (色块 + 透明热区)
+└─ .inkchapter-doc-expand__panel      (唯一内容区，仅选中标签时显示，最小高度)
+```
 
-- 展开容器只创建一次；打开/关闭只切换 `hidden` 与动画类，不重复建 DOM。
+- 单击色块：标签栏从色块左侧展开（`clip-path + transform + opacity`，180ms；支持
+  `prefers-reduced-motion`），默认选中检测并显示**一行**摘要。
+- 再点当前标签：内容区收起（标签栏保留）；点其他标签切换。
+- 再次单击色块 / Esc / 外部点击 / 切换文档：整体收起；收起时 `tabs/panel` 均 `hidden`，
+  不占视觉空间、不拦截指针；不重建 DOM。
+- 双击色块：只切换真实锁定（260ms 手势仲裁，不触发展开/收起闪烁）。
+- 内容区保持紧凑：检测一行计数 + 刷新/详情；图片 1–2 行摘要 + 操作；锁定一行状态 + 按钮。
+- 详情在**同一 panel** 内切换为可滚动诊断列表；点击条目关闭工具栏后调用既有定位入口，
+  不打开旧诊断抽屉。
+
+## §4 图片标签与约束
+
+- 未启用：一行「图片管理未启用」+ 配置。
+- 当前文档无图片：一行「当前文档没有图片」+ 设置（不显示 0 计数，不显示无效批量按钮）。
+- 有图片：一行来源 + 引用数；按钮「上传全部」「下载全部」「双链」「设置」。
+  批量操作沿用 `预检 → 用户确认 → 执行`，复用 `REUSED_*`/`NEW` 语义，默认不改写 Markdown；
+  预检不创建任何目录，实际落盘必须经用户确认。
+- 详细配置进入完整设置页，不在工具栏内展开表单。
+
+## §5 生命周期与隔离
+
 - 文档切换（host `reconcileActiveDocument` 的 full 分支）调用 `close()`，清空上一文档详情。
-- `documentHub` 注入失败/图片摘要异步失败只影响工具栏自身（fail-open），不中断诊断、
-  几何或右下角导航器。
-- 导航器规则保持：只有真实纵向滚动范围的活动文档才显示；短文档隐藏；长短切换与窗口
-  尺寸变化后重新计算。
-- 所有 UI 节点都在 overlay 宿主中，绝不进入 `#write` 或 Markdown 序列化内容。
+- 图片摘要/工具栏渲染失败只影响自身（fail-open），不中断诊断、几何或导航器。
+- 导航器规则保持：只有真实纵向滚动范围才显示；短文档隐藏；长短切换与窗口尺寸变化后重算。
+- UI 节点仅在 overlay 宿主内，绝不进入 `#write` 或 Markdown 序列化内容。
 
-## §4 测试与证据
+## §6 测试
 
-- 状态/模型：`document-status-indicator.test.ts`、`document-hub-model.test.ts`
-- 工具栏契约：`document-hub-controller.test.ts`（收起无白壳、锁框中性、单击/双击仲裁、
-  三标签单内容区、详情内部切换、图片按钮回调/禁用、Esc/外部关闭、单实例、CSS 契约）
-- 批量：`document-image-batch.test.ts`、`document-image-batch-service.test.ts`
-- 导航器：`document-utility-navigator-document-switch.test.ts` 等
-- Host 集成：`document-utility-overlay-host.test.ts`、`document-utilities-interaction.test.ts`、
-  `document-utility-toolbar-density.test.ts`
+- `document-hub-controller.test.ts`：收起无白壳、锁框中性、单击/双击仲裁、三标签单内容区、
+  详情内部切换、图片空状态与按钮禁用、Esc/外部关闭、单实例、CSS 契约（透明热区/12px/1.5px/
+  reduced-motion）。
+- `document-hub-model.test.ts`、`document-status-indicator.test.ts`、批量服务测试、
+  `document-utility-navigator-document-switch.test.ts`、host 集成与密度测试。
 
-## §5 尚未验证（GUI）
+## §7 尚未验证（GUI）
 
-- 真实 Typora 中单击/双击的鼠标手势（125% DPI 自动点击不可靠，需人工确认）。
-- 展开动画、标签切换、详情滚动、锁框与焦点视觉。
-- 图片标签按钮的真实上传/下载/补链（需凭据与网络，且默认不自动执行）。
-- 100% / 125% / 150% DPI、浅/深主题、窗口缩放与侧栏拖拽下的定位。
+- 真实 Typora 中单击展开/双击锁定/标签点击（125% DPI 合成点击不可靠；合成鼠标事件无法触发
+  该窗口内的 DOM click）。
+- 展开动画、锁框与焦点视觉、深浅主题、100/125/150% DPI。
+- 图片按钮的真实上传/下载/补链（需凭据/网络，默认不自动执行）。

@@ -164,7 +164,8 @@ describe('V5.2 collapsed status square', () => {
     const frameBody = ruleBodies('.inkchapter-doc-status__lock-frame')
     expect(frameBody).toContain('1.5px solid transparent')
     expect(SCSS).toContain('prefers-reduced-motion')
-    expect(ruleBodies('.inkchapter-doc-expand').length).toBeGreaterThan(0)
+    expect(ruleBodies('.inkchapter-doc-expand__tabs').length).toBeGreaterThan(0)
+    expect(ruleBodies('.inkchapter-doc-expand__panel').length).toBeGreaterThan(0)
   })
 })
 
@@ -255,7 +256,7 @@ describe('V5.2 three tabs, one content area', () => {
     ;(mountEl.querySelectorAll('.inkchapter-doc-expand__tab')[1] as HTMLButtonElement).click()
     expect(panel(controller).textContent).toContain('图片管理未启用')
     const configure = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '配置当前文档')!
+      .find(btn => btn.textContent === '配置')!
     configure.click()
     expect(controller['options'].actions.openImageSettings).toHaveBeenCalledTimes(1)
   })
@@ -266,11 +267,11 @@ describe('V5.2 three tabs, one content area', () => {
     vi.advanceTimersByTime(300)
     ;(mountEl.querySelectorAll('.inkchapter-doc-expand__tab')[1] as HTMLButtonElement).click()
     expect(panel(controller).textContent).toContain('覆盖：当前文档')
-    expect(panel(controller).textContent).toContain('复制到 ./assets')
+    expect(panel(controller).textContent).toContain('4 处引用')
     const upload = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '上传本文图片')!
+      .find(btn => btn.textContent === '上传全部')!
     const download = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '下载本文图片')!
+      .find(btn => btn.textContent === '下载全部')!
     upload.click()
     download.click()
     expect(a.uploadAll).toHaveBeenCalledTimes(1)
@@ -284,7 +285,7 @@ describe('V5.2 three tabs, one content area', () => {
     })
     controller.update(buildDocumentStatusView(FACTS, false), idle)
     const upload2 = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
-      .find(btn => btn.textContent === '上传本文图片')!
+      .find(btn => btn.textContent === '上传全部')!
     expect(upload2.disabled).toBe(true)
     expect(upload2.title).toContain('没有待上传')
   })
