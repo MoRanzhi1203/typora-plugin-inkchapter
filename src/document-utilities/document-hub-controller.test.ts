@@ -19,11 +19,15 @@ import { buildDocumentHubModel, type DocumentHubDiagnosticItem } from './documen
 import { buildDocumentStatusView, type DocumentStatusFacts } from './document-status-indicator'
 
 const SCSS = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
+// Comments between rules otherwise glue onto the following selector chunk and
+// hide the real rule from `ruleBodies` — strip them, like the OVERLAY/DENSITY
+// suites already do. Assertions are unchanged (no relaxation).
+const SCSS_RULES = SCSS.replace(/\/\*[\s\S]*?\*\//g, '')
 function ruleBodies(selector: string): string {
   const out: string[] = []
   const re = /([^{}]+)\{([^{}]*)\}/g
   let m: RegExpExecArray | null
-  while ((m = re.exec(SCSS)) !== null) {
+  while ((m = re.exec(SCSS_RULES)) !== null) {
     const sels = m[1].split(',').map(s => s.trim())
     if (sels.includes(selector)) out.push(m[2])
   }
@@ -170,6 +174,106 @@ describe('V5.2 collapsed status square', () => {
   })
 })
 
+describe('V5.2 single equal-width layout authority', () => {
+  it('header and content are the two 100% children of the ONE layout; status hotspot is inside header', () => {
+    const { controller, mountEl } = mount()
+    const els = controller.getLayoutElements()
+    expect(els.layout).not.toBeNull()
+    expect(els.header!.parentElement).toBe(els.layout)
+    expect(els.content!.parentElement).toBe(els.layout)
+    expect(els.layout!.children).toHaveLength(2)
+    expect(els.header!.children).toHaveLength(2)
+    expect(status(controller).parentElement).toBe(els.header)
+    expect(els.header!.querySelector('.inkchapter-doc-expand__tabs')).not.toBeNull()
+    expect(mountEl.querySelectorAll('.inkchapter-doc-expand__layout')).toHaveLength(1)
+    expect(mountEl.querySelectorAll('.inkchapter-doc-expand__panel')).toHaveLength(1)
+  })
+
+  it('CSS: layout is the only width authority; header/content both width:100% + border-box', () => {
+    const layoutBody = ruleBodies('.inkchapter-doc-expand__layout')
+    expect(layoutBody).toContain('width: 32px')
+    expect(layoutBody).toContain('gap: 5px')
+    expect(layoutBody).toContain('box-sizing: border-box')
+    const expandedBody = ruleBodies('.inkchapter-doc-toolbar-ui[data-expanded="true"] .inkchapter-doc-expand__layout')
+    expect(expandedBody).toContain('width: min(360px')
+
+    const headerBody = ruleBodies('.inkchapter-doc-expand__row')
+    expect(headerBody).toContain('grid-template-columns: minmax(0, 1fr) 32px')
+    expect(headerBody).toContain('width: 100%')
+    expect(headerBody).toContain('box-sizing: border-box')
+
+    const contentBody = ruleBodies('.inkchapter-doc-expand__panel')
+    expect(contentBody).toContain('width: 100%')
+    expect(contentBody).toContain('box-sizing: border-box')
+    expect(contentBody).not.toContain('max-width: 320px')
+
+    const tabsBody = ruleBodies('.inkchapter-doc-expand__tabs')
+    expect(tabsBody).toContain('grid-template-columns: repeat(3, minmax(0, 1fr))')
+    expect(tabsBody).toContain('width: 100%')
+    // Author `display: grid` beats UA [hidden]; the collapsed state must win.
+    expect(ruleBodies('.inkchapter-doc-expand__tabs[hidden]')).toContain('display: none')
+
+    // Exactly one right/top anchor is written by the controller (root only).
+    expect(ruleBodies('.inkchapter-doc-expand__row')).not.toContain('position: fixed')
+    expect(ruleBodies('.inkchapter-doc-expand__panel')).not.toContain('right:')
+    expect(ruleBodies('.inkchapter-doc-expand__panel')).not.toContain('left:')
+  })
+
+  it('collapsed layout is 32px wide, transparent, and exposes only the status hotspot', () => {
+    const { controller } = mount()
+    const els = controller.getLayoutElements()
+    expect(els.root!.getAttribute('data-expanded')).toBe('false')
+    expect((controller.getPanelElement() as HTMLElement).hidden).toBe(true)
+    const tabs = els.header!.querySelector('.inkchapter-doc-expand__tabs') as HTMLElement
+    expect(tabs.hidden).toBe(true)
+    expect(ruleBodies('.inkchapter-doc-expand__layout')).toContain('width: 32px')
+    expect(ruleBodies('.inkchapter-doc-expand__layout')).toContain('background: transparent')
+  })
+
+  it('tab switches rebuild only the single content panel (top-level layout unchanged)', () => {
+    const { controller, mountEl } = mount()
+    status(controller).click()
+    vi.advanceTimersByTime(300)
+    const layout = controller.getLayoutElements().layout
+    for (const tab of ['images', 'lock', 'diagnostics'] as const) {
+      ;(document.querySelectorAll(`.inkchapter-doc-expand__tab[data-tab="${tab}"]`)[0] as HTMLButtonElement).click()
+      expect(controller.getLayoutElements().layout).toBe(layout)
+      expect(mountEl.querySelectorAll('.inkchapter-doc-expand__layout')).toHaveLength(1)
+      expect(mountEl.querySelectorAll('.inkchapter-doc-expand__panel')).toHaveLength(1)
+      expect(controller.getLayoutElements().header!.parentElement).toBe(layout)
+      expect(controller.getLayoutElements().content!.parentElement).toBe(layout)
+    }
+  })
+
+  it('measureLayout reports left/right/width deltas (mock rects prove the comparison contract)', () => {
+    const { controller } = mount()
+    const els = controller.getLayoutElements()
+    const rect = (left: number, width: number) => ({
+      left, right: left + width, width, top: 0, bottom: 0, height: 0, x: left, y: 0,
+      toJSON: () => ({}),
+    }) as DOMRect
+    els.header!.getBoundingClientRect = () => rect(100, 360)
+    els.content!.getBoundingClientRect = () => rect(100, 360)
+    expect(controller.measureLayout()!.deltas).toEqual({ left: 0, right: 0, width: 0 })
+    els.content!.getBoundingClientRect = () => rect(102, 356)
+    const drift = controller.measureLayout()!.deltas
+    expect(drift.left).toBe(2)
+    expect(drift.right).toBe(2)
+    expect(drift.width).toBe(4)
+  })
+
+  it('keyboard arrows move tab focus across the three equal tabs', () => {
+    const { controller } = mount()
+    status(controller).click()
+    vi.advanceTimersByTime(300)
+    const first = document.querySelector<HTMLButtonElement>('.inkchapter-doc-expand__tab[data-tab="diagnostics"]')!
+    first.focus()
+    first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    expect(controller.getActiveTab()).toBe('images')
+    expect(document.querySelector<HTMLButtonElement>('.inkchapter-doc-expand__tab[data-tab="images"]')!.tabIndex).toBe(0)
+  })
+})
+
 describe('V5.2 single-click expand / double-click lock arbitration', () => {
   it('single click expands after the arbitration window and a second single click collapses', () => {
     const { controller } = mount()
@@ -224,7 +328,11 @@ describe('V5.2 diagnostics list (no summary page)', () => {
     const text = panel(controller).textContent ?? ''
     expect(text).not.toContain('详情')
     expect(text).not.toContain('返回')
-    expect(text).not.toContain('错误 · ')
+    // V5.2 layout redesign: the compact REAL-count overview is the only
+    // summary; the old summary→detail→back page stays gone.
+    expect(text).toContain('1 错误 · 1 警告')
+    expect(text).not.toContain('文档检测')
+    expect(panel(controller).querySelector('.inkchapter-doc-expand__overview')).not.toBeNull()
     const rows = panel(controller).querySelectorAll('.inkchapter-doc-expand__diag')
     expect(rows).toHaveLength(2)
     expect(rows[0].getAttribute('data-diagnostic-id')).toBe('d1')
@@ -307,10 +415,13 @@ describe('V5.2 images / lock tabs unchanged', () => {
     status(controller).click()
     vi.advanceTimersByTime(300)
     ;(document.querySelectorAll('.inkchapter-doc-expand__tab')[2] as HTMLButtonElement).click()
-    expect(panel(controller).textContent).toContain('编辑中')
+    expect(panel(controller).textContent).toContain('当前文档可编辑')
     ;(Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
       .find(b => b.textContent === '锁定') as HTMLButtonElement).click()
     expect(a.toggleLock).toHaveBeenCalledTimes(1)
+    controller.update(buildDocumentStatusView(FACTS, true), model(true))
+    expect(panel(controller).textContent).toContain('当前文档已锁定')
+    expect(panel(controller).textContent).toContain('解锁')
   })
 })
 
