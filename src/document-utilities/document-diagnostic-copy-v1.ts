@@ -110,6 +110,7 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   HEADING_EMPTY_TEXT: 310,
   HEADING_DUPLICATE_TEXT: 320,
   HEADING_DUPLICATE_IDENTITY: 330,
+  HEADING_NUMBER_SEQUENCE_INVALID: 335,
   LATENT_ATX_HEADING_MARKER: 340,
   // ── numbering (heading / objects) ─────────────────────────────────────────
   HEADING_MANUAL_NUMBER_PREFIX: 400,
@@ -276,6 +277,7 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   HEADING_LEVEL_GAP: { description: '标题层级出现跳级，中间缺少的层级未出现。', suggestion: '补充缺失的中间层级标题，或调整当前标题级别。' },
   HEADING_EMPTY_TEXT: { title: '标题为空', description: '标题没有文字内容。', suggestion: '为标题补充文字，或删除该空标题。' },
   HEADING_DUPLICATE_TEXT: { description: '多个标题使用相同文字，容易混淆。', suggestion: '修改标题文字以互相区分。' },
+  HEADING_NUMBER_SEQUENCE_INVALID: { title: '标题编号序列异常', description: '标题的有效显示编号在文档顺序中出现跳号或重复。', suggestion: '检查标题自动编号/手工编号，使同级编号连续。' },
   HEADING_DUPLICATE_IDENTITY: { title: '标题规范身份重复', description: '规范身份出现多次，可能导致编号与定位不稳定。', suggestion: '修改或删除重复的标题，使每个标题身份唯一。' },
   LATENT_ATX_HEADING_MARKER: { description: '该行尚未被识别为标题，但后续重新解析时可能成为标题。', suggestion: '如需始终作为普通文本，请使用反斜杠转义该标记。' },
   // ── numbering ─────────────────────────────────────────────────────────────

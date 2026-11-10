@@ -146,8 +146,54 @@ describe('B2 §B2-06 — formula source and render rules', () => {
   })
 })
 
-describe('B3 §B3-01/03 — profile wiring', () => {
-  it('academic profile enables the opt-in formula source limits', () => {
+describe('B2b — effective heading number sequence', () => {
+  const h = (level: number, path: number[], counted = true) => ({
+    level,
+    text: `H${level}`,
+    element: document.createElement('h' + level),
+    stableIdentity: `h-${level}-${path.join('.')}`,
+    counted,
+    displayCountedPath: path,
+  })
+
+  it('reports a same-depth number gap from the canonical display path', () => {
+    const d = run({
+      markdown: '# A\n\n## B\n\n## D\n',
+      headings: [h(1, [1]), h(2, [1, 1]), h(2, [1, 3])],
+    })
+    const issue = d.find(x => x.code === 'HEADING_NUMBER_SEQUENCE_INVALID')
+    expect(issue).toBeTruthy()
+    expect(issue!.severity).toBe('warning')
+    expect(issue!.location?.kind).toBe('canonical-node')
+  })
+
+  it('does not report a continuous path', () => {
+    const d = run({
+      markdown: '# A\n\n## B\n\n## C\n',
+      headings: [h(1, [1]), h(2, [1, 1]), h(2, [1, 2])],
+    })
+    expect(codes(d)).not.toContain('HEADING_NUMBER_SEQUENCE_INVALID')
+  })
+
+  it('ignores headings the canonical authority did not count', () => {
+    const d = run({
+      markdown: '# A\n\n## B\n',
+      headings: [h(1, [1]), h(2, [1, 3], false)],
+    })
+    expect(codes(d)).not.toContain('HEADING_NUMBER_SEQUENCE_INVALID')
+  })
+
+  it('leaves a level jump to HEADING_LEVEL_GAP instead of double-reporting', () => {
+    const d = run({
+      markdown: '# A\n\n### C\n',
+      headings: [h(1, [1]), h(3, [1, 1, 1])],
+    })
+    expect(codes(d)).toContain('HEADING_LEVEL_GAP')
+    expect(codes(d)).not.toContain('HEADING_NUMBER_SEQUENCE_INVALID')
+  })
+})
+
+describe('B3 §B3-01/03 — profile wiring', () => {  it('academic profile enables the opt-in formula source limits', () => {
     const d = run({
       markdown: '$$\n' + 'x'.repeat(320) + '\n$$\n',
       diagnosticProfile: resolveDiagnosticProfile('academic'),

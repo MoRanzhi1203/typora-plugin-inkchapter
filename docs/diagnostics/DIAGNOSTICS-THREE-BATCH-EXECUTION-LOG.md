@@ -104,6 +104,16 @@
 - BLOCKED：LINK_LOCAL_FILE_ANCHOR_MISSING、3 条交叉引用（无 canonical 语法/文件锚点权威）；TABLE_ALIGNMENT_INVALID、HEADING_NUMBER_SEQUENCE_INVALID、图片格式（缺可靠权威）
 - B2 报告：`docs/diagnostics/DIAGNOSTICS-BATCH-2-REPORT.md`
 - 合并：`git merge --no-ff feature/diagnostics-b2-rule-expansion` → `8d5e475e3dd334d99d0e8de329d7f8c920e15163`
+
+### 2026-11-10 — B2b 标题编号序列
+
+- 分支：`feature/diagnostics-b2b-heading-sequence`（从 `3eb5c69` 创建）
+- 新增：HEADING_NUMBER_SEQUENCE_INVALID（canonical counted + displayCountedPath，警告，canonical-node）
+- 规则总数：99 家族 / 105 注册解析代码 / 110 展开代码 / 106 生产器代码 / 101 可达；13-68-29 基准，可达 13-61-27
+- 全量测试：331 文件 / 5836 tests PASS，172.15s
+- 构建：PASS，`dist/main.js` SHA256 `124EECEBC2A5834D758AD021B29F538B8973C983F537764CDD9AA1A2796BCA09`
+- 合并：待执行
+
 - 状态：PARTIAL（实现项 PASS；4 条 DEFERRED 与表格对齐/标题编号/图片格式 BLOCKED，未虚假标记）
 
 ### 2026-11-10 — B3 学术档案与 Compact Inspector（PARTIAL）

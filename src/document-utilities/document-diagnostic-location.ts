@@ -340,6 +340,7 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   STRICT_SINGLE_H1_MULTIPLE_H1: 'error',
   FORMULA_DUPLICATE_VISIBLE_TAG: 'error',
   HEADING_DUPLICATE_IDENTITY: 'error',
+  HEADING_NUMBER_SEQUENCE_INVALID: 'warning',
   FIGURE_BLOCK_STRUCTURE_INVALID: 'error',
   TABLE_BLOCK_STRUCTURE_INVALID: 'error',
   FORMULA_BLOCK_STRUCTURE_INVALID: 'error',
@@ -645,6 +646,11 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   HEADING_EMPTY_TEXT: rule('HEADING_EMPTY_TEXT', 'heading', 'canonical-node'),
   HEADING_DUPLICATE_TEXT: rule('HEADING_DUPLICATE_TEXT', 'heading', 'multi-target'),
   HEADING_DUPLICATE_IDENTITY: rule('HEADING_DUPLICATE_IDENTITY', 'heading', 'canonical-node'),
+  // B2b — the canonical effective display path skips/repeats a number at its depth.
+  HEADING_NUMBER_SEQUENCE_INVALID: rule('HEADING_NUMBER_SEQUENCE_INVALID', 'heading', 'canonical-node', {
+    area: 'heading', capabilityCategory: 'heading', scope: 'heading',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
   // VNext §16/§17 — section completeness (heading-scoped hints).
   // §7 — Section Completeness is a CHILD of Document Completeness: when the
   // WHOLE document is bodyless the document-level hint owns the fact and these
