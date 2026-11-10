@@ -100,6 +100,15 @@ import { getDocumentInlineLinkAuthority } from './document-inline-link-authority
 // Code Block V4 — read-only lint (source-only, never edits the Markdown).
 import { analyzeCodeBlockV4 } from './document-diagnostic-code-block-v4'
 import { parseFencedCodeBlocks, readFenceSourceFromElement, codeContentSignature } from './content-block-toolbar-code-source'
+// B2 — source-only analyzers for table / list / formula / front matter.
+import {
+  analyzeFrontMatterBody,
+  analyzeFormulaSourceMetrics,
+  analyzeListIndentation,
+  analyzeTableColumnMismatches,
+  B2_FORMULA_SOURCE_LENGTH_LIMIT,
+  B2_FORMULA_SOURCE_LINE_LIMIT,
+} from './document-diagnostics-b2-authority'
 
 /** 0-based source line text (CR stripped) — the source-range `rawText` anchor. */
 function lineTextAt(markdown: string | null, line: number): string {
@@ -188,6 +197,20 @@ export interface DiagnosticFormulaFact {
   visibleTagTokens: string[]
   element: HTMLElement | null
   targetIdentity?: string
+}
+
+/**
+ * B2 §B2-06 — a runtime formula-render fact supplied by the DOM measurement
+ * provider. `PENDING` / absent means "do not judge"; only `MEASURED` with both
+ * widths and `FAILED` produce diagnostics.
+ */
+export interface FormulaRenderFact {
+  /** Canonical block identity (`block:formula:<ordinal>`). */
+  targetIdentity: string
+  status: 'MEASURED' | 'PENDING' | 'FAILED'
+  naturalWidth?: number
+  availableWidth?: number
+  reason?: string
 }
 
 export interface DiagnosticLinkFact {
@@ -321,6 +344,9 @@ export function resolveDocumentDiagnosticSeverity(
     case 'TABLE_BLOCK_STRUCTURE_INVALID':
     case 'FORMULA_BLOCK_STRUCTURE_INVALID':
       return 'error'
+    // B2 — a real LaTeX renderer reported failure for this formula block.
+    case 'FORMULA_LATEX_RENDER_FAILED':
+      return 'error'
     // VNext §24 — a manual number prefix while automatic numbering is ON is a
     // USER-content defect (it will collide with the generated number).
     case 'HEADING_MANUAL_NUMBER_PREFIX':
@@ -373,6 +399,13 @@ export function resolveDocumentDiagnosticSeverity(
     case 'LINK_REFERENCE_DEFINITION_DUPLICATE':
     case 'LINK_TARGET_EMPTY':
     case 'TABLE_HEADER_DUPLICATE':
+    // B2 — structural warnings that never become errors.
+    case 'FRONTMATTER_MALFORMED':
+    case 'TABLE_COLUMN_COUNT_MISMATCH':
+    case 'LIST_INDENTATION_INVALID':
+    case 'FORMULA_SOURCE_LENGTH_EXCEEDING':
+    case 'FORMULA_SOURCE_LINE_TOO_LONG':
+    case 'FORMULA_RENDER_WIDTH_OVERFLOW':
       return 'warning'
     // ── Constant INFO rules ──
     case 'DOCUMENT_EMPTY':
@@ -487,6 +520,20 @@ export interface DocumentDiagnosticsInput {
   tables: readonly DiagnosticObjectFact[]
   codes: readonly DiagnosticObjectFact[]
   formulas: readonly DiagnosticFormulaFact[]
+  /**
+   * B2 §B2-06 — optional formula source-length limits. ABSENT = both opt-in
+   * rules stay off (their registry defaultEnabled=false). Supplied limits make
+   * the rules run (tests / explicit profile).
+   */
+  formulaSourceRules?: {
+    lengthLimit?: number
+    lineLimit?: number
+  }
+  /**
+   * B2 §B2-06 — optional DOM-measured formula render facts. ABSENT = width /
+   * render-failure rules stay PENDING (never a false overflow/failure).
+   */
+  formulaRenderFacts?: readonly FormulaRenderFact[]
   links: readonly DiagnosticLinkFact[]
   canonicalDuplicateIdentities: readonly string[]
   /**
@@ -629,9 +676,8 @@ export const LINK_TEXT_EMPTY_CODE = 'LINK_TEXT_EMPTY'
 export const LINK_TARGET_EMPTY_CODE = 'LINK_TARGET_EMPTY'
 
 /**
- * §6/§31 — every TRAE V3 runtime code this producer can emit. `FRONTMATTER_MALFORMED`
- * is deliberately ABSENT: it is DEFERRED_BY_SPEC (no canonical YAML parser), so the
- * producer never fabricates it.
+ * §6/§31 — every TRAE V3 runtime code this producer can emit. B2 adds
+ * `FRONTMATTER_MALFORMED` (conservative YAML-subset validation).
  */
 export const SOURCE_INTEGRITY_DIAGNOSTIC_CODES: readonly string[] = [
   CODE_FENCE_UNCLOSED_CODE,
@@ -643,6 +689,7 @@ export const SOURCE_INTEGRITY_DIAGNOSTIC_CODES: readonly string[] = [
   LINK_REFERENCE_DEFINITION_MISSING_CODE,
   LINK_REFERENCE_DEFINITION_DUPLICATE_CODE,
   FRONTMATTER_UNCLOSED_CODE,
+  FRONTMATTER_MALFORMED_CODE,
   TABLE_HEADER_EMPTY_CODE,
   TABLE_HEADER_DUPLICATE_CODE,
   LINK_TEXT_EMPTY_CODE,
@@ -736,6 +783,14 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   'TABLE_MISSING_NAME',
   TABLE_EMPTY_CONTENT_CODE,
   TABLE_MANUAL_NUMBER_PREFIX_CODE,
+  // B2 — table / list source structure.
+  'TABLE_COLUMN_COUNT_MISMATCH',
+  'LIST_INDENTATION_INVALID',
+  // B2 — formula source metrics / render state.
+  'FORMULA_SOURCE_LENGTH_EXCEEDING',
+  'FORMULA_SOURCE_LINE_TOO_LONG',
+  'FORMULA_RENDER_WIDTH_OVERFLOW',
+  'FORMULA_LATEX_RENDER_FAILED',
   // code
   CODE_EMPTY_BLOCK_CODE,
   'CODE_DUPLICATE_NAME',
@@ -761,7 +816,7 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   // Numbering Integrity V2 (spec §9) — the object / formula NUMBER rules.
   ...NUMBER_INTEGRITY_DIAGNOSTIC_CODES,
   // TRAE V3 — Source Syntax / Footnote / Reference / Front Matter / Table header
-  // / Empty-link integrity (13 codes; FRONTMATTER_MALFORMED stays DEFERRED).
+  // / Empty-link integrity (14 codes; B2 implements FRONTMATTER_MALFORMED).
   ...SOURCE_INTEGRITY_DIAGNOSTIC_CODES,
 ]
 
@@ -1729,8 +1784,169 @@ function pushIntoMap<T>(map: Map<string, T[]>, key: string, value: T): void {
   else map.set(key, [value])
 }
 
-function emitSourceSyntaxIntegrity(
+/**
+ * B2 — emit table / list / formula source rules from provable source facts.
+ * Formula source-length rules run ONLY when explicit limits are supplied
+ * (default off); render width/failure run ONLY when a runtime fact says
+ * MEASURED / FAILED (never guessed).
+ */
+function emitB2SourceDiagnostics(
   input: DocumentDiagnosticsInput,
+  push: (d: DocumentDiagnostic) => void,
+): void {
+  const markdown = input.markdown
+  if (markdown == null || markdown === '') return
+
+  for (const mismatch of analyzeTableColumnMismatches(markdown)) {
+    push(makeDiagnostic(input, 'table', 'TABLE_COLUMN_COUNT_MISMATCH',
+      `表格列数不一致：表头 ${mismatch.expected} 列，本行 ${mismatch.actual} 列`, {
+      detail: mismatch.detail,
+      kind: 'object',
+      targetIdentity: mismatch.identity,
+      metadata: {
+        ruleId: 'TABLE-COLUMN-COUNT-MISMATCH',
+        reason: 'COLUMN_COUNT_MISMATCH',
+        expectedColumns: mismatch.expected,
+        actualColumns: mismatch.actual,
+        startLine: mismatch.startLine,
+      },
+      location: {
+        kind: 'source-range',
+        startLine: mismatch.startLine,
+        startColumn: mismatch.startColumn,
+        endLine: mismatch.endLine,
+        endColumn: mismatch.endColumn,
+        sourceFingerprint: mismatch.identity,
+        rawText: mismatch.rawText,
+      },
+    }))
+  }
+
+  for (const issue of analyzeListIndentation(markdown)) {
+    push(makeDiagnostic(input, 'document', 'LIST_INDENTATION_INVALID',
+      '列表缩进不一致', {
+      detail: issue.detail,
+      kind: 'document',
+      targetIdentity: `list-indent:line:${issue.startLine}`,
+      metadata: {
+        ruleId: 'LIST-INDENTATION-INVALID',
+        reason: 'LIST_INDENTATION_INVALID',
+        indent: issue.indent,
+        expectedIndents: issue.expected,
+      },
+      location: {
+        kind: 'source-range',
+        startLine: issue.startLine,
+        startColumn: issue.startColumn,
+        endLine: issue.endLine,
+        endColumn: issue.endColumn,
+        sourceFingerprint: `list-indent:${issue.startLine}`,
+        rawText: issue.rawText,
+      },
+    }))
+  }
+
+  const limits = input.formulaSourceRules
+  if (limits != null) {
+    const lengthLimit = limits.lengthLimit ?? B2_FORMULA_SOURCE_LENGTH_LIMIT
+    const lineLimit = limits.lineLimit ?? B2_FORMULA_SOURCE_LINE_LIMIT
+    for (const metric of analyzeFormulaSourceMetrics(markdown)) {
+      if (metric.charCount > lengthLimit) {
+        push(makeDiagnostic(input, 'formula', 'FORMULA_SOURCE_LENGTH_EXCEEDING',
+          `公式源码过长：${metric.charCount} 字符（上限 ${lengthLimit}）`, {
+          detail: '公式源码超出当前配置的长度上限，建议拆分或精简。',
+          kind: 'formula',
+          targetIdentity: `formula-source-length:${metric.canonicalIdentity}`,
+          metadata: {
+            ruleId: 'FORMULA-SOURCE-LENGTH-EXCEEDING',
+            reason: 'FORMULA_SOURCE_LENGTH_EXCEEDING',
+            charCount: metric.charCount,
+            limit: lengthLimit,
+          },
+          location: {
+            kind: 'source-range',
+            startLine: metric.startLine,
+            startColumn: metric.startColumn,
+            endLine: metric.endLine,
+            endColumn: metric.endColumn,
+            sourceFingerprint: `formula-source-length:${metric.startLine}`,
+            rawText: metric.rawText,
+          },
+        }))
+      }
+      if (metric.maxLineLength > lineLimit) {
+        const longLine = metric.startLine + 1 + metric.longLineIndex
+        push(makeDiagnostic(input, 'formula', 'FORMULA_SOURCE_LINE_TOO_LONG',
+          `公式单行过长：${metric.maxLineLength} 字符（上限 ${lineLimit}）`, {
+          detail: '公式源码的某一行超出当前配置的单行长度上限，建议换行。',
+          kind: 'formula',
+          targetIdentity: `formula-source-line:${metric.canonicalIdentity}:${metric.longLineIndex}`,
+          metadata: {
+            ruleId: 'FORMULA-SOURCE-LINE-TOO-LONG',
+            reason: 'FORMULA_SOURCE_LINE_TOO_LONG',
+            lineLength: metric.maxLineLength,
+            limit: lineLimit,
+            line: longLine,
+          },
+          location: {
+            kind: 'source-range',
+            startLine: longLine,
+            startColumn: 0,
+            sourceFingerprint: `formula-source-line:${metric.startLine}:${metric.longLineIndex}`,
+            rawText: lineTextAt(markdown, longLine),
+          },
+        }))
+      }
+    }
+  }
+
+  const renderFactById = new Map<string, FormulaRenderFact>()
+  for (const fact of input.formulaRenderFacts ?? []) renderFactById.set(fact.targetIdentity, fact)
+  if (renderFactById.size === 0) return
+  for (const formula of input.formulas) {
+    const identity = formula.targetIdentity
+    if (!identity) continue
+    const fact = renderFactById.get(identity)
+    if (!fact) continue
+    if (fact.status === 'FAILED') {
+      push(makeDiagnostic(input, 'formula', 'FORMULA_LATEX_RENDER_FAILED',
+        '公式渲染失败', {
+        detail: fact.reason ? `数学渲染器返回失败：${fact.reason}` : '数学渲染器返回失败。',
+        kind: 'formula',
+        targetIdentity: `formula-render-failed:${identity}`,
+        metadata: {
+          ruleId: 'FORMULA-LATEX-RENDER-FAILED',
+          reason: 'FORMULA_RENDER_FAILED',
+          renderStatus: fact.status,
+        },
+        location: { kind: 'block-node', blockKind: 'formula', stableIdentity: identity },
+      }))
+      continue
+    }
+    if (fact.status !== 'MEASURED') continue
+    if (!Number.isFinite(fact.naturalWidth) || !Number.isFinite(fact.availableWidth)) continue
+    const available = fact.availableWidth as number
+    const natural = fact.naturalWidth as number
+    if (available <= 0 || natural <= available) continue
+    const ratio = natural / available
+    push(makeDiagnostic(input, 'formula', 'FORMULA_RENDER_WIDTH_OVERFLOW',
+      `公式渲染宽度超出可用宽度（${(ratio * 100).toFixed(1)}%）`, {
+      detail: `公式自然宽度 ${Math.round(natural)}px，可用宽度 ${Math.round(available)}px。`,
+      kind: 'formula',
+      targetIdentity: `formula-width:${identity}`,
+      metadata: {
+        ruleId: 'FORMULA-RENDER-WIDTH-OVERFLOW',
+        reason: 'FORMULA_RENDER_WIDTH_OVERFLOW',
+        naturalWidth: natural,
+        availableWidth: available,
+        ratio,
+      },
+      location: { kind: 'block-node', blockKind: 'formula', stableIdentity: identity },
+    }))
+  }
+}
+
+function emitSourceSyntaxIntegrity(  input: DocumentDiagnosticsInput,
   push: (d: DocumentDiagnostic) => void,
 ): void {
   if (input.markdown == null || input.documentKey == null || input.markdown.trim() === '') return
@@ -1786,8 +2002,8 @@ function emitSourceSyntaxIntegrity(
     }))
   }
 
-  // §4.1 — Front Matter unclosed (its opener is the target). FRONTMATTER_MALFORMED
-  // is never emitted here: it is DEFERRED_BY_SPEC (no canonical YAML parser).
+  // §4.1 — Front Matter unclosed (its opener is the target). MALFORMED is
+  // emitted only for a CLOSED front matter (B2 conservative YAML subset).
   const fm = syntax.frontMatter
   if (fm != null && !fm.closed) {
     push(makeDiagnostic(input, 'document', FRONTMATTER_UNCLOSED_CODE,
@@ -1806,6 +2022,23 @@ function emitSourceSyntaxIntegrity(
         input.sourceRevision,
       ),
     }))
+  } else if (fm != null && fm.closed) {
+    // B2 §B2-01 — conservative YAML subset validation. Unclosed front matter
+    // owns its own ERROR and suppresses this warning by construction.
+    const issues = analyzeFrontMatterBody(fm.body.replace(/^\r?\n/, ''))
+    for (const issue of issues) {
+      const line = fm.openLine + 1 + issue.bodyLine
+      const rawText = markdown.split('\n')[line] ?? ''
+      push(makeDiagnostic(input, 'document', FRONTMATTER_MALFORMED_CODE,
+        `Front Matter 格式不规范：${issue.message}`, {
+        detail: issue.message,
+        kind: 'document',
+        stableIdentity: fm.identity,
+        targetIdentity: `frontmatter-malformed:${fm.identity}:${issue.code}:${issue.bodyLine}`,
+        metadata: { ruleId: 'FRONTMATTER-MALFORMED', reason: issue.code, bodyLine: issue.bodyLine },
+        location: { kind: 'source-range', startLine: line, startColumn: 0, rawText },
+      }))
+    }
   }
 
   // §2 — Footnote Integrity (ONE diagnostic per label; duplicate suppresses missing).
@@ -3475,6 +3708,9 @@ export function computeDocumentDiagnostics(
       )
     }
   }
+
+  // ── B2 — table / list / formula source rules ──────────────────────────────
+  emitB2SourceDiagnostics(input, push)
 
   // ── Formula diagnostics (projection invariants only — never business re-derivation) ──
   for (const f of input.formulas) {

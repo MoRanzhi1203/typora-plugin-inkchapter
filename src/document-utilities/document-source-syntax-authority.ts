@@ -425,7 +425,7 @@ export interface SourceTableStructure {
 const TABLE_DELIMITER_RE = /^\s*\|?[\s:|-]+\|?\s*$/
 
 /** §5 — split one table row into cells (unescaped `|`), with absolute offsets. */
-function splitTableRow(line: SourceLineSpan): SourceTableCell[] {
+export function splitTableRow(line: SourceLineSpan): SourceTableCell[] {
   const text = line.text
   const cells: SourceTableCell[] = []
   let cellStart = 0

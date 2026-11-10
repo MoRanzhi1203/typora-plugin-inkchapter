@@ -1,6 +1,6 @@
 # 墨章文档诊断全量盘点与分类统计（现行源码审计）
 
-> B1 更新（2026-11-10）：CB007 接入原始换行数据；CB008/CB010 标记 defaultEnabled=false；STRICT_FIRST_H1_DOCUMENT_EMPTY 标记 knownUnreachable；strictPolicyActive 接入门控；编号定位契约对齐；状态方块/Toolbar 计数改为事件数。最新代码集合审计见 `document-diagnostic-code-sets.ts` 与 `DIAGNOSTICS-BATCH-1-REPORT.md`。
+> B2 更新（2026-11-10）：新增 FRONTMATTER_MALFORMED、TABLE_COLUMN_COUNT_MISMATCH、LIST_INDENTATION_INVALID、FORMULA_SOURCE_LENGTH_EXCEEDING、FORMULA_SOURCE_LINE_TOO_LONG、FORMULA_RENDER_WIDTH_OVERFLOW、FORMULA_LATEX_RENDER_FAILED 的生产器；当前 98 家族 / 104 注册解析代码 / 109 展开代码 / 105 生产器代码 / 100 可达代码。4 条跨文件/交叉引用 DEFERRED 仍为 BLOCKED（无 canonical 语法/文件锚点权威），见 `DIAGNOSTICS-BATCH-2-REPORT.md`。
 
 > 审计对象：typora-plugin-inkchapter 当前工作树（未修改规则注册表、未修改任何诊断业务逻辑）。
 > 审计方式：读取真实源码 + 只读枚举脚本 + 定向测试 + 类型检查。
@@ -9,27 +9,27 @@
 
 ## 0. 结论摘要
 
-**当前墨章文档诊断总计 92 个规则家族、103 个具体诊断代码，其中错误 12 个、警告 62 个、提示 29 个，另有其他类别 0 个。**
+**当前墨章文档诊断总计 98 个规则家族、109 个具体诊断代码，其中错误 13 个、警告 67 个、提示 29 个，另有其他类别 0 个。**
 
-把动态代码按运行时真实展开后，103 是“规则全集”口径；其中：
+把动态代码按运行时真实展开后，109 是“规则全集”口径；其中：
 
-- 有生产器路径的具体代码 98 个（对应 87 个 IMPLEMENTED 家族）；
-- 在当前固定选项下真正可达的具体代码 95 个（CB007 / CB008 / CB010 永不触发）；
-- 5 个 DEFERRED_BY_SPEC 家族没有任何生产器（FRONTMATTER_MALFORMED、LINK_LOCAL_FILE_ANCHOR_MISSING、3 条交叉引用）。
+- 有生产器路径的具体代码 105 个（对应 94 个 IMPLEMENTED 家族）；
+- 在当前固定选项下真正可达的具体代码 100 个（CB008、CB010、两条默认关闭的公式源码规则、不可达动态代码 STRICT_FIRST_H1_DOCUMENT_EMPTY 除外）；
+- 4 个 DEFERRED_BY_SPEC 家族没有任何生产器（LINK_LOCAL_FILE_ANCHOR_MISSING、3 条交叉引用），B2 已记录为 BLOCKED。
 
 | 关键指标 | 数值 | 口径 |
 | --- | ---: | --- |
-| 规则家族 | 92 | 注册表 familyId 去重 |
-| 注册表解析代码（官方） | 98 | LATENT 前缀只计 1 个 sentinel，含 5 个 DEFERRED |
-| 具体诊断代码（展开动态代码） | 103 | LATENT 展开 6 级、STRICT_FIRST 展开 7 码 |
-| 有生产器的具体代码 | 98 | 85 个 EXACT + 7 个 STRICT 码 + 6 个 LATENT 级别 |
-| 真正可达的具体代码 | 95 | 98 减去 CB008 / CB010 与不可达动态代码 STRICT_FIRST_H1_DOCUMENT_EMPTY |
-| 错误 / 警告 / 提示（家族） | 12 / 56 / 24 | 注册表基准级别 |
-| 错误 / 警告 / 提示（具体代码） | 12 / 62 / 29 | 注册表基准级别，展开后 |
-| 接入生产器的家族 | 87 | 无条件 69 + 条件启用 16 + 默认关闭 2 |
-| 未接入（DEFERRED） | 5 | 无生产器 |
-| 运行时闭包已证实 | 0 | 87 个 IMPLEMENTED 家族全部 UNVERIFIED |
-| 静态可定位家族 | 91 / 92 | 仅 DOCUMENT_EMPTY 声明不可定位 |
+| 规则家族 | 98 | 注册表 familyId 去重 |
+| 注册表解析代码（官方） | 104 | LATENT 前缀只计 1 个 sentinel，含 4 个 DEFERRED |
+| 具体诊断代码（展开动态代码） | 109 | LATENT 展开 6 级、STRICT_FIRST 展开 7 码 |
+| 有生产器的具体代码 | 105 | 87 个 EXACT + 7 个 STRICT 码 + 6 个 LATENT 级别 + 新增 |
+| 真正可达的具体代码 | 100 | 105 减去 4 个默认关闭 + 1 个不可达动态代码 |
+| 错误 / 警告 / 提示（家族） | 13 / 61 / 24 | 注册表基准级别 |
+| 错误 / 警告 / 提示（具体代码） | 13 / 67 / 29 | 注册表基准级别，展开后 |
+| 接入生产器的家族 | 94 | 无条件 74 + 条件启用 16 + 默认关闭 4 |
+| 未接入（DEFERRED） | 4 | 无生产器（BLOCKED） |
+| 运行时闭包已证实 | 0 | 94 个 IMPLEMENTED 家族全部 UNVERIFIED |
+| 静态可定位家族 | 97 / 98 | 仅 DOCUMENT_EMPTY 声明不可定位 |
 
 ## 1. 统计口径（必须先读）
 
@@ -42,6 +42,8 @@
 - LATENT_ATX_HEADING_MARKER 是 PREFIX 策略，运行时实际发射 6 个 LEVEL_n 代码（registry:583-589；生产器 document-diagnostics.ts:2445）。
 
 因此：家族 92；把 PATTERN 与 PREFIX 展开后的具体代码 = 90 + 7 + 6 = **103**。
+
+> B2 追加：新增 6 个家族后当前为 98 家族 / 109 展开代码 / 105 生产器代码 / 100 可达；第 2–6 节的 92/103 表是 B1 基线，B2 最新完整统计、新增规则与 BLOCKED 项见 `DIAGNOSTICS-BATCH-2-REPORT.md`。
 
 ### 1.2 官方 98 与“有生产器 98”不是同一个集合
 
@@ -380,7 +382,7 @@ B1 后注册表与生产器一致；对应的 target-group / block-node 行为�
 | SECTION_EMPTY | 章节没有正文 | 提示 | 某标题到下一个同级或更高级标题之间既无正文也无子标题；文档整体非 bodyless 且标题行可解析 | 单目标·规范节点 | 已注册·执行 | document-diagnostics-vnext-authority.ts:211-234 | document-diagnostic-section-completeness-v1.test.ts |
 | SECTION_ONLY_SUBHEADINGS | 章节仅包含子标题 | 提示 | 某标题的章节窗口内只有子标题、没有正文；文档整体非 bodyless 且标题行可解析 | 单目标·规范节点 | 已注册·执行 | document-diagnostics-vnext-authority.ts:211-234 | document-diagnostic-section-completeness-v1.test.ts |
 | FRONTMATTER_UNCLOSED | Front Matter 未闭合 | 错误 | 文档首行是 --- 但缺少结束分隔符（frontMatter.closed = false） | 单目标·源码语法起始符 | 已注册·执行 | document-diagnostics.ts:1786-1804 | document-diagnostic-source-syntax-location-authority.test.ts:96 |
-| FRONTMATTER_MALFORMED | Front Matter 格式不规范 | 警告 | 注册为 DEFERRED_BY_SPEC：仓库没有 canonical YAML 解析器，生产器永不生成 | 单目标·源码范围 | 未接入（DEFERRED） | document-diagnostic-location.ts:796-800 | document-source-syntax-integrity-v3.test.ts:275 |
+| FRONTMATTER_MALFORMED | Front Matter 格式不规范 | 警告 | 闭合 Front Matter 的保守 YAML 子集校验：Tab 缩进、顶层重复键、顶层缺冒号 | 单目标·源码范围 | 已注册·执行 | document-diagnostics.ts:2006-2035；document-diagnostics-b2-authority.ts:44-100 | document-diagnostics-b2-rules.test.ts |
 | BLOCKQUOTE_EMPTY | 引用块为空 | 提示 | 引用块只有 > 标记、没有任何非空内容行 | 单目标·源码范围 | 已注册·执行 | document-diagnostics.ts:2832 | document-diagnostics-vnext-gap-closure-v1.test.ts:15 |
 
 ### 7.2 标题层级及编号（7 个家族）
@@ -526,6 +528,19 @@ B1 后注册表与生产器一致；对应的 target-group / block-node 行为�
 | LATENT_ATX_HEADING_MARKER_LEVEL_6 | 检测到未转义的潜在标题标记「######」 | 提示（strict 下为警告） | 行首 ###### 未被 Typora 识别为 H6，且该行不是规范标题 | 单目标·源码范围 | 已注册·执行 | document-diagnostics.ts:2436-2479 | latent-atx-heading-marker.test.ts |
 
 说明：PREFIX 策略在注册表里只保留一个 sentinel（document-diagnostic-location.ts:583-589, 1001-1006），运行期发射 LEVEL_1 … LEVEL_6。`LEVEL_n` 没有静态 copy title，UI 使用规范化后的动态 message 作为标题（document-diagnostic-copy-v1.ts:379-389），description / suggestion 仍来自 LATENT 家族文案。
+
+### 7.12 B2 新增规则（6 个家族）
+
+> 说明：7.1–7.11 是 B1 基线的 92 行明细；本表补齐 B2 新增的 6 个家族，合计 98。FRONTMATTER_MALFORMED 已在 7.1 更新为已执行。
+
+| 规则 ID（家族） | 中文标题 | 级别 | 触发条件 | 定位方式 | 执行状态 | 源码位置 | 测试覆盖 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| TABLE_COLUMN_COUNT_MISMATCH | 表格列数不一致 | 警告 | 表头 / 分隔行 / 数据行的单元格数不一致（转义管道与代码跨度由唯一 tokenizer 处理） | 单目标·源码范围 | 已注册·执行 | document-diagnostics.ts:3588-3622；document-diagnostics-b2-authority.ts:119-176 | document-diagnostics-b2-rules.test.ts |
+| LIST_INDENTATION_INVALID | 列表缩进不一致 | 警告 | 列表项回退到从未出现过的缩进层级（父级 0、子级 2、下一项 1） | 单目标·源码范围 | 已注册·执行 | document-diagnostics.ts:3624-3654；document-diagnostics-b2-authority.ts:183-250 | document-diagnostics-b2-rules.test.ts |
+| FORMULA_SOURCE_LENGTH_EXCEEDING | 公式源码过长 | 警告 | 显式配置 formulaSourceRules.lengthLimit 且公式源码（去空白/编号标记）超过上限 | 单目标·源码范围 | 已注册·默认关闭 | document-diagnostics.ts:3656-3685；document-diagnostics-b2-authority.ts:273-326 | document-diagnostics-b2-rules.test.ts |
+| FORMULA_SOURCE_LINE_TOO_LONG | 公式单行过长 | 警告 | 显式配置 formulaSourceRules.lineLimit 且公式源码某行超过上限 | 单目标·源码范围 | 已注册·默认关闭 | document-diagnostics.ts:3686-3720；document-diagnostics-b2-authority.ts:273-326 | document-diagnostics-b2-rules.test.ts |
+| FORMULA_RENDER_WIDTH_OVERFLOW | 公式渲染超宽 | 警告 | 运行时测量事实为 MEASURED 且 naturalWidth > availableWidth | 单目标·规范块节点 | 已注册·执行（无测量事实则 PENDING） | document-diagnostics.ts:3722-3762；document-diagnostics-b2-authority.ts:44-100 | document-diagnostics-b2-rules.test.ts |
+| FORMULA_LATEX_RENDER_FAILED | 公式渲染失败 | 错误 | 运行时测量事实为 FAILED（数学渲染器明确失败） | 单目标·规范块节点 | 已注册·执行（无事实则 PENDING） | document-diagnostics.ts:3722-3762 | document-diagnostics-b2-rules.test.ts |
 
 ## 8. 重复与异常清单（B1 审计与修复记录）
 

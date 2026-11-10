@@ -102,6 +102,7 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   // ── document completeness ─────────────────────────────────────────────────
   DOCUMENT_HEADING_ONLY_NO_BODY: 250,
   DOCUMENT_HEADINGS_ONLY_NO_BODY: 251,
+  LIST_INDENTATION_INVALID: 255,
   SECTION_EMPTY: 260,
   SECTION_ONLY_SUBHEADINGS: 261,
   // ── heading structure ─────────────────────────────────────────────────────
@@ -136,6 +137,7 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   TABLE_EMPTY_CONTENT: 630,
   TABLE_HEADER_EMPTY: 640,
   TABLE_HEADER_DUPLICATE: 650,
+  TABLE_COLUMN_COUNT_MISMATCH: 660,
   // ── code ──────────────────────────────────────────────────────────────────
   CODE_MISSING_NAME: 700,
   CODE_MISSING_LANGUAGE: 710,
@@ -162,6 +164,10 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   FORMULA_DUPLICATE_VISIBLE_TAG: 800,
   FORMULA_BLOCK_STRUCTURE_INVALID: 810,
   FORMULA_EMPTY_CONTENT: 820,
+  FORMULA_SOURCE_LENGTH_EXCEEDING: 825,
+  FORMULA_SOURCE_LINE_TOO_LONG: 826,
+  FORMULA_RENDER_WIDTH_OVERFLOW: 840,
+  FORMULA_LATEX_RENDER_FAILED: 850,
   FORMULA_BLOCK_UNCLOSED: 830,
   // ── blockquote ────────────────────────────────────────────────────────────
   BLOCKQUOTE_EMPTY: 900,
@@ -296,6 +302,8 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   TABLE_DUPLICATE_NAME: { description: '多张表格使用了相同的表名。', suggestion: '修改表名以互相区分。' },
   TABLE_BLOCK_STRUCTURE_INVALID: { title: '表格必须作为独立块插入', description: '表格不能放在列表项或引用块中。', suggestion: '将表格移动到独立段落。' },
   TABLE_EMPTY_CONTENT: { title: '表格没有数据行', description: '当前表格只有表头，没有数据行。', suggestion: '为表格补充数据行，或删除空表格。' },
+  TABLE_COLUMN_COUNT_MISMATCH: { title: '表格列数不一致', description: '表头、分隔行或数据行的列数不一致。', suggestion: '补齐或删除多余单元格，使每行列数一致。' },
+  LIST_INDENTATION_INVALID: { title: '列表缩进不一致', description: '列表项缩进与当前父级或同级缩进不一致。', suggestion: '按同一层级统一缩进，避免悬空缩进。' },
   TABLE_HEADER_EMPTY: { title: '表头单元格为空', description: '表格存在空的表头单元格。', suggestion: '为空的表头单元格补充列名。' },
   TABLE_HEADER_DUPLICATE: { title: '表头重复', description: '同一表头文字在表格中出现多次。', suggestion: '重命名重复的表头以区分列。' },
   // ── code ──────────────────────────────────────────────────────────────────
@@ -324,6 +332,10 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   FORMULA_DUPLICATE_VISIBLE_TAG: { title: '公式编号重复', description: '同一公式宿主内检测到重复的可见编号标签。', suggestion: '删除重复的公式编号标签。' },
   FORMULA_BLOCK_STRUCTURE_INVALID: { title: '公式必须作为独立块插入', description: '独立公式不能放在列表项或引用块中。', suggestion: '将公式移动到独立段落。' },
   FORMULA_EMPTY_CONTENT: { title: '公式为空', description: '独立公式没有任何内容。', suggestion: '补充公式内容，或删除空公式。' },
+  FORMULA_SOURCE_LENGTH_EXCEEDING: { title: '公式源码过长', description: '公式源码超出当前配置的长度上限。', suggestion: '拆分公式或精简源码。' },
+  FORMULA_SOURCE_LINE_TOO_LONG: { title: '公式单行过长', description: '公式源码的某一行超出当前配置的单行长度上限。', suggestion: '在公式源码中换行，避免单行过长。' },
+  FORMULA_RENDER_WIDTH_OVERFLOW: { title: '公式渲染超宽', description: '公式渲染后的自然宽度超过可用宽度。', suggestion: '拆分公式、缩小字号或调整版心/编辑器宽度。' },
+  FORMULA_LATEX_RENDER_FAILED: { title: '公式渲染失败', description: '数学渲染器明确返回失败，公式无法可靠渲染。', suggestion: '检查 LaTeX 源码语法并修正。' },
   FORMULA_BLOCK_UNCLOSED: { title: '公式块未闭合', description: '未闭合的 $$ 公式块会把后续内容视为公式。', suggestion: '补全 $$ 公式块的结束标记。' },
   // ── blockquote ────────────────────────────────────────────────────────────
   BLOCKQUOTE_EMPTY: { title: '引用块为空', description: '引用块没有任何内容。', suggestion: '补充引用内容，或删除空引用块。' },

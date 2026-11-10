@@ -275,13 +275,12 @@ describe('TRAE V3 §22 — Front Matter Integrity', () => {
     expect(codes(r)).not.toContain('FRONTMATTER_MALFORMED')
   })
 
-  it('FM4 malformed is DEFERRED_BY_SPEC (no canonical YAML parser)', () => {
+  it('FM4 malformed is IMPLEMENTED with the conservative YAML-subset validator', () => {
     const meta = DOCUMENT_DIAGNOSTIC_RULE_REGISTRY.FRONTMATTER_MALFORMED
-    expect(meta.implementationStatus).toBe('DEFERRED_BY_SPEC')
-    expect(meta.producerAuthority).toBe('NONE')
-    // The producer NEVER fabricates it, even for closed-but-malformed front matter.
-    const r = run('---\ntitle: : :\n---\n正文\n')
-    expect(codes(r)).not.toContain('FRONTMATTER_MALFORMED')
+    expect(meta.implementationStatus).toBe('IMPLEMENTED')
+    expect(meta.producerAuthority).toBe('computeDocumentDiagnostics')
+    const r = run('---\nnot yaml\n---\n正文\n')
+    expect(codes(r)).toContain('FRONTMATTER_MALFORMED')
   })
 
   it('FM5 --- in the document middle → not document-start front matter', () => {
@@ -440,10 +439,10 @@ describe('TRAE V3 §14 — parse / build-once per source revision', () => {
 // ── Registry wiring ────────────────────────────────────────
 
 describe('TRAE V3 — registry wiring', () => {
-  it('every new runtime code is registered and FRONTMATTER_MALFORMED is not produced', () => {
+  it('every new runtime code is registered, including FRONTMATTER_MALFORMED', () => {
     for (const code of SOURCE_INTEGRITY_DIAGNOSTIC_CODES) {
       expect(DOCUMENT_DIAGNOSTIC_RULE_REGISTRY[code], code).toBeTruthy()
     }
-    expect(SOURCE_INTEGRITY_DIAGNOSTIC_CODES).not.toContain('FRONTMATTER_MALFORMED')
+    expect(SOURCE_INTEGRITY_DIAGNOSTIC_CODES).toContain('FRONTMATTER_MALFORMED')
   })
 })

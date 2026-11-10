@@ -252,11 +252,11 @@ describe('Capability Matrix V1 §0.1 — count authority', () => {
     // Phase I cross-file anchor + Phase J cross-reference stay DEFERRED; TRAE V3
     // adds the front-matter MALFORMED family (no canonical YAML parser).
     expect(deferred).toContain('LINK_LOCAL_FILE_ANCHOR_MISSING')
-    expect(deferred).toContain('FRONTMATTER_MALFORMED')
+    expect(deferred).not.toContain('FRONTMATTER_MALFORMED')
+    expect(implemented).toContain('FRONTMATTER_MALFORMED')
     expect(deferred.sort()).toEqual([
       'FIGURE_REFERENCE_TARGET_MISSING',
       'FORMULA_REFERENCE_TARGET_MISSING',
-      'FRONTMATTER_MALFORMED',
       'LINK_LOCAL_FILE_ANCHOR_MISSING',
       'TABLE_REFERENCE_TARGET_MISSING',
     ])
