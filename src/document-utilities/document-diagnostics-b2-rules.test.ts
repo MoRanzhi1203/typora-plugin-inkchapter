@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest'
 import { computeDocumentDiagnostics, type DocumentDiagnosticsInput } from './document-diagnostics'
 import type { DocumentDiagnostic } from './diagnostics-types'
+import { resolveDiagnosticProfile } from './document-diagnostic-profile-v1'
 
 function input(partial: Partial<DocumentDiagnosticsInput> = {}): DocumentDiagnosticsInput {
   return {
@@ -142,5 +143,38 @@ describe('B2 §B2-06 — formula source and render rules', () => {
       formulaRenderFacts: [{ targetIdentity: 'block:formula:0', status: 'PENDING' }],
     })
     expect(codes(pending)).not.toContain('FORMULA_LATEX_RENDER_FAILED')
+  })
+})
+
+describe('B3 §B3-01/03 — profile wiring', () => {
+  it('academic profile enables the opt-in formula source limits', () => {
+    const d = run({
+      markdown: '$$\n' + 'x'.repeat(320) + '\n$$\n',
+      diagnosticProfile: resolveDiagnosticProfile('academic'),
+    })
+    expect(codes(d)).toContain('FORMULA_SOURCE_LENGTH_EXCEEDING')
+    expect(codes(d)).toContain('FORMULA_SOURCE_LINE_TOO_LONG')
+  })
+
+  it('general profile keeps the opt-in formula source limits off', () => {
+    const d = run({
+      markdown: '$$\n' + 'x'.repeat(320) + '\n$$\n',
+      diagnosticProfile: resolveDiagnosticProfile('general'),
+    })
+    expect(codes(d)).not.toContain('FORMULA_SOURCE_LENGTH_EXCEEDING')
+  })
+
+  it('profile content width caps the formula width limit', () => {
+    const formula = [{ visibleTagTokens: [], element: document.createElement('div'), targetIdentity: 'block:formula:0' }]
+    const d = run({
+      markdown: '$$\nx\n$$\n',
+      formulas: formula,
+      diagnosticProfile: resolveDiagnosticProfile('custom', {
+        inherits: 'general',
+        contentWidthPx: 600,
+      }),
+      formulaRenderFacts: [{ targetIdentity: 'block:formula:0', status: 'MEASURED', naturalWidth: 700, availableWidth: 800 }],
+    })
+    expect(codes(d)).toContain('FORMULA_RENDER_WIDTH_OVERFLOW')
   })
 })

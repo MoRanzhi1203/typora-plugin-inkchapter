@@ -45,14 +45,14 @@
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
-| B3-01 | Profile（general/academic/lab-report/custom）与继承 | TODO | — |
-| B3-02 | 学术/实验报告可选检测 | TODO | — |
-| B3-03 | 可配置版心模型与超宽规则 | TODO | — |
-| B3-04 | 顶部方块 + 三标签 + 上下等宽 UI 精修 | TODO | — |
-| B3-05 | 诊断列表 UI 语义 | TODO | — |
-| B3-06 | 图片页 / 锁定 / 导航器 | TODO | — |
-| B3-07 | 真实 Typora GUI / DPI / 主题 / DOMRect 验收 | TODO | 可能 NEEDS_MANUAL |
-| B3-08 | B3 报告 + 门禁 + 合并 `main` | TODO | — |
+| B3-01 | Profile（general/academic/lab-report/custom）与继承 | PASS（纯模型）/ BLOCKED（设置 UI） | 10 tests；继承/循环/未知规则；无设置面板 |
+| B3-02 | 学术/实验报告可选检测 | PARTIAL | academic profile 启用公式源码规则；其余无确定语义 |
+| B3-03 | 可配置版心模型与超宽规则 | PASS（纯模型）/ BLOCKED（写入） | 预设 + clamp + comfortable range；未写用户 CSS |
+| B3-04 | 顶部方块 + 三标签 + 上下等宽 UI 精修 | NEEDS_MANUAL | 现有 V5.2 三标签/360px；未真实 GUI 重验收 |
+| B3-05 | 诊断列表 UI 语义 | 沿用 B1/B2 | 事件/行数语义已在 B1 落地 |
+| B3-06 | 图片页 / 锁定 / 导航器 | NEEDS_MANUAL | 既有能力保留；未 GUI 重验收 |
+| B3-07 | 真实 Typora GUI / DPI / 主题 / DOMRect 验收 | NEEDS_MANUAL | 无控件级点击/截图能力；未伪造证据 |
+| B3-08 | B3 报告 + 门禁 + 合并 `main` | DOING | 全量 331×5832 PASS；报告已生成；待合并 |
 
 ## 最终
 

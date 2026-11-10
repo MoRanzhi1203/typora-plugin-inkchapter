@@ -106,4 +106,16 @@
 - 合并：`git merge --no-ff feature/diagnostics-b2-rule-expansion` → `8d5e475e3dd334d99d0e8de329d7f8c920e15163`
 - 状态：PARTIAL（实现项 PASS；4 条 DEFERRED 与表格对齐/标题编号/图片格式 BLOCKED，未虚假标记）
 
+### 2026-11-10 — B3 学术档案与 Compact Inspector（PARTIAL）
+
+- 分支：`feature/diagnostics-b3-academic-ui`（从 `55db668` 创建）
+- 已实现：profile 模型（general/academic/lab-report/custom、继承、显式启停、未知规则、循环）；版心模型（720/820/900/960 + 自定义 clamp）；profile → 公式源码限制/宽度 cap 接线
+- 未实现：profile 设置 UI/持久化（BLOCKED）；版心写入（BLOCKED）；学术/实验报告其余可选规则（无确定语义）；真实 GUI/DPI/主题/DOMRect（NEEDS_MANUAL）
+- 规则总数不变：98 家族 / 104 注册解析代码 / 109 展开代码 / 105 生产器代码 / 100 可达
+- 全量测试：331 文件 / 5832 tests PASS，126.31s
+- TypeScript / 隐私 / 文档：PASS
+- 构建：PASS，`dist/main.js` SHA256 `084CD8277859AB15B1C116A5FC87494CF4242081151F6E02DFB1B36411FADECD`
+- B3 报告：`docs/diagnostics/DIAGNOSTICS-BATCH-3-REPORT.md`
+- 合并：待执行
+
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）
