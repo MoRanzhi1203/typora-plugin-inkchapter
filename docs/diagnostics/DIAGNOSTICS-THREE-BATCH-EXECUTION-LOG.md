@@ -103,6 +103,7 @@
 - 构建：PASS，`dist/main.js` SHA256 `BE23061EAFAA0A5717F28C0FFA7D0102EA04BBD61D09287B60E250C653D6078B`
 - BLOCKED：LINK_LOCAL_FILE_ANCHOR_MISSING、3 条交叉引用（无 canonical 语法/文件锚点权威）；TABLE_ALIGNMENT_INVALID、HEADING_NUMBER_SEQUENCE_INVALID、图片格式（缺可靠权威）
 - B2 报告：`docs/diagnostics/DIAGNOSTICS-BATCH-2-REPORT.md`
-- 合并：待执行
+- 合并：`git merge --no-ff feature/diagnostics-b2-rule-expansion` → `8d5e475e3dd334d99d0e8de329d7f8c920e15163`
+- 状态：PARTIAL（实现项 PASS；4 条 DEFERRED 与表格对齐/标题编号/图片格式 BLOCKED，未虚假标记）
 
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）
