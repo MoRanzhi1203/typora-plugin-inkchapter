@@ -342,12 +342,10 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
         }
         return dupes
       },
-      getCaptionDuplicateNames: () => {
-        // Caption-name duplicates are detected structurally in the DOM facts
-        // (same pure compute path); the caption authority here has no extra
-        // aggregate surface. Return empty — the structural scan covers it.
-        return []
-      },
+      // @deprecated B1 §B1-04 — legacy, intentionally unused. Object-name
+      // duplicates are produced by the figure/table/code rules; this provider
+      // remains only so existing callers/tests keep the old input shape.
+      getCaptionDuplicateNames: () => [],
       // VNext §24 — the object auto-numbering activation authority (optional:
       // absent ⇒ the manual-number rules stay OFF).
       getObjectNumberingEnabled: sources.getObjectNumberingEnabled,

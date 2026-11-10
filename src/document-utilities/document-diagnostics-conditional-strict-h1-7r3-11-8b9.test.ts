@@ -52,7 +52,7 @@ const h2 = (text: string) => ({ level: 2 as const, text, element: el('h2') })
 const h3 = (text: string) => ({ level: 3 as const, text, element: el('h3') })
 
 function hasStrictCode(r: { diagnostics: Array<{ code: string }> }): boolean {
-  return r.diagnostics.some(d => d.code.startsWith('STRICT_SINGLE_H1_') || d.code.startsWith('STRICT_FIRST_H1_') || d.code === 'STRICT_H1_MISSING')
+  return r.diagnostics.some(d => d.code.startsWith('STRICT_SINGLE_H1_') || d.code.startsWith('STRICT_FIRST_H1_'))
 }
 
 describe('PLAIN-BODY-ONLY exemption — pure matrix', () => {

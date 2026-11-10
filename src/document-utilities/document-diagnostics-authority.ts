@@ -617,14 +617,16 @@ export class DocumentDiagnosticsAuthority {
     if (!input.documentKey) return
     const h1Count = h1Facts === undefined || h1Facts === null ? -1 : h1Facts.length
     const strictCodes = snapshot.diagnostics
-      .filter(d => d.code.startsWith('STRICT_SINGLE_H1_') || d.code.startsWith('STRICT_FIRST_H1_') || d.code === 'STRICT_H1_MISSING')
+      .filter(d => d.code.startsWith('STRICT_SINGLE_H1_') || d.code.startsWith('STRICT_FIRST_H1_'))
       .map(d => d.code)
     // Phase 7R.3.11.8B.11 — activation is SHAPE-driven (plain-body-only
     // exemption). The activation-authority fields below remain observable but
     // no longer act as a permanent SKIP gate for heading documents.
     const hasMeaningfulBody = input.markdown != null && input.markdown.trim() !== ''
     const plainBodyOnly = headings.length === 0 && hasMeaningfulBody
-    const strictDiagnosticsActive = input.strictMode && !plainBodyOnly
+    // B1 §B1-04 — the audit must mirror the producer's strict-POLICY gate.
+    const strictPolicyActive = input.strictPolicyActive ?? input.strictMode
+    const strictDiagnosticsActive = strictPolicyActive && !plainBodyOnly
     const state = this.ctx.authority.getHeadingPolicyState?.()
     const emitted = strictCodes.length > 0
     const reason = !strictDiagnosticsActive

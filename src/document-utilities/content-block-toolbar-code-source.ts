@@ -22,6 +22,14 @@ export interface FencedCodeBlock {
   lineEnd: number
   /** 是否找到闭合围栏。 */
   closed: boolean
+  /**
+   * B1 §B1-04 — raw source text of the SAME content lines with their original
+   * line endings preserved (`\r` retained on CRLF lines). `text` stays the
+   * CodeMirror-convention LF value; this field is used ONLY by CB007 to decide
+   * whether a block mixes CRLF and LF. Absent when the parser cannot map raw
+   * line endings reliably (e.g. legacy lone-CR documents).
+   */
+  rawText?: string
 }
 
 export interface FenceSourceLookup {
@@ -44,8 +52,13 @@ const CLOSING_FENCE_RE = /^( {0,3})(`{3,}|~{3,})[ \t]*$/
  * 未闭合的围栏解析到文档末尾，`closed=false`。
  */
 export function parseFencedCodeBlocks(markdown: string): FencedCodeBlock[] {
-  const { text, endedWithNewline } = normalizeLineBreaks(markdown ?? '')
+  const source = markdown ?? ''
+  const { text, endedWithNewline } = normalizeLineBreaks(source)
   if (text === '') return []
+  // Raw lines keep a trailing \r for CRLF source; normalized `lines` does not.
+  // Lone-CR documents are normalized by normalizeLineBreaks but cannot be
+  // mapped 1:1 here, so rawText is omitted for them (conservative: no CB007).
+  const rawLines = source.includes('\r') && !source.includes('\r\n') ? null : source.split('\n')
   const lines = text.split('\n')
   const blocks: FencedCodeBlock[] = []
 
@@ -73,6 +86,7 @@ export function parseFencedCodeBlocks(markdown: string): FencedCodeBlock[] {
     }
 
     const content: string[] = []
+    const rawContent: string[] = []
     let j = i + 1
     let closed = false
     let closeLine = lines.length - 1
@@ -84,11 +98,21 @@ export function parseFencedCodeBlocks(markdown: string): FencedCodeBlock[] {
         break
       }
       content.push(stripIndent(lines[j]))
+      if (rawLines != null) rawContent.push(stripIndent(rawLines[j] ?? ''))
     }
     // 未闭合且文档以换行结尾时，split 会多出一个空元素；它不是代码行。
     if (!closed && endedWithNewline && content.length > 0 && content[content.length - 1] === '') {
       content.pop()
+      if (rawLines != null) rawContent.pop()
     }
+
+    // `rawContent.join('\n')` preserves a trailing \r on the LAST content line but
+    // not the \n that separated it from the closing fence. Re-append that newline
+    // for a CLOSED block so a CRLF last line is still observable as "\r\n" by
+    // CB007 (the closing fence itself is never content).
+    const rawText = rawLines != null
+      ? rawContent.join('\n') + (closed && rawContent.length > 0 ? '\n' : '')
+      : undefined
 
     blocks.push({
       info,
@@ -96,6 +120,7 @@ export function parseFencedCodeBlocks(markdown: string): FencedCodeBlock[] {
       lineStart: i,
       lineEnd: closed ? closeLine : lines.length - 1,
       closed,
+      ...(rawText !== undefined ? { rawText } : {}),
     })
     i = closed ? closeLine + 1 : lines.length
   }

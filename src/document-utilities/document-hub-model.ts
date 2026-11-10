@@ -80,6 +80,13 @@ export interface DocumentHubModel {
   headline: string
   /** 检测标签详情视图的数据源（真实诊断快照）。 */
   diagnostics: readonly DocumentHubDiagnosticItem[]
+  /**
+   * B1 §B1-03 — number of VISIBLE ROWS (multi-target expands to N rows). This is
+   * deliberately separate from `status.warningCount` / `errorCount` / `hintCount`,
+   * which count normalized diagnostic EVENTS. A multi-target warning is ONE
+   * warning event but N clickable rows.
+   */
+  rowCount: number
 }
 
 export function buildDocumentHubModel(input: DocumentHubModelInput): DocumentHubModel {
@@ -107,6 +114,7 @@ export function buildDocumentHubModel(input: DocumentHubModelInput): DocumentHub
     },
     headline: input.status.label,
     diagnostics: input.diagnostics ?? [],
+    rowCount: input.diagnostics?.length ?? 0,
   }
 }
 

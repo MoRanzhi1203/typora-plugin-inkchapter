@@ -116,7 +116,7 @@ describe('RESOURCE — LOCAL_LINK_TARGET_NOT_FOUND semantic resolution', () => {
   function imgDiag(location: DiagnosticLocation = IMG, metadata: Record<string, unknown> = {}): DocumentDiagnostic {
     return makeDiag(location, {
       category: 'figure',
-      code: 'LINK_LOCAL_TARGET_NOT_FOUND',
+      code: 'LINK_LOCAL_TARGET_MISSING',
       targetIdentity: 'local:phase6-test.png',
       metadata: { destination: 'phase6-test.png', resourceKind: 'image', occurrenceIndex: 0, ...metadata },
       validityFingerprint: { kind: 'resource', path: 'phase6-test.png', occurrence: 0 },
@@ -152,7 +152,7 @@ describe('RESOURCE — LOCAL_LINK_TARGET_NOT_FOUND semantic resolution', () => {
     document.body.append(img1, img2)
     const second = makeDiag(IMG, {
       category: 'figure',
-      code: 'LINK_LOCAL_TARGET_NOT_FOUND',
+      code: 'LINK_LOCAL_TARGET_MISSING',
       targetIdentity: 'local:phase6-test.png:2',
       metadata: { destination: 'phase6-test.png', resourceKind: 'image', occurrenceIndex: 1 },
       validityFingerprint: { kind: 'resource', path: 'phase6-test.png', occurrence: 1 },

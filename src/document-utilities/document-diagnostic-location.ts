@@ -271,6 +271,22 @@ export interface DocumentDiagnosticRuleMeta {
   runtimeClosureStatus: DocumentDiagnosticRuntimeClosureStatus
   /** §0.1 — whether the family is a user-visible diagnostic type. */
   userVisible: boolean
+  /**
+   * B1 §B1-01/B1-04 — whether the family's codes participate in a DEFAULT
+   * recompute. `false` means the producer exists but the rule is opt-in and
+   * MUST NOT be counted as runtime-reachable by default (e.g. CB008's long-line
+   * threshold, CB010's duplicate of CODE_MISSING_LANGUAGE).
+   */
+  defaultEnabled: boolean
+  /**
+   * B1 §B1-01 — runtime codes that are registered but PROVABLY unreachable even
+   * with the producer wired (e.g. a code short-circuited by an earlier terminal
+   * state). They are excluded from `runtimeReachableCodes`, never from the
+   * registry.
+   */
+  knownUnreachableRuntimeCodes?: readonly string[]
+  /** B1 §B1-01/B1-04 — machine token explaining default-disabled / unreachable. */
+  runtimeAvailabilityReason?: string
 }
 
 /** area → scope default (§11: scope=document ⇒ reasonChip=false). */
@@ -459,6 +475,9 @@ interface DocumentDiagnosticRuleCapabilityExtra {
   implementationStatus?: DocumentDiagnosticImplementationStatus
   runtimeClosureStatus?: DocumentDiagnosticRuntimeClosureStatus
   userVisible?: boolean
+  defaultEnabled?: boolean
+  knownUnreachableRuntimeCodes?: readonly string[]
+  runtimeAvailabilityReason?: string
 }
 
 /**
@@ -531,6 +550,9 @@ function rule(
     runtimeClosureStatus: extra.runtimeClosureStatus
       ?? (implementationStatus === 'DEFERRED_BY_SPEC' ? 'DEFERRED' : 'UNVERIFIED'),
     userVisible: extra.userVisible ?? (implementationStatus === 'IMPLEMENTED'),
+    defaultEnabled: extra.defaultEnabled ?? true,
+    knownUnreachableRuntimeCodes: extra.knownUnreachableRuntimeCodes,
+    runtimeAvailabilityReason: extra.runtimeAvailabilityReason,
   }
 }
 
@@ -609,6 +631,8 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
         'STRICT_FIRST_H1_SOURCE_UNAVAILABLE',
       ],
     },
+    knownUnreachableRuntimeCodes: ['STRICT_FIRST_H1_DOCUMENT_EMPTY'],
+    runtimeAvailabilityReason: 'EMPTY_DOCUMENT_TERMINAL_SHORT_CIRCUIT',
   }),
   // Heading structure
   HEADING_LEVEL_GAP: rule('HEADING_LEVEL_GAP', 'heading', 'canonical-node'),
@@ -704,6 +728,8 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   CB008: rule('CB008', 'code', 'block-node', {
     area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'info',
     producerAuthority: 'computeDocumentDiagnostics',
+    defaultEnabled: false,
+    runtimeAvailabilityReason: 'OPT_IN_LONG_LINE_THRESHOLD',
   }),
   CB009: rule('CB009', 'code', 'block-node', {
     area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'info',
@@ -712,6 +738,8 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   CB010: rule('CB010', 'code', 'block-node', {
     area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'info',
     producerAuthority: 'computeDocumentDiagnostics',
+    defaultEnabled: false,
+    runtimeAvailabilityReason: 'DUPLICATE_OF_CODE_MISSING_LANGUAGE',
   }),
   CB101: rule('CB101', 'code', 'block-node', {
     area: 'code', capabilityCategory: 'code', scope: 'object', internalSeverity: 'warning',
@@ -876,19 +904,19 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   // wired from the caption service / formula planner) — the producer consumes
   // that snapshot and NEVER re-derives or parses a number. When the provider is
   // absent / empty every one of these rules stays SILENT (no false positive).
-  FIGURE_NUMBER_DUPLICATE: rule('FIGURE_NUMBER_DUPLICATE', 'figure', 'figure-occurrence', {
+  FIGURE_NUMBER_DUPLICATE: rule('FIGURE_NUMBER_DUPLICATE', 'figure', 'target-group', {
     area: 'caption-numbering', capabilityCategory: 'figure', scope: 'object',
     implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
-  TABLE_NUMBER_DUPLICATE: rule('TABLE_NUMBER_DUPLICATE', 'table', 'block-node', {
+  TABLE_NUMBER_DUPLICATE: rule('TABLE_NUMBER_DUPLICATE', 'table', 'target-group', {
     area: 'caption-numbering', capabilityCategory: 'table', scope: 'object',
     implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
-  CODE_NUMBER_DUPLICATE: rule('CODE_NUMBER_DUPLICATE', 'code', 'block-node', {
+  CODE_NUMBER_DUPLICATE: rule('CODE_NUMBER_DUPLICATE', 'code', 'target-group', {
     area: 'caption-numbering', capabilityCategory: 'code', scope: 'object',
     implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),
-  FIGURE_NUMBER_ORDER_INVALID: rule('FIGURE_NUMBER_ORDER_INVALID', 'figure', 'figure-occurrence', {
+  FIGURE_NUMBER_ORDER_INVALID: rule('FIGURE_NUMBER_ORDER_INVALID', 'figure', 'block-node', {
     area: 'caption-numbering', capabilityCategory: 'figure', scope: 'object',
     implementationStatus: 'IMPLEMENTED', suppressionGroup: 'numbering-integrity',
   }),

@@ -350,7 +350,7 @@ export function resolveDocumentDiagnosticSeverity(
     // an error. Remote / data URLs can never reach this rule.
     case 'FIGURE_LOCAL_IMAGE_MISSING':
       return 'warning'
-    // Internal Blank-Line Policy V1 §2 — 3+ consecutive blank lines INSIDE the
+    // Internal Blank-Line Policy V1 §2 — 2+ consecutive blank lines INSIDE the
     // body is a document-FORMAT warning. Fixed across strict and loose mode and
     // NEVER escalated to an error (a readable document with sloppy spacing).
     case EXCESSIVE_INTERNAL_BLANK_LINES_CODE:
@@ -489,6 +489,11 @@ export interface DocumentDiagnosticsInput {
   formulas: readonly DiagnosticFormulaFact[]
   links: readonly DiagnosticLinkFact[]
   canonicalDuplicateIdentities: readonly string[]
+  /**
+   * @deprecated B1 §B1-04 — legacy input retained for callers that still pass
+   * it, but the producer never reads it. Object-name duplicates are owned by
+   * FIGURE/TABLE/CODE_DUPLICATE_NAME; do not add new consumers.
+   */
   captionDuplicateNames: readonly string[]
   /**
    * VNext §24 — which AUTOMATIC numbering systems are currently ON. A manual
@@ -1979,7 +1984,12 @@ export function computeDocumentDiagnostics(
   const hasMeaningfulBody = input.markdown != null && input.markdown.trim() !== ''
   const canonicalHeadingCount = input.headings.length
   const plainBodyOnly = canonicalHeadingCount === 0 && hasMeaningfulBody
-  const strictHeadingRulesActive = input.strictMode && !plainBodyOnly
+  // B1 §B1-04 — strict-POLICY activation is a separate gate from the effective
+  // severity MODE. Legacy/pure callers omit `strictPolicyActive`, so they keep
+  // the historical `strictMode` fallback; the runtime authority supplies the
+  // real three-state gate (feature enabled + configured + effective mode).
+  const strictPolicyActive = input.strictPolicyActive ?? input.strictMode
+  const strictHeadingRulesActive = strictPolicyActive && !plainBodyOnly
 
   // ── Document-level ──────────────────────────────────
   if (input.documentKey == null || (input.markdown == null && input.headings.length === 0)) {
@@ -1990,6 +2000,11 @@ export function computeDocumentDiagnostics(
       }),
     )
   } else {
+    // B1 §B1-05 — when the strict first-H1 rule already proves SOURCE_UNAVAILABLE,
+    // the generic DOCUMENT_SOURCE_UNAVAILABLE notice would repeat the same root
+    // cause. The specific warning owns the fact; the generic notice is emitted
+    // only when no strict rule already reported it.
+    let strictSourceUnavailableEmitted = false
     // Phase 7R.3.11.8B.11 — first-H1 / pre-H1-body lint runs whenever strict
     // heading rules are active. It is naturally skipped for plain-body-only
     // docs (exemption above), so a headingless document never double-reports.
@@ -2015,6 +2030,7 @@ export function computeDocumentDiagnostics(
             location: firstH1Location,
           }),
         )
+        if (topline.reason === 'SOURCE_UNAVAILABLE') strictSourceUnavailableEmitted = true
       }
     }
 
@@ -2481,7 +2497,7 @@ export function computeDocumentDiagnostics(
     // V5.12-R6 — the empty-document notice is published EXCLUSIVELY by the
     // terminal short-circuit at the head of this function; it is deliberately
     // NOT a peer diagnostic here (that was ROOT_R6_1/ROOT_R6_4).
-    if (input.markdown == null) {
+    if (input.markdown == null && !strictSourceUnavailableEmitted) {
       push(
         makeDiagnostic(input, 'document', SOURCE_UNAVAILABLE_CODE, '无法读取文档源码', {
           detail: '部分源码相关的检查将跳过。',
@@ -2746,6 +2762,22 @@ export function computeDocumentDiagnostics(
     // §20 — the empty-formula hint NEVER touches the numbering system, so a
     // KNOWN_EMPTY formula keeps its number (EMPTY_FORMULA_NUMBERING_BLOCKED=0).
     const emptyObjects = analyzeEmptySourceObjects(structureSourceText)
+    // B1 §B1-05 — CB009 (empty block + caption) already owns the exact-empty
+    // code block with a caption. Suppress the generic CODE_EMPTY_BLOCK only for
+    // that provable overlap; a whitespace-only block (CB009 cannot fire) still
+    // gets the generic hint.
+    const structureLines = structureSourceText.split('\n')
+    const isExactlyEmptyCodeBlock = (span: SourceBlockSpan): boolean => {
+      for (let i = span.startLine + 1; i < span.endLine; i++) {
+        if ((structureLines[i] ?? '').replace(/\r$/, '') !== '') return false
+      }
+      return true
+    }
+    const genericEmptyCodeSpans = emptyObjects.codeBlocks.filter(span => {
+      const name = typeof span.ordinal === 'number' ? input.codes[span.ordinal]?.name : null
+      if ((name ?? '').trim() === '') return true
+      return !isExactlyEmptyCodeBlock(span)
+    })
     const pushEmpty = (
       kindCode: string,
       ruleId: string,
@@ -2799,7 +2831,7 @@ export function computeDocumentDiagnostics(
         )
       }
     }
-    pushEmpty(CODE_EMPTY_BLOCK_CODE, 'CODE-EMPTY-BLOCK', '代码块为空', '当前代码块没有内容，建议删除或补充内容。', 'code', 'object', 'empty-code', emptyObjects.codeBlocks, 'code')
+    pushEmpty(CODE_EMPTY_BLOCK_CODE, 'CODE-EMPTY-BLOCK', '代码块为空', '当前代码块没有内容，建议删除或补充内容。', 'code', 'object', 'empty-code', genericEmptyCodeSpans, 'code')
     for (const span of emptyObjects.tables) {
       push(
         makeDiagnostic(input, 'table', TABLE_EMPTY_CONTENT_CODE, '表格没有数据行', {
@@ -3352,7 +3384,11 @@ export function computeDocumentDiagnostics(
       const findings = analyzeCodeBlockV4({
         text,
         language,
-        options: { captionPresent: (c.name ?? '').trim() !== '' },
+        // B1 §B1-04 — CB007 needs the RAW source line endings. `text` is the
+        // CodeMirror-normalized LF value; `fence.rawText` preserves \r so a
+        // genuinely mixed CRLF/LF block can be detected. CB008/CB010 stay
+        // opt-in and are never enabled here (see registry defaultEnabled).
+        options: { captionPresent: (c.name ?? '').trim() !== '', rawText: fence.rawText ?? null },
       })
       for (const finding of findings) {
         push(

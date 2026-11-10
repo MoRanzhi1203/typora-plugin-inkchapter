@@ -103,12 +103,14 @@ describe('Numbering V2 §9 — *_NUMBER_DUPLICATE', () => {
       }),
     }).filter(d => d.code === TABLE_NUMBER_DUPLICATE_CODE)
     expect(tables).toHaveLength(1)
+    expect(tables[0].location?.kind).toBe('target-group')
 
     const codes = run({
       codes: [obj('A', 0, 'code'), obj('B', 1, 'code')],
       objectEffectiveNumbers: snapshotOf({ 'block:code:0': { effectiveNumber: '5' }, 'block:code:1': { effectiveNumber: '5' } }),
     }).filter(d => d.code === CODE_NUMBER_DUPLICATE_CODE)
     expect(codes).toHaveLength(1)
+    expect(codes[0].location?.kind).toBe('target-group')
   })
 
   it('OBJECT_NUMBER_DUPLICATE_FALSE_POSITIVE_COUNT=0 — distinct numbers never duplicate', () => {
@@ -142,6 +144,7 @@ describe('Numbering V2 §9 — *_NUMBER_ORDER_INVALID', () => {
     }).filter(d => d.code === FIGURE_NUMBER_ORDER_INVALID_CODE)
     expect(fig).toHaveLength(1)
     expect(fig[0].id).toBe(`figure:${FIGURE_NUMBER_ORDER_INVALID_CODE}:block:figure:2`)
+    expect(fig[0].location?.kind).toBe('block-node')
 
     const tbl = run({
       tables: [obj('A', 0, 'table'), obj('B', 1, 'table')],

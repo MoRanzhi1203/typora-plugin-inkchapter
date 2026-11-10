@@ -97,7 +97,6 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   STRICT_SINGLE_H1_MULTIPLE_H1: 150,
   // ── document format (blank-space policy) ──────────────────────────────────
   DOCUMENT_TERMINAL_NEWLINE_MISSING: 200,
-  PROJECT_TERMINAL_NEWLINE_MISSING: 200,
   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: 210,
   EXCESSIVE_INTERNAL_BLANK_LINES: 220,
   // ── document completeness ─────────────────────────────────────────────────

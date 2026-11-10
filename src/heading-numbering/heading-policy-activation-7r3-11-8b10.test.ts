@@ -58,7 +58,7 @@ function policyInput(cfg: {
 }
 
 function hasStrictCode(r: { diagnostics: Array<{ code: string }> }): boolean {
-  return r.diagnostics.some(d => d.code.startsWith('STRICT_SINGLE_H1_') || d.code.startsWith('STRICT_FIRST_H1_') || d.code === 'STRICT_H1_MISSING')
+  return r.diagnostics.some(d => d.code.startsWith('STRICT_SINGLE_H1_') || d.code.startsWith('STRICT_FIRST_H1_'))
 }
 
 describe('Heading Policy Activation Authority — stored ≠ active', () => {

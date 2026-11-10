@@ -1,5 +1,7 @@
 # 墨章文档诊断全量盘点与分类统计（现行源码审计）
 
+> B1 更新（2026-11-10）：CB007 接入原始换行数据；CB008/CB010 标记 defaultEnabled=false；STRICT_FIRST_H1_DOCUMENT_EMPTY 标记 knownUnreachable；strictPolicyActive 接入门控；编号定位契约对齐；状态方块/Toolbar 计数改为事件数。最新代码集合审计见 `document-diagnostic-code-sets.ts` 与 `DIAGNOSTICS-BATCH-1-REPORT.md`。
+
 > 审计对象：typora-plugin-inkchapter 当前工作树（未修改规则注册表、未修改任何诊断业务逻辑）。
 > 审计方式：读取真实源码 + 只读枚举脚本 + 定向测试 + 类型检查。
 > 生成时间：2026-11-10（Etc/GMT-8）。
@@ -21,10 +23,10 @@
 | 注册表解析代码（官方） | 98 | LATENT 前缀只计 1 个 sentinel，含 5 个 DEFERRED |
 | 具体诊断代码（展开动态代码） | 103 | LATENT 展开 6 级、STRICT_FIRST 展开 7 码 |
 | 有生产器的具体代码 | 98 | 85 个 EXACT + 7 个 STRICT 码 + 6 个 LATENT 级别 |
-| 真正可达的具体代码 | 95 | 98 减去 CB007 / CB008 / CB010 |
+| 真正可达的具体代码 | 95 | 98 减去 CB008 / CB010 与不可达动态代码 STRICT_FIRST_H1_DOCUMENT_EMPTY |
 | 错误 / 警告 / 提示（家族） | 12 / 56 / 24 | 注册表基准级别 |
 | 错误 / 警告 / 提示（具体代码） | 12 / 62 / 29 | 注册表基准级别，展开后 |
-| 接入生产器的家族 | 87 | 无条件 68 + 条件启用 16 + 不可达 3 |
+| 接入生产器的家族 | 87 | 无条件 69 + 条件启用 16 + 默认关闭 2 |
 | 未接入（DEFERRED） | 5 | 无生产器 |
 | 运行时闭包已证实 | 0 | 87 个 IMPLEMENTED 家族全部 UNVERIFIED |
 | 静态可定位家族 | 91 / 92 | 仅 DOCUMENT_EMPTY 声明不可定位 |
@@ -83,7 +85,7 @@
 
 本报告把两件事分开：
 
-- 静态可达：源码里是否存在真实生产路径；本报告对 95 个代码给出“可达”结论，对 8 个代码给出“不可达 / 无生产器”结论；
+- 静态可达：源码里是否存在真实生产路径；本报告对 95 个代码给出“可达”结论，对 8 个代码给出“不可达 / 无生产器”结论（2 个默认关闭 + 1 个空文档短路 + 5 个 DEFERRED）；
 - 运行时证据：是否有可验证的 Fresh-Runtime-Identity 会话证明它在真实 Typora 中执行过。当前 87 个 IMPLEMENTED 家族的 runtimeClosureStatus 全部是 UNVERIFIED（能力矩阵 CLOSED_FAMILY_COUNT=0），唯一一条 runtime evidence 的 mainSha256 与当前 dist/main.js 不一致（见 D15）。
 
 ### 1.7 生产器核对范围
@@ -119,21 +121,22 @@
 | 有生产器路径的代码 | 98 |
 | 真正可达的代码 | 95 |
 | 无生产器（DEFERRED）的代码 | 5 |
-| 有生产器但默认关闭的代码 | 3 |
+| 有生产器但默认关闭的代码 | 2 |
+| 已注册但已知不可达的动态代码 | 1 |
 
 ### 2.3 执行状态
 
 | 状态 | 家族数 | 说明 |
 | --- | ---: | --- |
-| A 已注册并执行 | 68 | 接入生产器；由文档内容 / 文档状态决定是否触发 |
+| A 已注册并执行 | 69 | 接入生产器；由文档内容 / 文档状态决定是否触发 |
 | B 已注册但条件启用 | 16 | 严格模式 3 + 编号配置 13 |
-| C 已注册但不可达 | 3 | CB007 / CB008 / CB010，生产器从不启用其选项 |
+| C 已注册但不可达 | 2 | CB008 / CB010，生产器从不启用其选项（CB007 已在 B1 接入原始换行数据） |
 | D 未接入（DEFERRED） | 5 | 无生产器 |
 | 已废弃但保留源码 / 映射 | 0（注册家族） | 另有 1 条未注册的兼容映射残留，见 D10 |
 | 仅测试代码中出现 | 0（注册家族） | 另有 1 个旧规则实现和 2 个旧 code 名残留在测试，见 D13 |
 | 无法确认（运行时证据） | 87 | 全部 IMPLEMENTED 家族 UNVERIFIED |
 
-说明：A 的 68 不等于“每次都会报 68 条”，它表示这 68 个家族已接入生产器且没有全局配置开关；任何一条都仍需要对应文档事实才会触发。B 的 16 在开关关闭时完全不执行。
+说明：A 的 69 不等于“每次都会报 69 条”，它表示这 69 个家族已接入生产器且没有全局配置开关；任何一条都仍需要对应文档事实才会触发。B 的 16 在开关关闭时完全不执行。
 
 ## 3. 按严重程度统计
 
@@ -154,9 +157,9 @@
 | 注册表基准（103 代码） | 12 | 62 | 29 | 0 | 103 |
 | strict 运行（103 代码） | 14 | 66 | 23 | 0 | 103 |
 | 有生产器（98 代码） | 12 | 57 | 29 | 0 | 98 |
-| 真正可达（95 代码） | 12 | 57 | 26 | 0 | 95 |
+| 真正可达（95 代码） | 12 | 56 | 27 | 0 | 95 |
 | strict 且有生产器（98 代码） | 14 | 61 | 23 | 0 | 98 |
-| strict 且可达（95 代码） | 14 | 61 | 20 | 0 | 95 |
+| strict 且可达（95 代码） | 14 | 60 | 21 | 0 | 95 |
 
 ### 3.3 模式差异
 
@@ -245,9 +248,9 @@
 
 | 代码 | 定义 | 家族数 |
 | --- | --- | ---: |
-| A | 注册、接入生产器、无全局配置开关 | 68 |
+| A | 注册、接入生产器、无全局配置开关 | 69 |
 | B | 注册、接入生产器、但被严格模式或编号配置门控 | 16 |
-| C | 注册、有生产器代码，但生产器永不启用其触发选项 | 3 |
+| C | 注册、有生产器代码，但生产器永不启用其触发选项 | 2 |
 | D | 注册但无生产器（DEFERRED_BY_SPEC） | 5 |
 
 ### 5.2 B 类：16 个条件启用家族
@@ -275,13 +278,14 @@
 
 这些开关来自 main.ts 的实际 provider 接线：numberingEnabled.heading 来自 getHeadingPolicyState（document-utilities-context.ts:294-299），对象编号来自 captionService.getObjectNumberingEnabledState（main.ts:1520-1523），编号事实来自 captionService.getObjectEffectiveNumberElementFacts（main.ts:1579-1583）。
 
-### 5.3 C 类：3 个不可达家族
+### 5.3 C 类：2 个默认关闭家族 + 1 个不可达动态代码
 
 | 家族 | 不可达原因 | 证据 |
 | --- | --- | --- |
-| CB007 | analyzeFormat 只在 options.rawText 非空时判断 CRLF/LF 混用；生产器只传 captionPresent | document-diagnostic-code-block-v4.ts:275-293；document-diagnostics.ts:3352-3356 |
-| CB008 | 只在 options.enableLongLine === true 时运行；生产器从不传 | document-diagnostic-code-block-v4.ts:295-315；options 定义 31-33 |
-| CB010 | 只在 options.enableMissingLanguage === true 时运行；生产器从不传 | document-diagnostic-code-block-v4.ts:772-784；options 定义 35-36 |
+| CB008 | 只在 options.enableLongLine === true 时运行；生产器从不传，默认关闭且阈值可配置 | document-diagnostic-code-block-v4.ts:295-315；options 定义 31-33 |
+| CB010 | 只在 options.enableMissingLanguage === true 时运行；生产器从不传，且与 CODE_MISSING_LANGUAGE 重复 | document-diagnostic-code-block-v4.ts:772-784；options 定义 35-36 |
+
+CB007 已在 B1 接入真实的原始换行数据（parseFencedCodeBlocks 的 rawText），因此从不可达集合移出；只对真正混用 CRLF/LF 的代码块触发。
 
 另外，STRICT_FIRST_H1 家族内的动态代码 STRICT_FIRST_H1_DOCUMENT_EMPTY 也不可达：空文档会在 computeDocumentDiagnostics 顶部短路成 DOCUMENT_EMPTY（document-diagnostics.ts:1950-1956），不会走到首 H1 检查；无 documentKey 时又先走 DOCUMENT_INACTIVE（1985-1991）。
 
@@ -313,13 +317,13 @@
 | 单目标·源码范围（source-range） | 17 | 22 |
 | 单目标·文档开头（document-start） | 4 | 4 |
 | 单目标·文档末尾（document-end） | 2 | 2 |
-| 单目标·规范块节点（block-node） | 29 | 29 |
+| 单目标·规范块节点（block-node） | 28 | 28 |
 | 单目标·整个违规块（source-block） | 1 | 1 |
-| 单目标·图片出现位置（figure-occurrence） | 5 | 5 |
+| 单目标·图片出现位置（figure-occurrence） | 3 | 3 |
 | 单目标·题注投影（caption-projection） | 6 | 6 |
 | 单目标·源码语法起始符（source-syntax-opener） | 3 | 3 |
 | 多目标（1…N）（multi-target） | 5 | 5 |
-| 目标组（1 行 / N 成员）（target-group） | 11 | 11 |
+| 目标组（1 行 / N 成员）（target-group） | 14 | 14 |
 | 合计 | 92 | 103 |
 
 ### 6.2 汇总
@@ -327,27 +331,27 @@
 - 有定位策略声明的家族：92 / 92；
 - 可定位家族（静态）：91 / 92；唯一例外是 DOCUMENT_EMPTY，它带 nonLocatableNotice = true 且没有 location（document-diagnostics.ts:1119-1125；契约见 document-diagnostic-location.ts:1167-1173）。
 - 不可定位家族：1（DOCUMENT_EMPTY）。
-- 单目标定位：76（canonical-node 9 + source-range 17 + document-start 4 + document-end 2 + block-node 29 + source-block 1 + figure-occurrence 5 + caption-projection 6 + source-syntax-opener 3）。
+- 单目标定位：73（canonical-node 9 + source-range 17 + document-start 4 + document-end 2 + block-node 28 + source-block 1 + figure-occurrence 3 + caption-projection 6 + source-syntax-opener 3）。
 - 多目标定位：5（HEADING_DUPLICATE_TEXT、FIGURE_DUPLICATE_NAME、TABLE_DUPLICATE_NAME、CODE_DUPLICATE_NAME、STRICT_SINGLE_H1_MULTIPLE_H1）。
-- 目标组定位：11。
+- 目标组定位：14。
 - 文档末尾定位：2（DOCUMENT_TERMINAL_NEWLINE_MISSING、DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE）。
 - 无生产器、因此运行期没有实例的定位策略：5 个 DEFERRED 家族。
 - 有生产器且实际能产生非空 location 的家族：86（87 个 IMPLEMENTED 减去 DOCUMENT_EMPTY）。
 
-校验：76 + 5 + 11 = 92；76 中已包含文档末尾 2 与文档开头 4，不再重复加总。
+校验：73 + 5 + 14 = 92；73 中已包含文档末尾 2 与文档开头 4，不再重复加总。
 
-### 6.3 声明策略与实际 location kind 的差异
+### 6.3 声明策略与实际 location kind（B1 已修复）
 
-多数规则的生产器 location 与注册表策略一致；但编号完整性有 4 条不一致：
+B1 把 4 条编号完整性规则的注册表声明改为与生产器实际 location 一致：
 
-| 规则 | 注册表声明 | 生产器实际 | 证据 |
+| 规则 | B1 前声明 | B1 后声明 = 生产器实际 | 证据 |
 | --- | --- | --- | --- |
 | FIGURE_NUMBER_DUPLICATE | figure-occurrence | target-group | registry:879-882；document-diagnostics.ts:1274-1291 |
 | FIGURE_NUMBER_ORDER_INVALID | figure-occurrence | block-node（blockKind = figure） | registry:891-894；document-diagnostics.ts:1320 |
 | TABLE_NUMBER_DUPLICATE | block-node | target-group | registry:883-886；document-diagnostics.ts:1274-1291 |
 | CODE_NUMBER_DUPLICATE | block-node | target-group | registry:887-890；document-diagnostics.ts:1274-1291 |
 
-这不是“无定位”，但说明注册表声明的定位类型不是运行期事实。报告按注册表策略统计（6.1），并在异常 D06 中单独列出实际差异。
+B1 后注册表与生产器一致；对应的 target-group / block-node 行为测试在 document-diagnostics-numbering-integrity-v2.test.ts 中断言。
 
 ### 6.4 点击可靠性
 
@@ -409,8 +413,8 @@
 | FIGURE_ORPHAN_CAPTION | 图片题注没有对应对象 | 警告 | 图片题注投影存在，但无法通过 canonical owner map 绑定到图片对象 | 单目标·题注投影 | 已注册·执行 | document-diagnostics-caption-integrity-v1.ts:152-166 | document-diagnostics-caption-integrity-v1.test.ts:22 |
 | FIGURE_MULTIPLE_CAPTIONS | 图片存在多个题注 | 警告 | 同一图片 owner 绑定了多于 1 个题注（1 条诊断 / N 个成员） | 目标组（1 行 / N 成员） | 已注册·执行 | document-diagnostics-caption-integrity-v1.ts:198-223 | document-diagnostics-caption-integrity-v1.test.ts:21 |
 | FIGURE_CAPTION_FORMAT_INVALID | 图片题注格式不规范 | 警告 | 图片题注标签无法由 buildObjectNumberingLabel 按规范格式精确复现 | 单目标·题注投影 | 已注册·执行 | document-diagnostics-caption-integrity-v1.ts:174-192 | document-diagnostics-caption-integrity-v1.test.ts:20 |
-| FIGURE_NUMBER_DUPLICATE | 图片编号重复 | 警告 | 编号服务开启 + 多个图片的 canonical 有效编号相同 | 单目标·图片出现位置 | 已注册·条件启用 | document-diagnostics.ts:1260-1293 | document-diagnostics-numbering-anchor-integrity-v1.test.ts:191 |
-| FIGURE_NUMBER_ORDER_INVALID | 图片编号顺序异常 | 警告 | 编号服务开启 + 该类型全部对象都有编号事实 + 图片有效编号非严格递增 | 单目标·图片出现位置 | 已注册·条件启用 | document-diagnostics.ts:1295-1325 | document-diagnostics-numbering-anchor-integrity-v1.test.ts:192 |
+| FIGURE_NUMBER_DUPLICATE | 图片编号重复 | 警告 | 编号服务开启 + 多个图片的 canonical 有效编号相同 | 目标组（1 行 / N 成员） | 已注册·条件启用 | document-diagnostics.ts:1260-1293 | document-diagnostics-numbering-anchor-integrity-v1.test.ts:191 |
+| FIGURE_NUMBER_ORDER_INVALID | 图片编号顺序异常 | 警告 | 编号服务开启 + 该类型全部对象都有编号事实 + 图片有效编号非严格递增 | 单目标·规范块节点 | 已注册·条件启用 | document-diagnostics.ts:1295-1325 | document-diagnostics-numbering-anchor-integrity-v1.test.ts:192 |
 
 ### 7.5 表格及表名（12 个家族）
 
@@ -423,7 +427,7 @@
 | TABLE_HEADER_EMPTY | 表头单元格为空 | 提示 | 表头存在空白单元格 | 目标组（1 行 / N 成员） | 已注册·执行 | document-diagnostics.ts:1880-1892 | document-source-syntax-integrity-v3.test.ts:21 |
 | TABLE_HEADER_DUPLICATE | 表头重复 | 警告 | 同一表头文字在同一表格中出现两次及以上 | 目标组（1 行 / N 成员） | 已注册·执行 | document-diagnostics.ts:1893-1909 | document-source-syntax-integrity-v3.test.ts:22 |
 | TABLE_MANUAL_NUMBER_PREFIX | 表名包含手工编号 | 警告 | 表格自动编号开启 + 表名带手工编号 | 单目标·规范块节点 | 已注册·条件启用 | document-diagnostics.ts:3394-3417 | document-diagnostics-locate-activation-v1.test.ts:300 |
-| TABLE_NUMBER_DUPLICATE | 表格编号重复 | 警告 | 编号服务开启 + 多个表格 canonical 有效编号相同 | 单目标·规范块节点 | 已注册·条件启用 | document-diagnostics.ts:1260-1293 | document-diagnostics-numbering-anchor-integrity-v1.test.ts:191 |
+| TABLE_NUMBER_DUPLICATE | 表格编号重复 | 警告 | 编号服务开启 + 多个表格 canonical 有效编号相同 | 目标组（1 行 / N 成员） | 已注册·条件启用 | document-diagnostics.ts:1260-1293 | document-diagnostics-numbering-anchor-integrity-v1.test.ts:191 |
 | TABLE_NUMBER_ORDER_INVALID | 表格编号顺序异常 | 警告 | 编号服务开启 + 编号事实完整 + 表格有效编号非严格递增 | 单目标·规范块节点 | 已注册·条件启用 | document-diagnostics.ts:1295-1325 | document-diagnostics-numbering-anchor-integrity-v1.test.ts:192 |
 | TABLE_ORPHAN_CAPTION | 表格题注没有对应对象 | 警告 | 表格题注投影无法绑定到 canonical 表格 owner | 单目标·题注投影 | 已注册·执行 | document-diagnostics-caption-integrity-v1.ts:152-166 | document-diagnostics-caption-integrity-v1.test.ts:25 |
 | TABLE_MULTIPLE_CAPTIONS | 表格存在多个题注 | 警告 | 同一表格 owner 绑定多于 1 个题注 | 目标组（1 行 / N 成员） | 已注册·执行 | document-diagnostics-caption-integrity-v1.ts:198-223 | document-diagnostics-caption-integrity-v1.test.ts:24 |
@@ -454,7 +458,7 @@
 | CB004 | 代码行尾有多余空格 | 提示 | 非空代码行末尾存在空格或 Tab | 单目标·规范块节点 | 已注册·执行 | document-diagnostic-code-block-v4.ts:217-235 | document-diagnostic-code-block-v4.test.ts:44 |
 | CB005 | 代码缩进混用 | 提示 | 同一行行首缩进同时包含空格与 Tab | 单目标·规范块节点 | 已注册·执行 | document-diagnostic-code-block-v4.ts:236-249 | document-diagnostic-code-block-v4.test.ts:50 |
 | CB006 | 代码含不可见字符 | 警告 | 代码行内含零宽 / 方向控制 / BOM / C0 控制字符 | 单目标·规范块节点 | 已注册·执行 | document-diagnostic-code-block-v4.ts:252-273 | document-diagnostic-code-block-v4.test.ts:56 |
-| CB007 | 代码换行符混用 | 提示 | 同一代码块混用 CRLF 与 LF；需要 options.rawText，生产器未传入，永不触发 | 单目标·规范块节点 | 已注册·不可达 | document-diagnostic-code-block-v4.ts:275-293; document-diagnostics.ts:3352-3356 | document-diagnostic-code-block-v4.test.ts:62 |
+| CB007 | 代码换行符混用 | 提示 | 同一代码块混用 CRLF 与 LF；B1 已接入 parseFencedCodeBlocks 的 rawText（原始换行） | 单目标·规范块节点 | 已注册·执行 | document-diagnostic-code-block-v4.ts:275-293; document-diagnostics.ts:3352-3356 | document-diagnostic-code-block-v4.test.ts:62 |
 | CB008 | 代码行过长 | 提示 | 代码行超过长度上限；需要 enableLongLine，生产器未传入，永不触发 | 单目标·规范块节点 | 已注册·不可达 | document-diagnostic-code-block-v4.ts:295-315, 33 | document-diagnostic-code-block-v4.test.ts:68 |
 | CB009 | 空代码块带有题注 | 提示 | 代码文本恰为 1 个空行且该代码块存在题注（captionPresent） | 单目标·规范块节点 | 已注册·执行 | document-diagnostic-code-block-v4.ts:317-328 | document-diagnostic-code-block-v4.test.ts:74 |
 | CB010 | 代码块缺少语言标识 | 提示 | 缺少语言；需要 enableMissingLanguage，生产器未传入，永不触发（且与 CODE_MISSING_LANGUAGE 重复） | 单目标·规范块节点 | 已注册·不可达 | document-diagnostic-code-block-v4.ts:772-784; document-diagnostics.ts:3352-3356 | document-diagnostic-code-block-v4.test.ts:80 |
@@ -465,7 +469,7 @@
 | CB105 | 代码含全角标点 | 提示 | 非字符串 / 非注释代码区出现疑似输入法误输入的全角标点（low confidence） | 单目标·规范块节点 | 已注册·执行 | document-diagnostic-code-block-v4.ts:698 | document-diagnostic-code-block-v4.test.ts:125 |
 | CODE_FENCE_UNCLOSED | 代码围栏未闭合 | 错误 | 代码围栏从开启行到 EOF 没有同字符、同长度的闭合围栏 | 单目标·源码语法起始符 | 已注册·执行 | document-diagnostics.ts:1740-1760 | document-diagnostic-source-syntax-location-authority.test.ts:74 |
 | CODE_MANUAL_NUMBER_PREFIX | 代码块名称包含手工编号 | 警告 | 代码块自动编号开启 + 代码名称带手工编号 | 单目标·规范块节点 | 已注册·条件启用 | document-diagnostics.ts:3418-3441 | document-diagnostics-numbering-anchor-integrity-v1.test.ts:7 |
-| CODE_NUMBER_DUPLICATE | 代码块编号重复 | 警告 | 编号服务开启 + 多个代码块 canonical 有效编号相同 | 单目标·规范块节点 | 已注册·条件启用 | document-diagnostics.ts:1260-1293 | document-diagnostics-numbering-anchor-integrity-v1.test.ts:16 |
+| CODE_NUMBER_DUPLICATE | 代码块编号重复 | 警告 | 编号服务开启 + 多个代码块 canonical 有效编号相同 | 目标组（1 行 / N 成员） | 已注册·条件启用 | document-diagnostics.ts:1260-1293 | document-diagnostics-numbering-anchor-integrity-v1.test.ts:16 |
 | CODE_NUMBER_ORDER_INVALID | 代码块编号顺序异常 | 警告 | 编号服务开启 + 编号事实完整 + 代码块有效编号非严格递增 | 单目标·规范块节点 | 已注册·条件启用 | document-diagnostics.ts:1295-1325 | document-diagnostics-numbering-anchor-integrity-v1.test.ts:16 |
 | CODE_ORPHAN_CAPTION | 代码块题注没有对应对象 | 警告 | 代码块题注投影无法绑定到 canonical 代码块 owner | 单目标·题注投影 | 已注册·执行 | document-diagnostics-caption-integrity-v1.ts:152-166 | document-diagnostics-caption-integrity-v1.test.ts:19 |
 | CODE_MULTIPLE_CAPTIONS | 代码块存在多个题注 | 警告 | 同一代码块 owner 绑定多于 1 个题注 | 目标组（1 行 / N 成员） | 已注册·执行 | document-diagnostics-caption-integrity-v1.ts:198-223 | document-diagnostics-caption-integrity-v1.test.ts:18 |
@@ -523,7 +527,7 @@
 
 说明：PREFIX 策略在注册表里只保留一个 sentinel（document-diagnostic-location.ts:583-589, 1001-1006），运行期发射 LEVEL_1 … LEVEL_6。`LEVEL_n` 没有静态 copy title，UI 使用规范化后的动态 message 作为标题（document-diagnostic-copy-v1.ts:379-389），description / suggestion 仍来自 LATENT 家族文案。
 
-## 8. 重复与异常清单（只列有证据的问题）
+## 8. 重复与异常清单（B1 审计与修复记录）
 
 本轮不删除、不合并、不降低任何规则；以下问题只记录。
 
@@ -533,10 +537,11 @@
 - 证据：registry 98 = 90 EXACT（含 5 DEFERRED）+ 7 STRICT + 1 LATENT sentinel（document-diagnostic-runtime-closure-authority.ts:200-210）；生产器 98 = 85 IMPLEMENTED EXACT + 7 STRICT + 6 LATENT（document-diagnostics.ts:687-761）。实际差集：生产器多 6 个 LATENT LEVEL；官方多 5 个 DEFERRED + 1 个 LATENT sentinel。
 - 影响：任何直接引用 98 的“覆盖率 / 规则数”结论都可能把 5 个未实现规则算进去，同时把 6 个真实 LATENT 代码折叠成 1 个 sentinel。
 
-### D02 CB007 注册为 IMPLEMENTED，但生产器永不触发
+### D02 CB007 已接入真实原始换行（B1 修复）
 
-- 证据：CB007 只在 options.rawText != null 时判断（document-diagnostic-code-block-v4.ts:275-293）；生产器只传 { captionPresent }（document-diagnostics.ts:3352-3356）。
-- 影响：注册表 / 能力矩阵把它当作已实现，实际运行期不可达。
+- 修复：parseFencedCodeBlocks 现在同时返回 text（LF 归一，CodeMirror 语义）与 rawText（保留每行原始 \r），生产器把 rawText 传给 analyzeCodeBlockV4。
+- 证据：content-block-toolbar-code-source.ts:14-31, 93-130；document-diagnostics.ts:3352-3356；行为测试 document-diagnostics-b1-reliability.test.ts CB007 两例。
+- 结果：CB007 从“不可达”变为可达；全 CRLF 或全 LF 不误报，只有真正混用才触发。
 
 ### D03 CB008 注册为 IMPLEMENTED，但生产器永不触发
 
@@ -553,10 +558,11 @@
 - 证据：空文档在 computeDocumentDiagnostics 顶部直接返回 DOCUMENT_EMPTY（document-diagnostics.ts:1950-1956）；无 documentKey 时走 DOCUMENT_INACTIVE（1985-1991）；首 H1 检查只在有 documentKey 且非空文档的分支运行（1996-2019）。validateStrictFirstH1Topline 的 DOCUMENT_EMPTY reason 确实存在（strict-document-validator.ts:257-263），但诊断生产器到不了。
 - 影响：7 个 STRICT 代码里 1 个是死代码。
 
-### D06 编号完整性 4 条规则的注册表定位策略与生产器不一致
+### D06 编号完整性 4 条定位契约已对齐（B1 修复）
 
-- 证据：见 6.3 表。FIGURE_NUMBER_DUPLICATE / TABLE_NUMBER_DUPLICATE / CODE_NUMBER_DUPLICATE 实际发 target-group；FIGURE_NUMBER_ORDER_INVALID 实际发 block-node；而注册表分别声明 figure-occurrence / block-node。
-- 影响：按注册表策略做定位审计或 UI 预设会得到错误类型；能力矩阵的 Location 列也不代表运行期事实。
+- 修复：注册表把 FIGURE_NUMBER_DUPLICATE / TABLE_NUMBER_DUPLICATE / CODE_NUMBER_DUPLICATE 声明为 target-group，把 FIGURE_NUMBER_ORDER_INVALID 声明为 block-node，与生产器实际 location 一致。
+- 证据：document-diagnostic-location.ts:879-910；document-diagnostics.ts:1274-1291, 1320；document-diagnostics-numbering-integrity-v2.test.ts 断言 location.kind。
+- 影响：注册表、能力矩阵和运行期定位类型不再互相矛盾。
 
 ### D07 顶部状态方块与 Toolbar 使用不同计数来源
 
@@ -564,40 +570,44 @@
 - 影响：只有 multi-target 规则（HEADING_DUPLICATE_TEXT、STRICT_SINGLE_H1_MULTIPLE_H1、FIGURE/TABLE/CODE_DUPLICATE_NAME）触发且目标数 > 1 时，两处数字不同；颜色通常一致，但“警告 N”会不一致。
 - 证据边界：两者都来自同一个已准入 snapshot，不是“不同 snapshot”；问题在“条数 vs 行数”的计数口径。
 
-### D08 strictPolicyActive 输入被声明但生产器从未消费
+### D08 strictPolicyActive 已接入门控（B1 修复）
 
-- 证据：DocumentDiagnosticsInput 声明 strictPolicyActive / headingPolicyEnabled / headingPolicyConfigured（document-diagnostics.ts:447-458）；collectDiagnosticsInput 也写入 strictPolicyActive（document-utilities-context.ts:277-280）；但 computeDocumentDiagnostics 只用 strictMode 计算 strictHeadingRulesActive（document-diagnostics.ts:1982）。全文检索没有第二处读取 strictPolicyActive。
-- 影响：strict 规则的真实门控是“有效模式 = strict”，不是“严格策略已激活”。当 feature enabled / configured 与 effective mode 不一致时，规则可能比 strictPolicyActive 声称的更宽。
+- 修复：computeDocumentDiagnostics 使用 `input.strictPolicyActive ?? input.strictMode` 作为 strict-only 规则门控；strictMode 仍只决定严重程度。
+- 证据：document-diagnostics.ts:1982-1987；document-diagnostics-authority.ts:626-628；行为测试 document-diagnostics-b1-reliability.test.ts 两例。
+- 影响：当严格策略未激活但 effective mode 仍是 strict 时，STRICT_FIRST_H1 / STRICT_SINGLE_H1 不再误运行。
 
 ### D09 captionDuplicateNames 是死输入字段
 
 - 证据：DocumentDiagnosticsInput 声明 captionDuplicateNames（document-diagnostics.ts:492），但生产器从未读取；document-utilities.ts 的 provider 永远返回 []（document-utilities.ts:345-350）。
 - 影响：题注重名检测实际由 FIGURE/TABLE/CODE_DUPLICATE_NAME 在对象命名层完成，这个字段没有贡献；它是一个未接入的残留接口。
 
-### D10 PROJECT_TERMINAL_NEWLINE_MISSING 兼容映射残留
+### D10 PROJECT_TERMINAL_NEWLINE_MISSING 兼容映射已清理（B1）
 
-- 证据：优先级表仍保留 PROJECT_TERMINAL_NEWLINE_MISSING（document-diagnostic-copy-v1.ts:100），但注册表没有该 key，生产器也不生成该 code。
-- 影响：历史命名残留；不影响当前统计，但会让“规则优先级的 code 数”看起来比注册表多 1。
+- 修复：从 DOCUMENT_DIAGNOSTIC_RULE_PRIORITY 删除未注册、不生成的 PROJECT_TERMINAL_NEWLINE_MISSING。
+- 证据：document-diagnostic-copy-v1.ts:99-102（删除后优先级表）；注册表从未包含该 key。
+- 影响：优先级表的 code 集合不再比注册表多 1。
 
-### D11 重复名称规则缺行为测试
+### D11 重复名称规则已补行为测试（B1 修复）
 
-- 证据：TABLE_DUPLICATE_NAME 与 CODE_DUPLICATE_NAME 全仓测试无引用；FIGURE_DUPLICATE_NAME 只出现在 copy 文案测试与排序测试中（document-diagnostic-copy-v1.test.ts:70、document-diagnostic-sort-order-drawer-v1.test.ts:267）。
-- 影响：三条“重复名称”规则都没有“产生诊断”的行为测试；TABLE / CODE 两条连文案测试也没有（能力矩阵 Static Test = NONE）。
+- 修复：新增 document-diagnostics-b1-reliability.test.ts，覆盖图/表/代码重复名称的真实诊断、warning 级别、multi-target 目标与 block identity。
+- 证据：该测试文件三例；能力矩阵的 Static Test 从 NONE 变为 TARGETED（TABLE_DUPLICATE_NAME / CODE_DUPLICATE_NAME）。
+- 结果：三条重名规则不再只有文案/排序测试。
 
-### D12 空行阈值注释与实现不一致
+### D12 空行阈值注释已对齐（B1）
 
-- 证据：INTERNAL_BLANK_LINE_POLICY.warningThreshold = 2（document-diagnostic-internal-blank-lines-v1.ts:54-57），判断为 actualBlankLines >= warningThreshold（771）；但 document-diagnostics.ts:353-357 的注释写“3+ consecutive blank lines”，copy 表则按 warningThreshold 生成“2 个及以上”（document-diagnostic-copy-v1.ts:264）。
-- 影响：用户文档 / 开发注释可能误以为 3 个空行才报；实际 2 个就报。
+- 修复：document-diagnostics.ts:353 注释从“3+”改为“2+”。
+- 证据：INTERNAL_BLANK_LINE_POLICY.warningThreshold = 2（document-diagnostic-internal-blank-lines-v1.ts:54-57），判断 actualBlankLines >= 2（771）；copy 表也按 2 生成（document-diagnostic-copy-v1.ts:264）。
+- 结果：实现、注释、文案三者一致。
 
-### D13 旧第一 H1 实现与旧 code 名残留在测试
+### D13 旧第一 H1 实现与旧 code 名残留（B1 部分清理）
 
-- 旧实现：validateStrictFirstH1 仍返回 ruleId = STRICT-FIRST-H1、severity = error（strict-document-validator.ts:125-208），但生产诊断只 import validateStrictFirstH1Topline（heading-numbering-service.ts:94-100；document-diagnostics.ts:9）；validateStrictFirstH1 只被测试引用。
-- 旧 code 名：LINK_LOCAL_TARGET_NOT_FOUND 仍出现在 locator 测试 fixture（document-diagnostic-locator-generic-closure-7r3-11-8b73.test.ts:111-124）；STRICT_H1_MISSING 仍出现在 strict 条件测试的判断里（document-diagnostics-conditional-strict-h1-7r3-11-8b9.test.ts:54-56）。
-- 影响：这些不是注册规则，但会让 grep 统计 / 旧文档看起来存在额外规则；它们与现行 STRICT_FIRST_H1（warning）和 LINK_LOCAL_TARGET_MISSING 不是同一套实现。
+- 旧实现：validateStrictFirstH1 仍返回 ruleId = STRICT-FIRST-H1、severity = error，但已标记 @deprecated，且生产诊断只 import validateStrictFirstH1Topline（document-diagnostics.ts:9；heading-numbering-service.ts:94-100）。保留函数是为了不删除其历史测试。
+- 旧 code 名：LINK_LOCAL_TARGET_NOT_FOUND 已从 locator fixture 改为现行 LINK_LOCAL_TARGET_MISSING；STRICT_H1_MISSING 已从两个测试判断和 authority 审计中删除（document-diagnostics-authority.ts:619-621）。
+- 影响：grep 不再出现旧 code 名；旧实现仍明确标注为 legacy、无生产调用者。
 
 ### D14 有证据的同根因双报 / 重叠
 
-- source unavailable：同一“无法读取源码”场景可能同时产生 DOCUMENT_SOURCE_UNAVAILABLE（info，document-diagnostics.ts:2484-2491）和 STRICT_FIRST_H1_SOURCE_UNAVAILABLE（warning，1996-2019），前提是 strict 且仍有 headings facts。两条规则家族不同、级别不同，但根因相同。
+- source unavailable（B1 修复）：strict first-H1 已经证明 SOURCE_UNAVAILABLE 时，通用 DOCUMENT_SOURCE_UNAVAILABLE 被抑制；未激活 strict policy 时通用提示仍保留（document-diagnostics.ts:1997-2029, 2497-2505；行为测试 document-diagnostics-b1-reliability.test.ts）。
 - 空代码块：CODE_EMPTY_BLOCK（document-diagnostics.ts:2802）与 CB009（document-diagnostic-code-block-v4.ts:317-328）会在“完全空且有题注”的同一代码块上同时触发；dedup key 含 code，因此两条都会保留。
 - 表格空内容与空表头：TABLE_EMPTY_CONTENT（2803-2830）与 TABLE_HEADER_EMPTY（1880-1892）可在同一张“只有表头且表头为空”的表上同时触发；它们描述不同事实，未做抑制。
 - 已正确抑制的重叠（反例，证明不是所有相似规则都重复）：FIGURE_BLOCK_STRUCTURE_INVALID 命中后抑制 FIGURE_MISSING_NAME / FIGURE_LOCAL_IMAGE_MISSING（3007-3010, 2864-2865）；HEADING_AUTO_NUMBER_CONFLICT 命中后抑制同一标题的 HEADING_MANUAL_NUMBER_PREFIX（2317-2320）；脚注重复定义时不报同标签的引用缺失（1815-1830）。
@@ -621,7 +631,7 @@
 - 图片：图名缺失 / 重复、本地资源缺失、非独立块、手工编号、题注孤立 / 多题注 / 格式、编号重复 / 顺序。
 - 表格：表名缺失 / 重复、非独立块、空表、空表头 / 重复表头、手工编号、编号重复 / 顺序、题注孤立 / 多题注 / 格式。
 - 公式：重复可见编号、非独立块、空公式、未闭合、编号顺序、章节不一致。
-- 代码：名称 / 语言缺失、重名、空块、未闭合围栏、15 条格式与全角标点 lint（实际可达 12 条）、手工编号、编号重复 / 顺序、题注孤立 / 多题注 / 格式。
+- 代码：名称 / 语言缺失、重名、空块、未闭合围栏、15 条格式与全角标点 lint（实际可达 13 条：CB007 已接入，CB008/CB010 默认关闭）、手工编号、编号重复 / 顺序、题注孤立 / 多题注 / 格式。
 - 链接 / 锚点：本地链接目标缺失、空链接文字 / 目标、文档内锚点缺失、标题锚点冲突。
 - 脚注 / 引用：脚注引用缺定义、定义重复 / 未用 / 空、引用式链接定义缺失 / 重复。
 
@@ -645,7 +655,7 @@
 ### 9.3 已有实现但尚未验证
 
 - 87 个 IMPLEMENTED 家族的 runtime closure 全部 UNVERIFIED：缺少与当前构建 SHA 一致的真实运行时证据。
-- CB007 / CB008 / CB010：有实现代码，但生产器不启用，属于“已实现但不可达”。
+- CB008 / CB010：有实现代码，但默认关闭（CB010 与 CODE_MISSING_LANGUAGE 重复），属于“已实现但默认不启用”。
 - 5 个 DEFERRED：有注册和文案，但没有生产器，属于“未实现”。
 
 ### 9.4 评价边界
@@ -659,12 +669,12 @@
 补充口径：
 
 - 项目官方 resolved code 口径是 98（LATENT 前缀折叠为 1 个 sentinel，含 5 个 DEFERRED）；若按该口径，严重程度是错误 12 / 警告 57 / 提示 29。
-- 有生产器路径的代码 98；当前固定选项下真正可达 95（错误 12 / 警告 57 / 提示 26）。
-- 84 个家族已接入生产器且非默认关闭（68 个无条件 + 16 个条件启用）；3 个已注册但不可达；5 个未接入。
+- 有生产器路径的代码 98；当前固定选项下真正可达 95（错误 12 / 警告 56 / 提示 27）。
+- 85 个家族已接入生产器且非默认关闭（69 个无条件 + 16 个条件启用）；2 个已注册但默认关闭；5 个未接入。
 - 86 个家族在运行期能产生非空 location；1 个（DOCUMENT_EMPTY）声明不可定位；5 个无生产器。
 - 87 个 IMPLEMENTED 家族的运行时执行证据均为 UNVERIFIED（0 CLOSED）；唯一一条运行时证据与当前构建 SHA 不一致。
 
-有证据的主要异常：两个“98”集合不同（D01）、CB007/008/010 不可达（D02–D04）、STRICT_FIRST_H1_DOCUMENT_EMPTY 不可达（D05）、编号规则定位策略与生产器不一致（D06）、状态方块与 Toolbar 计数口径不同（D07）、strictPolicyActive 未消费（D08）、captionDuplicateNames 死字段（D09）、兼容映射残留（D10）、两条规则无测试（D11）、空行阈值注释不一致（D12）、旧实现/旧 code 名残留（D13）、同根因双报（D14）、运行时证据过期（D15）、基准级别与 strict 级别差异（D16）。
+有证据的主要异常与 B1 处置：两个“98”集合不同（D01，保留为口径差异并新增代码集合审计）、CB007 已接入（D02）、CB008/CB010 默认关闭（D03–D04）、STRICT_FIRST_H1_DOCUMENT_EMPTY 不可达（D05）、4 条编号定位契约已对齐（D06）、状态方块与 Toolbar 计数口径已统一为事件数（D07）、strictPolicyActive 已接入门控（D08）、captionDuplicateNames 标记 legacy（D09）、兼容映射已清理（D10）、重名规则已补行为测试（D11）、空行注释已对齐（D12）、旧实现/旧 code 名已清理或标记（D13）、同根因 source-unavailable 双报已抑制（D14）、运行时证据仍过期（D15）、基准级别与 strict 级别差异保留（D16）。
 
 ## 附录 A：验证命令与结果
 
@@ -719,8 +729,8 @@
 - 家族 severity 合计 12 + 56 + 24 = 92；
 - 具体代码合计 103；主表 9 类家族 15+7+1+10+12+6+26+6+9 = 92；代码 21+12+1+10+12+6+26+6+9 = 103；
 - area 表 11 类家族 10+1+8+5+4+5+19+3+22+6+9 = 92；代码 16+1+8+10+4+5+19+3+22+6+9 = 103；
-- 定位表 76 + 5 + 11 = 92；
-- 执行状态 68 + 16 + 3 + 5 = 92。
+- 定位表 73 + 5 + 14 = 92；
+- 执行状态 69 + 16 + 2 + 5 = 92。
 
 路径核对：报告引用的 79 个 .ts 文件路径全部实际存在（唯一匹配到的 test.ts 是“*.test.ts”通配描述，不是文件引用）。
 
