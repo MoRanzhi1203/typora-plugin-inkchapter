@@ -174,6 +174,6 @@
 - GUI：旧实例 runtime-load 为 `3AFA056A…`；当前 build `3578B8A…` 已复制到 test vault；关闭旧实例后 `Start-Process`/`cmd start` 均退出（0/1/9），本会话无法重启 Typora，需人工采证
 - 全量测试：334 文件 / 5865 tests PASS，205.93s
 - 构建：PASS，`dist/main.js` SHA256 `3578B8AF795ECEB4AF4FC7596AFD182A6E243B986C5654F2554BD98874F2FC1E`
-- 合并：待执行
+- 合并：`git merge --no-ff feature/diagnostics-image-evidence-provider` → `442a759e1f0b8e4cf9a666ffd0d6e4a4228e5821`
 
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）
