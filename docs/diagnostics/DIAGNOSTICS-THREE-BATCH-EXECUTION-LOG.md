@@ -176,4 +176,15 @@
 - 构建：PASS，`dist/main.js` SHA256 `3578B8AF795ECEB4AF4FC7596AFD182A6E243B986C5654F2554BD98874F2FC1E`
 - 合并：`git merge --no-ff feature/diagnostics-image-evidence-provider` → `442a759e1f0b8e4cf9a666ffd0d6e4a4228e5821`
 
+### 2026-11-11 — 运行时集成：图片证据 + DOM heading 权威 + GUI 脚本
+
+- 分支：`feature/diagnostics-image-evidence-runtime`（从 `76e6420` 创建）
+- 图片：`image-evidence-runtime.ts` 文档隔离 5 tests；main 在 edit/active-leaf/mount 预热；诊断输入 `imageEvidenceByDestination`；B2 字节优先 2 tests；`rewriteInsertedReference` 失效旧/新路径
+- Heading：`document-heading-dom-anchor-v1.ts` 只读 Typora 实际 DOM id，重复/断开 UNKNOWN；6 tests；未接跨文件规则
+- GUI：`GUI_ACCEPTANCE_DEVTOOLS.js` 只读脚本 + `GUI_ACCEPTANCE_PROCEDURE.md`；旧实例 3AFA，集成构建 17E64A2 已复制
+- 构建修复：`node:fs` 别名被插件动态 import 转换导致 esbuild 失败；改为 `fs/promises` 的 `open` 后构建 PASS
+- 全量测试：336 文件 / 5878 tests PASS，189.21s
+- 构建：PASS，`dist/main.js` SHA256 `17E64A21388DDE062A0F0E529AD508DB76BE759F6FD36610F27AC6238B9F5762`
+- 合并：待执行
+
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）

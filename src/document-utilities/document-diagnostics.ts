@@ -468,6 +468,12 @@ export function resolveDocumentDiagnosticSeverity(
   }
 }
 
+export interface DiagnosticImageEvidence {
+  format: string | null
+  sha256: string
+  sizeBytes: number
+}
+
 export interface DocumentDiagnosticsInput {
   documentKey: string | null
   markdown: string | null
@@ -549,6 +555,8 @@ export interface DocumentDiagnosticsInput {
    * render-failure rules stay PENDING (never a false overflow/failure).
    */
   formulaRenderFacts?: readonly FormulaRenderFact[]
+  /** B2d — sync snapshot of async image evidence, keyed by raw destination. */
+  imageEvidenceByDestination?: ReadonlyMap<string, DiagnosticImageEvidence>
   /**
    * B3 §B3-01 — the resolved diagnostic profile. It supplies opt-in formula
    * source limits and the content-width cap; absent = general defaults.
@@ -1824,6 +1832,33 @@ function emitB2SourceDiagnostics(
   // only an explicit non-image extension triggers; unknown/new image extensions
   // and remote/data URLs stay silent.
   for (const occurrence of input.figureSourceOccurrences ?? []) {
+    const evidence = input.imageEvidenceByDestination?.get(occurrence.rawDestination) ?? null
+    if (evidence) {
+      if (evidence.format == null) {
+        push(makeDiagnostic(input, 'figure', 'FIGURE_IMAGE_FORMAT_UNSUPPORTED',
+          '图片格式无法识别', {
+          detail: `已读取图片字节，但未能识别为受支持的图片格式（sha256 ${evidence.sha256.slice(0, 12)}…）。`,
+          kind: 'object',
+          targetIdentity: `image-bytes:${occurrence.startLine}:${evidence.sha256.slice(0, 16)}`,
+          metadata: {
+            ruleId: 'FIGURE-IMAGE-FORMAT-UNSUPPORTED',
+            reason: 'BYTE_SNIFF_UNKNOWN',
+            sha256: evidence.sha256,
+            sizeBytes: evidence.sizeBytes,
+          },
+          location: {
+            kind: 'source-range',
+            startLine: occurrence.startLine,
+            startColumn: occurrence.startColumn,
+            endLine: occurrence.endLine,
+            endColumn: occurrence.endColumn,
+            sourceFingerprint: `image-bytes:${occurrence.startLine}:${evidence.sha256.slice(0, 16)}`,
+            rawText: occurrence.rawText,
+          },
+        }))
+      }
+      continue // byte evidence is authoritative; never fall back to extension
+    }
     const issue = detectNonImageDestination(occurrence.rawDestination)
     if (!issue) continue
     push(makeDiagnostic(input, 'figure', 'FIGURE_IMAGE_FORMAT_UNSUPPORTED',

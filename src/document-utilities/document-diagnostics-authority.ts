@@ -124,6 +124,12 @@ export interface DocumentDiagnosticsProviders {
   getCodeLanguage: (el: HTMLElement) => string | null
   /** Resolve an image's local path; returns { localPath } ONLY when missing. */
   resolveImageLocalPath: (img: HTMLElement) => { localPath: string | null }
+  /** B2d — sync image evidence for a raw Markdown destination (no IO). */
+  getImageEvidenceForDestination?: (destination: string) => {
+    format: string | null
+    sha256: string
+    sizeBytes: number
+  } | null
   /** True when a local relative link target does not exist. */
   isLinkTargetMissing: (target: string) => boolean
   /** Canonical heading stable identity by element (from the canonical frame). */

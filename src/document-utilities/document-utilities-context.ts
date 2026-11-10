@@ -86,6 +86,12 @@ export interface DocumentUtilitiesAuthorityContext {
   getStructuralMarkdown?: () => StructuralMarkdownSnapshot
   /** Strict heading structure mode (numbering authority). */
   isStrictMode: () => boolean
+  /** B2d — sync image evidence for a raw Markdown destination (no IO). */
+  getImageEvidenceForDestination?: (destination: string) => {
+    format: string | null
+    sha256: string
+    sizeBytes: number
+  } | null
   /** B3 — resolved diagnostic profile provider (general when absent). */
   getDiagnosticProfile?: () => import('./document-diagnostic-profile-v1').ResolvedDiagnosticProfile
   /**
@@ -272,6 +278,17 @@ export function collectDiagnosticsInput(
     }
   }
   if (transactionMarkdown == null) transactionMarkdown = ctx.authority.getMarkdown()
+  // B2d — ONE sync evidence snapshot per diagnostics transaction. The async
+  // provider warms outside this function; a miss is simply absent (UNKNOWN).
+  const imageEvidenceByDestination = new Map<string, {
+    format: string | null
+    sha256: string
+    sizeBytes: number
+  }>()
+  for (const occurrence of structural.figureSourceOccurrences ?? []) {
+    const evidence = ctx.authority.getImageEvidenceForDestination?.(occurrence.rawDestination)
+    if (evidence) imageEvidenceByDestination.set(occurrence.rawDestination, evidence)
+  }
   return {
     documentKey: ctx.authority.getDocumentKey(),
     markdown: transactionMarkdown,
@@ -289,6 +306,7 @@ export function collectDiagnosticsInput(
     latentAtxMarkers: structural.latentAtxMarkers,
     figures: structural.figures,
     figureSourceOccurrences: structural.figureSourceOccurrences,
+    imageEvidenceByDestination,
     tables: structural.tables,
     codes: structural.codes,
     formulas: structural.formulas,

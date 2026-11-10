@@ -1,5 +1,20 @@
 # B2/B3 阻塞解除专项审计（2026-11-10）
 
+## 0. 构建 SHA 相同的原因（先审计）
+
+- 基线 `76e6420` 时，三个新模块只有 `*.test.ts` 引用；`build.js` 的唯一入口是
+  `src/main.ts`，esbuild `bundle:true` + `minify:true` 会把无运行时引用的模块
+  tree-shake 掉。
+- `build.js` 每次先 `fs.rm('./dist', {recursive:true})`，所以**不是缓存**；相同 SHA
+  是因为**入口依赖图没有变化**，与构建错误无关。
+- 集成后 `src/main.ts` 已 import `image-evidence-runtime/provider`，重新构建：
+  - SHA 从 `3578B8A…` 变为 **`17E64A2…`**；
+  - 体积 `2,681,334` → `2,711,425`；
+  - bundle 中存在 `BYTE_SNIFF_UNKNOWN`、`IMAGE_EVIDENCE_READY`；
+  - `inkchapter-ref:` / `document-cross-file-anchor` 仍不在 bundle（仍仅测试引用）→
+    分别为 MODULE_PASS，不是 INTEGRATION_PASS。
+
+
 > 基线：`main` = `0e4197a6e31969191bfc9c07f967b1275674990c`（已核对 `git rev-parse HEAD`）。
 > 本轮分支：`feature/diagnostics-b2d-alignment-crossfile-anchor`。
 > 不重跑已完成的 B1/B2/B3；只处理有**新证据/新方案/实际修改**的项。
@@ -45,6 +60,18 @@ resolveCrossFileAnchor({
 | provider 枚举含 anchor | EXISTS |
 
 测试：`document-cross-file-anchor-v1.test.ts` 9 例，覆盖 percent 编码、同文件/URL/绝对路径、文件缺失、不可读、无权威、空枚举、命中。
+
+### 1.4 Typora DOM heading authority（新增）
+
+`src/document-utilities/document-heading-dom-anchor-v1.ts` 只读取 Typora 实际生成的
+`#write h1..h6[id]`：
+
+- `READY`：返回 DOM 顺序的真实 id；
+- `UNKNOWN`：root 缺失/断开、重复 id；
+- 无 heading 但 root 已连接 → `READY` 空列表；
+- 提供 `isSameDocumentPath`，只有目标文件 == 当前活动文件时才可使用该 DOM 权威；
+- 6 tests（真实 id、无 id、重复、detached、空、路径大小写）。
+- 仍未接入跨文件规则：目标文件不在 DOM 时没有权威 → UNKNOWN。
 
 ### 1.3 未接线原因
 
@@ -132,30 +159,40 @@ const TABLE_DELIMITER_RE = /^\s*\|?[\s:|-]+\|?\s*$/
 - 但 `sha256File` 是**异步**，诊断 compute 是同步；不能在渲染线程同步等待 Promise。
 - `ImageAssetIndex` 需要服务实例与索引路径，诊断 authority 没有该依赖；资源索引也不是每个本地图片都必然有条目。
 
-### 4.2 已实现 Provider（模块级，未接运行时预热）
+### 4.2 已实现运行时链路（源码 + 单测，未做真实 GUI）
 
-`src/image-management/image-evidence-provider.ts`：
-
-- `warm(path)`：异步调用现有 `sha256File` + 512 字节 header + `sniffImageFormat`；并发去重；失败缓存为 `ERROR`，不重复打 IO。
-- `getSync(path)`：纯内存快照，无文件 IO、无哈希；未预热/失败返回 `null`（UNKNOWN）。
-- `invalidate(path?)`；无上传/下载能力。
-- 7 tests：预热前 UNKNOWN、缓存复用、并发去重、force 重算、ERROR 不重试、未知格式 null、invalidate。
-- 尚未接入诊断 rule/DOM 预热；诊断仍用扩展名级 `FIGURE_IMAGE_FORMAT_UNSUPPORTED`，不把模块存在写成字节级规则已上线。
+- `image-evidence-provider.ts`：异步 `warm(path)`（sha256File + 512B header + sniff），
+  `getSync(path)` 纯内存快照；并发去重、失败缓存、无上传/下载；7 tests。
+- `image-evidence-runtime.ts`：**文档身份隔离**。`setDocument(docKey)`、`warm(paths)`、
+  `get(path)`（只返回当前文档路径集合内）、`invalidatePath`、`invalidateDocument`；5 tests。
+- `main.ts`：
+  - `prewarmImageEvidenceForActiveDocument()` 在 `edit`、`active-leaf:change`、首次 mount
+    事件触发；只扫描本地图片扩展名，异步 warm，不阻塞；
+  - evidence 就绪后调用 `requestDiagnosticsRefresh('IMAGE_EVIDENCE_READY')`（rAF/宿主合并）；
+  - `getImageEvidenceForDestination(destination)` 是**同步**、docKey 校验后的快照读取；
+  - `rewriteInsertedReference` 改写图片目标时 `invalidatePath` 旧/新路径。
+- 诊断消费：
+  - `DocumentDiagnosticsInput.imageEvidenceByDestination`；
+  - `emitB2SourceDiagnostics` 优先使用字节证据：`format=null` → `FIGURE_IMAGE_FORMAT_UNSUPPORTED`（`BYTE_SNIFF_UNKNOWN`）；
+  - 有字节证据时不再回退扩展名；无证据时才走现有扩展名规则。
+- 未做：真实 Typora 中验证预热时序/UI 刷新；无自动上传/下载。
 
 ### 4.3 结论
 
-- 可复用 `sniffImageFormat` 做**未来异步预取**；不能把 async 索引硬塞进同步诊断。
-- 现有 `FIGURE_IMAGE_FORMAT_UNSUPPORTED` 仍只做“显式非图片扩展名”保守判断，不冒充字节级格式检测。
-- 若要字节级/重复内容规则：需要异步 `ImageEvidenceProvider`（预热缓存 + 诊断读取缓存值），并明确“未预热 = UNKNOWN”。
+- 可复用 `sniffImageFormat` 做异步预取；同步诊断只读缓存，不等待 Promise。
+- 现有 `FIGURE_IMAGE_FORMAT_UNSUPPORTED` 现在有字节级优先路径；未预热仍是扩展名级。
+- 字节级/重复内容规则的“真实运行时验收”仍待 GUI/真实文档证据。
 
 ## 5. 真实 Typora GUI 审计
 
 - 运行实例：Typora 1.6.7，主进程 PID 39608，窗口标题 `Document-Diagnostics-Code-Integrity-Test.md - Typora`。
+- 当前构建：`17E64A2…`（集成图片证据运行时后）；已复制到 test vault。
+- 只读采证：`GUI_ACCEPTANCE_DEVTOOLS.js`（Console 粘贴，无点击/写入），步骤见 `GUI_ACCEPTANCE_PROCEDURE.md`。
 - 启动命令只有文档路径，**没有 `--remote-debugging-port`**；监听端口查询无结果，无法通过 CDP 连接。
 - 渲染进程带 `--user-data-dir=C:\Users\MSIPC\AppData\Roaming\Typora`；测试 vault 配置指向 `test/vault/.typora/plugins`，但当前窗口未渲染墨章工具条。
 - 已尝试隔离 profile 启动第二实例，Typora 单实例行为未产生新窗口；不反复尝试。
-- 本轮为验证新构建，复制 `dist/main.js`（SHA `3578B8A…`）到 test vault 并关闭旧 Typora；随后 `Start-Process`/`cmd start` 启动均立即退出（exit 0/1/9），无法在本会话重新启动 GUI。当前 Typora 已关闭，需人工重新打开。
-- 旧实例的 `inkchapter-runtime-load.json` 证明它运行的是旧构建 `3AFA056A…`，不是当前 `3578B8A…`；工具条未渲染的根因仍需新实例/DevTools 复核。
+- 本轮为验证新构建，先复制 `3578B8A…`，随后集成图片证据运行时并重建为 `17E64A2…`，再次复制到 test vault；关闭旧 Typora 后 `Start-Process`/`cmd start` 均立即退出（exit 0/1/9），无法在本会话重新启动 GUI。当前 Typora 已关闭，需人工重新打开。
+- 旧实例的 `inkchapter-runtime-load.json` 证明它运行的是旧构建 `3AFA056A…`，不是当前 `17E64A2…`；工具条未渲染的根因仍需新实例/DevTools 复核。
 - 结论：GUI 证据只能人工采证；不得把 Vitest/jsdom 写成真实 GUI 通过。
 
 ## 6. 本轮实施清单
@@ -163,15 +200,17 @@ const TABLE_DELIMITER_RE = /^\s*\|?[\s:|-]+\|?\s*$/
 | 项 | 状态 | 证据 |
 |---|---|---|
 | 跨文件 anchor 三态接口 | 已实现（未接 provider） | 9 tests |
+| Typora DOM heading authority | 已实现（仅活动文档，未接规则） | 6 tests；重复/断开 → UNKNOWN |
 | 表格对齐独立诊断 | 已实现 | 3 tests + 定向 36 tests |
 | 结构化引用 parser | 已实现（未启用规则） | 5 tests；拒绝显示编号 |
-| 图片异步证据 Provider | 已实现（未接运行时） | 7 tests；复用 sha256File/sniffImageFormat |
-| 图片字节级格式/重复内容 | 未实施（异步 provider 未接诊断） | 见 §4 |
-| GUI | BLOCKED / NEEDS_MANUAL | 旧 build 3AFA；新 build 3578 已复制；Typora 无法在本会话重启 |
+| 图片异步证据 Provider + Runtime | 已接入源码（未 GUI 验收） | 7 + 5 + 2 tests；文档隔离/失效/字节优先 |
+| 图片字节级/重复内容规则 | PARTIAL（仅格式） | 字节证据优先；重复内容未做 |
+| GUI 验收脚本 | 已提供 | `GUI_ACCEPTANCE_DEVTOOLS.js` + `GUI_ACCEPTANCE_PROCEDURE.md`（只读 DevTools） |
+| GUI 实际采证 | BLOCKED / NEEDS_MANUAL | 旧 build 3AFA；集成 build 17E64A2 已复制；本会话无法重启 Typora |
 
 ## 7. 需要人工决定
 
 1. 确认 `captionId` 跨文件持久化位置，并人工实测 `inkchapter-ref:` 在 Typora 的显示/点击/导出行为（当前 parser 已实现，规则未启用）。
-2. 提供 Typora heading id 的 canonical 生成接口（或接受 GitHub slug 作为权威）。
-3. 批准并接线异步 `ImageEvidenceProvider` 的运行时预热（格式 + SHA-256 + 尺寸）；当前仅模块级实现，无诊断规则消费。
-4. 人工启动 Typora（当前实例已在采证中关闭，本会话 `Start-Process` 均退出），加载 test vault 新 build 后完成 GUI 采证（B1-07/B3-04）。
+2. 提供 Typora 目标文件的 heading DOM 权威（跨文件只有在目标文件也打开/可索引时才能 READY）。
+3. 人工启动 Typora，按 `GUI_ACCEPTANCE_PROCEDURE.md` 运行只读脚本，完成 A–E 采证。
+4. 若要重复图片内容规则，需批准内容哈希的同文档/跨文档重复语义（当前只做单图格式）。

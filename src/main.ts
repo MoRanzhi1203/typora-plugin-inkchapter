@@ -89,6 +89,8 @@ import { installGuiCaretAudit } from './runtime/gui-caret-audit'
 // the `runtime` domain; it is adapted here and never enters the user Drawer.
 import { refreshRuntimeIntegrity, runtimeIntegrityFindingsFromIdentity } from './document-utilities/diagnostic-domain-v1'
 import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentUtilities } from './document-utilities/document-utilities'
+import { createImageEvidenceRuntime } from './image-management/image-evidence-runtime'
+import { createNodeImageEvidenceProvider } from './image-management/image-evidence-provider'
 import { resolveDiagnosticProfile, type ResolvedDiagnosticProfile } from './document-utilities/document-diagnostic-profile-v1'
 import { resolveAcademicWidthModel } from './document-utilities/document-diagnostic-academic-width-v1'
 // Heading Auto-Number Conflict V1.2 §21/§22 — dev/test-only bridge IO (report sink).
@@ -290,6 +292,11 @@ export default class extends Plugin<InkChapterSettings> {
   private captionContextMenu?: CaptionContextMenu
   private numberingCoordinator?: DocumentNumberingCoordinator
   private documentUtilities?: DocumentUtilities
+  /** B2d — async image bytes → sync diagnostics evidence. */
+  private imageEvidenceRuntime = createImageEvidenceRuntime(createNodeImageEvidenceProvider())
+  private imageEvidenceDocKey: string | null = null
+  private imageEvidenceWarmSeq = 0
+  private vaultRootPath: string | null = null
   /**
    * Heading Auto-Number Conflict V1.2 §21/§22 — the last dev/test bridge command.
    * The bridge never writes a report itself: it arms the ONE post-commit capture,
@@ -743,6 +750,7 @@ export default class extends Plugin<InkChapterSettings> {
     const outcome = applyReferenceDestination(markdown, selection.reference, newDestination)
     if (!outcome) return false
     if (outcome.kind === 'ALREADY_LINKED') return true
+    this.invalidateImageEvidenceDestinations([rawDestination, newDestination])
     try {
       File.reloadContent(outcome.markdown, false, false, false, true)
       return true
@@ -970,6 +978,83 @@ export default class extends Plugin<InkChapterSettings> {
     }
   }
 
+  // ── B2d — document-scoped async image evidence ───────────────────────────
+
+  private activeDocumentKeyForEvidence(): string | null {
+    try {
+      const fp = this.app.workspace.activeFile
+      const vr = this.vaultRootPath ?? ''
+      if (!fp || !vr) return null
+      return generateDocumentKey(fp, vr)
+    } catch { return null }
+  }
+
+  private resolveImageDestinationPath(destination: string): string | null {
+    const raw = String(destination ?? '').trim()
+    if (raw === '' || /^(?:https?:|data:|blob:|file:|\/|[A-Za-z]:[\\/]|\\\\)/i.test(raw)) return null
+    let decoded = raw.split('#')[0].split('?')[0]
+    try { decoded = decodeURIComponent(decoded) } catch { /* keep raw */ }
+    if (!/\.(?:png|jpe?g|gif|bmp|webp|avif|svg)$/i.test(decoded)) return null
+    const base = this.app.workspace.activeFile
+      ? path.dirname(this.app.workspace.activeFile)
+      : this.vaultRootPath
+    if (!base) return null
+    try { return path.resolve(base, decoded) } catch { return null }
+  }
+
+  /** Sync, document-isolated evidence for diagnostics (no file IO). */
+  private getImageEvidenceForDestination(destination: string): {
+    format: string | null
+    sha256: string
+    sizeBytes: number
+  } | null {
+    if (this.imageEvidenceDocKey !== this.activeDocumentKeyForEvidence()) return null
+    const resolved = this.resolveImageDestinationPath(destination)
+    if (!resolved) return null
+    return this.imageEvidenceRuntime.get(resolved)
+  }
+
+  /** Evidence must be dropped when the Markdown destination changes. */
+  private invalidateImageEvidenceDestinations(destinations: readonly string[]): void {
+    for (const destination of destinations) {
+      const resolved = this.resolveImageDestinationPath(destination)
+      if (resolved) this.imageEvidenceRuntime.invalidatePath(resolved)
+    }
+  }
+
+  /**
+   * Fire-and-forget warm of the ACTIVE document's local images. The sync
+   * diagnostics path never waits; when new evidence appears the host is asked
+   * for ONE coalesced recompute.
+   */
+  private prewarmImageEvidenceForActiveDocument(): void {
+    try {
+      const docKey = this.activeDocumentKeyForEvidence()
+      if (!docKey) return
+      if (this.imageEvidenceDocKey !== docKey) {
+        this.imageEvidenceDocKey = docKey
+        this.imageEvidenceRuntime.setDocument(docKey)
+      }
+      let markdown = ''
+      try { markdown = editor.getMarkdown() } catch { return }
+      const occurrences = parseImageSourceOccurrences(markdown)
+      const unique = new Set<string>()
+      for (const occurrence of occurrences) {
+        if (!occurrence.isLocal) continue
+        const resolved = this.resolveImageDestinationPath(occurrence.rawDestination)
+        if (resolved) unique.add(resolved)
+      }
+      if (unique.size === 0) return
+      const seq = ++this.imageEvidenceWarmSeq
+      void this.imageEvidenceRuntime.warm([...unique]).then(appeared => {
+        if (!appeared || seq !== this.imageEvidenceWarmSeq) return
+        if (this.imageEvidenceDocKey !== this.activeDocumentKeyForEvidence()) return
+        this.documentUtilities?.requestDiagnosticsRefresh?.('IMAGE_EVIDENCE_READY')
+      }).catch(() => { /* evidence is optional; never break diagnostics */ })
+    } catch { /* fail-open */ }
+  }
+
+
   /**
    * 有界取证（A3）——3 次一次性心跳，证明 onload 之后主线程仍在运行、以及最终的
    * Ribbon 状态；发射完即停止，**不做任何轮询 / 长期观察器**。仅用于 Runtime 验收。
@@ -1131,6 +1216,7 @@ export default class extends Plugin<InkChapterSettings> {
         console.info(`[InkChapter] SIDECAR-CONTEXT-UPDATE: vaultRoot=${vaultRoot} source=vault-service`)
       }
     } catch { /* vaultRoot stays undefined */ }
+    this.vaultRootPath = vaultRoot ?? null
 
     // ── V1.1-GLOBAL §7/§12 — SIDECAR/AUDIT STORAGE ROOT ──────────────────
     // A REAL vault already owns a `.typora` config dir, so sidecars/audits stay
@@ -1499,6 +1585,7 @@ export default class extends Plugin<InkChapterSettings> {
           } catch { return false }
         },
         getDiagnosticProfile: () => this.readDiagnosticProfile(),
+        getImageEvidenceForDestination: (destination) => this.getImageEvidenceForDestination(destination),
         // Phase 7R.3.11.8B.10 — Heading Policy Activation Authority. Stored
         // mode ('strict' legacy seed) NEVER implies activation. The resolver
         // separates featureEnabled / explicit-global / explicit-document and
@@ -1729,6 +1816,7 @@ export default class extends Plugin<InkChapterSettings> {
         },
       })
       this.documentUtilities.mount()
+    this.prewarmImageEvidenceForActiveDocument()
       console.log('[InkChapter] document utilities mounted')
     } catch (e) {
       console.error('[InkChapter] 文档工具初始化失败，诊断/锁定/滚动功能不可用', e)
@@ -2470,9 +2558,11 @@ export default class extends Plugin<InkChapterSettings> {
       this.register(this.app.features.markdownEditor.on('edit', () => {
         this.refreshActiveImageScope()
         this.imageInsertionController?.notifyEdit()
+        this.prewarmImageEvidenceForActiveDocument()
       }) as never)
       this.register(this.app.workspace.on('active-leaf:change', () => {
         this.refreshActiveImageScope()
+        this.prewarmImageEvidenceForActiveDocument()
       }) as never)
       console.log('[InkChapter] image asset service ready')
 

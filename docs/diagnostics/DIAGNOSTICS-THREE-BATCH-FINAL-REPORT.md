@@ -116,8 +116,8 @@ BLOCKED / NEEDS_MANUAL：
 | GIT-0 合并后 | 327 文件 / 5783 tests PASS | 同上 |
 | B1 | 329 文件 / 5805 tests PASS | `FD45A411B5B514161CAD673D975FE7EF7E6B728178381C9B64CCD493AFE1C4B4` |
 | B2 | 330 文件 / 5819 tests PASS | `BE23061EAFAA0A5717F28C0FFA7D0102EA04BBD61D09287B60E250C653D6078B` |
-| B2b / B3b / B2c / B2d / 2026-11-11 专项 | 334 文件 / 5865 tests PASS | `3578B8AF795ECEB4AF4FC7596AFD182A6E243B986C5654F2554BD98874F2FC1E` |
-| B3 | 334 文件 / 5865 tests PASS | 同上 |
+| B2b / B3b / B2c / B2d / 2026-11-11 专项 | 336 文件 / 5878 tests PASS | `17E64A21388DDE062A0F0E529AD508DB76BE759F6FD36610F27AC6238B9F5762` |
+| B3 | 336 文件 / 5878 tests PASS | 同上 |
 
 每批次 typecheck PASS；privacy PASS（SCANNED_LINES=0）；docs PASS（DOC_BROKEN_LINK_COUNT=0）。构建产物 `dist/` 被 `.gitignore` 忽略，未提交。
 
@@ -139,11 +139,11 @@ BLOCKED / NEEDS_MANUAL：
 
 | 项 | 状态 | 已验证证据 | 仍需外部条件 |
 |---|---|---|---|
-| 跨文件锚点 | 接口 PASS / 规则 BLOCKED | `document-cross-file-anchor-v1.ts` 三态契约 9 tests；文件缺失/无权威均 UNKNOWN | Typora canonical heading id/slug authority；插件需能读取目标文件实际 heading id |
-| 结构化引用 | 规范 + parser PASS / 规则未启用 | `inkchapter-ref:` 规范；`document-object-reference-v1.ts` 5 tests；拒绝显示编号 | 产品确认 captionId 跨文件持久化位置；Typora 显示/导出行为需人工实测 |
-| 图片证据 | Provider PASS / 字节级规则未启用 | `image-evidence-provider.ts` 异步预热 + 同步快照 7 tests；复用 sha256File/sniffImageFormat；无上传/下载 | 运行时预热接线与 UI 刷新策略；字节级规则审批 |
-| 表格对齐 | PASS | `TABLE_ALIGNMENT_INVALID` 3 tests；独立于列数/块结构 | 无 |
-| GUI | BLOCKED / NEEDS_MANUAL | 旧实例 runtime-load 为旧 build `3AFA056A…`；新 build `3578B8A…` 已复制到 test vault；旧实例关闭后本会话无法重启 Typora（exit 0/1/9） | 人工启动 Typora，加载新 build 并采证工具条/三标签/版心/DPI |
+| 跨文件锚点 | 接口 MODULE_PASS / 规则 BLOCKED | `document-cross-file-anchor-v1.ts` 9 tests；`document-heading-dom-anchor-v1.ts` 6 tests（仅活动文档 DOM id，重复/断开 UNKNOWN） | 目标文件 heading DOM 权威；当前无跨文件 READY 来源 |
+| 结构化引用 | parser MODULE_PASS / 规则未启用 | `inkchapter-ref:` 规范 + `document-object-reference-v1.ts` 5 tests；拒绝显示编号 | captionId 跨文件持久化 + Typora 显示/导出人工实测 |
+| 图片证据 | MODULE_PASS + INTEGRATION_PASS / RUNTIME_VERIFIED 未做 | Provider 7 tests + Runtime 5 tests + 诊断输入/字节优先 2 tests；docKey 隔离、失效、异步预热、同步快照；无上传下载 | 真实 Typora 预热时序/UI 刷新采证；重复内容规则未做 |
+| 表格对齐 | PASS（规则） | `TABLE_ALIGNMENT_INVALID` 3 tests；独立于列数/块结构 | 无 |
+| GUI | 脚本就绪 / GUI_VERIFIED 未做 | `GUI_ACCEPTANCE_DEVTOOLS.js` + `GUI_ACCEPTANCE_PROCEDURE.md`；旧实例运行 3AFA，新 build 3578 已复制 | 人工启动 Typora 后执行只读脚本 A–E |
 
 > 说明：结构化引用与图片 Provider 是**模块级实现**，尚未产出对应诊断规则；不得写成规则已上线或 GUI 已通过。
 

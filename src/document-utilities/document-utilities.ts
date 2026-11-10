@@ -46,6 +46,12 @@ export interface DocumentUtilitiesSources {
    */
   getStructuralMarkdown?: () => StructuralMarkdownSnapshot
   isStrictMode: () => boolean
+  /** B2d — sync image evidence for a raw Markdown destination (no IO). */
+  getImageEvidenceForDestination?: (destination: string) => {
+    format: string | null
+    sha256: string
+    sizeBytes: number
+  } | null
   /** B3 — resolved diagnostic profile provider (general when absent). */
   getDiagnosticProfile?: () => import('./document-diagnostic-profile-v1').ResolvedDiagnosticProfile
   /** Phase 7R.3.11.8B.9 — conditional strict-policy activation gate
@@ -171,6 +177,8 @@ export interface DocumentUtilities {
   getSnapshot: () => DocumentDiagnosticsSnapshot | null
   /** 即时短提示（复用唯一 toast，重复调用只更新文案，不堆叠）。 */
   showTransientHint: (message: string) => void
+  /** B2d — recompute after an async fact (e.g. image evidence) becomes ready. */
+  requestDiagnosticsRefresh?: (reason: string) => void
 }
 
 /**
@@ -328,6 +336,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
       getMarkdown: sources.getMarkdown,
       getStructuralMarkdown: sources.getStructuralMarkdown,
       isStrictMode: sources.isStrictMode,
+      getImageEvidenceForDestination: sources.getImageEvidenceForDestination,
       getDiagnosticProfile: sources.getDiagnosticProfile,
       getHeadingPolicyState: sources.getHeadingPolicyState,
       getEffectiveHeadingModeRevision: () => sources.getEffectiveHeadingModeRevision?.() ?? 0,
@@ -378,6 +387,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     getCodeName: (el) => sources.getCaptionTitleForElement(el),
     getCodeLanguage: (el) => sources.getCodeLanguage(el),
     resolveImageLocalPath: (img) => ({ localPath: imageLocalPath(img, resourceBaseDir(sources.getActiveFilePath(), sources.vaultRoot)) }),
+    getImageEvidenceForDestination: sources.getImageEvidenceForDestination,
     isLinkTargetMissing: (target) => linkTargetMissing(target, resourceBaseDir(sources.getActiveFilePath(), sources.vaultRoot)),
     getHeadingIdentity: (el) => headingIdentityByElement.get(el) ?? null,
     parseLocalLinkTargets,
@@ -515,5 +525,6 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     // consumed by the control-surface invariant).
     getSnapshot: () => host.getSnapshot(),
     showTransientHint: (message: string) => host.showTransientHint(message),
+    requestDiagnosticsRefresh: (reason: string) => host.requestDiagnosticsRecompute(reason),
   }
 }

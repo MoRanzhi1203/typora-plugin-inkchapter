@@ -37,7 +37,7 @@
 | B2-02b | 表格对齐独立诊断（B2d） | PASS | 已证明松 delimiter 下 `::` 是独立缺陷；3 tests |
 | B2-03 | 列表结构规则 | PASS（缩进）/ TODO（标记/序号） | LIST_INDENTATION_INVALID 三例；合法混合标记/非 1 起始不误报 |
 | B2-04 | 标题 / 自动编号规则 | PASS（序列） | HEADING_NUMBER_SEQUENCE_INVALID 使用 canonical displayCountedPath；四例测试 |
-| B2-05 | 图片资源规则 | PARTIAL（扩展名 + Provider 模块） | FIGURE_IMAGE_FORMAT_UNSUPPORTED 只对显式非图片扩展名；`image-evidence-provider.ts` 7 tests，未接运行时预热，字节级规则未启用 |
+| B2-05 | 图片资源规则 | PARTIAL（扩展名 + 字节证据） | FIGURE_IMAGE_FORMAT_UNSUPPORTED 支持字节优先；Provider/Runtime 已接线，真实 Typora 时序未采证；重复内容未做 |
 | B2-06 | 公式宽度 / 源码长度 / 单行 / 渲染失败 | PASS（4 项）/ TODO（高度可选） | 源码长度/单行/宽度/失败均有测试；高度默认关闭未做 |
 | B2-07 | 注册、默认策略、测试、能力矩阵 | PASS（已实现项） | 101 家族 / 107 解析代码 / 112 展开 / 108 生产器 / 103 可达 |
 | B2-08 | B2 报告 + 门禁 + 合并 `main` | PASS（PARTIAL 记录） | 全量 PASS；merge `8d5e475`；B2b 追加 HEADING_NUMBER_SEQUENCE_INVALID |
@@ -61,10 +61,12 @@
 |---|---|---|---|
 | FINAL-01 | Git 总览与三次合并记录 | PASS | GIT-0 `3b20ea5`；B1 `19bf0dc`；B2 `8d5e475`；B3 `842074c` |
 | FINAL-02 | 最新规则家族 / 展开代码 / 级别分布重算 | PASS | 101 / 112 / 107；13-70-29；可达 103（13-63-27） |
-| FINAL-03 | 全量测试、构建 SHA、隐私审计 | PASS | 334×5865；`3578B8A…`；privacy/docs PASS |
-| FINAL-07 | 图片异步证据 Provider（模块级） | PASS（未接运行时） | `image-evidence-provider.ts` 7 tests；复用 sha256File/sniffImageFormat |
-| FINAL-08 | 结构化引用 parser（未启用规则） | PASS（规范/解析） | `document-object-reference-v1.ts` 5 tests；拒绝显示编号 |
-| FINAL-09 | GUI 新 build 加载与采证 | BLOCKED | 旧实例 3AFA；新 3578 已复制；Typora 关闭后本会话无法重启 |
+| FINAL-03 | 全量测试、构建 SHA、隐私审计 | PASS | 336×5878；`17E64A2…`；privacy/docs PASS |
+| FINAL-07 | 图片异步证据 Provider + Runtime | INTEGRATION_PASS（未 RUNTIME_VERIFIED） | 7+5 tests；main 预热/失效/文档隔离；诊断字节优先；真实 Typora 时序未采证 |
+| FINAL-08 | 结构化引用 parser（未启用规则） | MODULE_PASS | `document-object-reference-v1.ts` 5 tests；拒绝显示编号 |
+| FINAL-09 | 跨文件 DOM heading authority | MODULE_PASS（仅活动文档） | 6 tests；重复/断开 UNKNOWN；跨文件目标无权威 |
+| FINAL-10 | GUI 验收脚本与步骤 | PASS（脚本） | `GUI_ACCEPTANCE_DEVTOOLS.js` + 步骤文档；GUI_VERIFIED 未做 |
+| FINAL-11 | 真实 GUI 采证 | BLOCKED / NEEDS_MANUAL | 旧实例 3AFA；新 3578 已复制；Typora 关闭后本会话无法重启 |
 | FINAL-06 | B2/B3 阻塞解除专项审计（B2d） | PASS（可实施项） | 三态接口、表格对齐、引用方案、图片/GUI 审计；见 `DIAGNOSTICS-B2B3-UNBLOCK-AUDIT.md` |
 | FINAL-04 | GUI 证据 / NEEDS_MANUAL 清单 | NEEDS_MANUAL | 真实 Typora 截图/DOMRect 未获得；未伪造 |
 | FINAL-05 | 最终交付报告 | PASS | `DIAGNOSTICS-THREE-BATCH-FINAL-REPORT.md` |
