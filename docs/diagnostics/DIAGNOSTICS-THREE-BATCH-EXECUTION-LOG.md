@@ -185,6 +185,6 @@
 - 构建修复：`node:fs` 别名被插件动态 import 转换导致 esbuild 失败；改为 `fs/promises` 的 `open` 后构建 PASS
 - 全量测试：336 文件 / 5878 tests PASS，189.21s
 - 构建：PASS，`dist/main.js` SHA256 `17E64A21388DDE062A0F0E529AD508DB76BE759F6FD36610F27AC6238B9F5762`
-- 合并：待执行
+- 合并：`git merge --no-ff feature/diagnostics-image-evidence-runtime` → `ea8205e8f2d42c7d075a59713b008c72358ca581`
 
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）
