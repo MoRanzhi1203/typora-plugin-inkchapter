@@ -9,7 +9,7 @@
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| B2-01 五条 DEFERRED | **PARTIAL / 1 PASS + 4 BLOCKED** | FRONTMATTER_MALFORMED 已实现；文件锚点 + 3 条交叉引用因缺少 canonical 语法/文件锚点权威而 BLOCKED |
+| B2-01 五条 DEFERRED | **PARTIAL / 1 PASS + 3 BLOCKED + 1 接口就绪** | FRONTMATTER_MALFORMED 已实现；跨文件 anchor 三态接口已实现并测试；文件锚点/3 条交叉引用仍缺 canonical authority |
 | B2-02 表格结构 | PASS（列数 + 对齐） | TABLE_COLUMN_COUNT_MISMATCH 与 TABLE_ALIGNMENT_INVALID 均已实现；对齐规则针对松 delimiter 识别下的非法 cell |
 | B2-03 列表结构 | PASS（缩进） / TODO（标记/序号） | LIST_INDENTATION_INVALID 已实现；混合标记、非 1 起始有序列表都是合法 Markdown，未误报 |
 | B2-04 标题/编号 | PASS（序列） | 使用 canonical heading effective display path 的 HEADING_NUMBER_SEQUENCE_INVALID；未重推导编号 |
@@ -18,7 +18,7 @@
 | B2-07 注册/测试/能力矩阵 | PASS（已实现项） | 10 条规则完成注册、文案、定位、测试；能力矩阵计数更新 |
 | 全量测试 / 类型 / 构建 | SEE §5 | — |
 
-**结论：B2 的实现范围（7 条规则）通过代码与测试门禁；4 条 DEFERRED 与若干可选规则保持 BLOCKED，不能宣称 B2 全合同 PASS。**
+**结论：B2 的实现范围（10 条规则）通过代码与测试门禁；4 条 DEFERRED（其中跨文件 anchor 接口已就绪）与若干可选规则保持 BLOCKED，不能宣称 B2 全合同 PASS。**
 
 ## 2. 规则总数（B2 后）
 
@@ -120,7 +120,10 @@
 - 不做：把自然语言“图 1-1”当引用扫描（任务书明确禁止）。
 - 解除条件：定义并实现规范的引用语法（例如显式对象引用链接），再由同一个 parser 解析 Markdown 源与有效编号。
 
-### 4.3 TABLE_ALIGNMENT_INVALID（BLOCKED）
+### 4.3 TABLE_ALIGNMENT_INVALID（已解除，B2d）
+
+- 已证明松 delimiter 识别下 `::` 是独立于列数/块结构的语法缺陷；已实现并测试。
+- 不再 BLOCKED。
 
 - 现状：GFM delimiter 必须满足 `:?-+:?` 才会被识别为表格；非法 alignment 已被 `parseDocumentSourceTables` 排除，不构成“表格内的列对齐错误”。
 - 不做：对任意 `:` 位置做猜测。
@@ -131,7 +134,10 @@
 - 已使用 canonical heading `counted` + `displayCountedPath`；不再 BLOCKED。
 - 不按标题文本/序号字符串自行推导。
 
-### 4.5 FIGURE_IMAGE_FORMAT_UNSUPPORTED / 重复图片（BLOCKED）
+### 4.5 图片字节级格式 / 重复内容（BLOCKED）
+
+- 已实现：显式非图片扩展名（FIGURE_IMAGE_FORMAT_UNSUPPORTED）。
+- 字节级格式/重复内容需要异步 ImageEvidenceProvider；诊断同步 compute 不能 await `sha256File`/索引，见 `DIAGNOSTICS-B2B3-UNBLOCK-AUDIT.md` §4。
 
 - 需要：可靠的文件/字节/尺寸信息（格式、重复内容）。
 - 现状：没有 image file-info provider；按扩展名猜格式会误报（如 avif/webp/无扩展名）。
@@ -154,4 +160,4 @@
 
 ## 6. 合并决策
 
-B2 的实现范围已通过定向测试；但 4 条 DEFERRED 与表格对齐/标题编号/图片格式未能安全实现。按任务书“无法安全实施时记录 BLOCKED，不虚假标记已实现”的要求，B2 不宣称全合同 PASS。合并时必须在执行日志中记录该 PARTIAL 状态，不能把它写成“B2 全部完成”。
+B2 的实现范围已通过定向测试；4 条 DEFERRED 仍缺 canonical 跨文件/对象引用权威，图片字节级/重复内容需异步 provider，不能宣称 B2 全合同 PASS。按任务书要求，合并时记录 PARTIAL 状态，不写成“B2 全部完成”。
