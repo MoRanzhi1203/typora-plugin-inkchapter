@@ -5,7 +5,7 @@
  * facts; when the source shape cannot be proven the result is empty (never a
  * guessed warning).
  */
-import { buildSourceLineSpans, isRangeProtected, parseDocumentSourceSyntax, splitTableRow } from './document-source-syntax-authority'
+import { buildSourceLineSpans, isRangeProtected, parseDocumentSourceSyntax, parseDocumentSourceTables, splitTableRow } from './document-source-syntax-authority'
 import { analyzeDisplayFormulaBlocks } from './document-diagnostics-vnext-authority'
 
 export const B2_FORMULA_SOURCE_LENGTH_LIMIT = 300
@@ -255,6 +255,57 @@ export function detectNonImageDestination(rawDestination: string | null | undefi
   const ext = base.slice(dot + 1).toLowerCase()
   if (!NON_IMAGE_FILE_EXTENSIONS.includes(ext)) return null
   return { extension: ext, destination: raw }
+}
+
+// ── B2d — table alignment cells ────────────────────────────────────────────
+
+export interface TableAlignmentIssue extends SourceIssueSpan {
+  cellIndex: number
+  rawCell: string
+  identity: string
+  detail: string
+}
+
+/** GFM alignment cell: optional leading `:`, at least one `-`, optional trailing `:`. */
+const TABLE_ALIGNMENT_CELL_RE = /^\s*:?-+:?\s*$/
+
+/**
+ * The source table parser recognises a delimiter row with the LOOSE
+ * `[\s:|-]+` grammar. That is intentional (it keeps a table visible while the
+ * user types), so a delimiter cell such as `:::` can reach the parser without
+ * being a valid GFM alignment cell. This analyzer reports THAT independent
+ * defect; it does not duplicate the header/list/blockquote structure rule.
+ */
+export function analyzeTableAlignment(markdown: string | null | undefined): TableAlignmentIssue[] {
+  if (markdown == null || markdown === '') return []
+  const tables = parseDocumentSourceTables(markdown)
+  if (tables.length === 0) return []
+  const syntax = parseDocumentSourceSyntax(markdown)
+  const lines = buildSourceLineSpans(markdown)
+  const out: TableAlignmentIssue[] = []
+  for (const table of tables) {
+    const delimiter = lines[table.delimiterLine]
+    if (!delimiter) continue
+    if (isRangeProtected(syntax, delimiter.start, delimiter.contentEnd)) continue
+    const cells = splitTableRow(delimiter)
+    for (let i = 0; i < cells.length; i++) {
+      const cell = cells[i]
+      if (TABLE_ALIGNMENT_CELL_RE.test(cell.raw)) continue
+      out.push({
+        startLine: delimiter.index,
+        startColumn: 0,
+        endLine: delimiter.index,
+        endColumn: delimiter.text.length,
+        rawText: delimiter.text,
+        cellIndex: i,
+        rawCell: cell.raw,
+        identity: `table-align:${table.identity}:${i}`,
+        detail: `第 ${i + 1} 个分隔单元格「${cell.raw.trim()}」不是合法的 GFM 对齐标记。`,
+      })
+      break // one diagnostic per table (first invalid cell is the root)
+    }
+  }
+  return out
 }
 
 // ── B2-06 — formula source metrics ──────────────────────────────────────────

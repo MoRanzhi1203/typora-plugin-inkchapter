@@ -76,6 +76,26 @@ describe('B2 §B2-02 — table column count', () => {
   })
 })
 
+describe('B2d — table alignment cells', () => {
+  it('reports a delimiter cell that is not a GFM alignment marker', () => {
+    const d = run({ markdown: '| A | B |\n| :: | --- |\n| 1 | 2 |\n' })
+    const issue = d.find(x => x.code === 'TABLE_ALIGNMENT_INVALID')
+    expect(issue).toBeTruthy()
+    expect(issue!.severity).toBe('warning')
+    expect(issue!.metadata?.cellIndex).toBe(0)
+  })
+
+  it('does not report legal left/right/center/none markers', () => {
+    const d = run({ markdown: '| A | B | C | D |\n| :--- | ---: | :---: | --- |\n| 1 | 2 | 3 | 4 |\n' })
+    expect(codes(d)).not.toContain('TABLE_ALIGNMENT_INVALID')
+  })
+
+  it('does not report a delimiter-like line inside a fenced block', () => {
+    const d = run({ markdown: '```\n| A | B |\n| :: | --- |\n```\n' })
+    expect(codes(d)).not.toContain('TABLE_ALIGNMENT_INVALID')
+  })
+})
+
 describe('B2 §B2-03 — list indentation', () => {
   it('reports a dedent to an indent that never existed', () => {
     const d = run({ markdown: '- a\n  - b\n - c\n' })

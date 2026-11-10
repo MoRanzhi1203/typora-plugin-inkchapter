@@ -28,18 +28,18 @@
 
 | 口径 | 数值 |
 |---|---:|
-| 规则家族 | 100 |
-| 注册表解析代码 | 106 |
-| 展开后的具体代码 | 111 |
-| 有生产器路径的代码 | 107 |
-| 真正可达的代码 | 102 |
+| 规则家族 | 101 |
+| 注册表解析代码 | 107 |
+| 展开后的具体代码 | 112 |
+| 有生产器路径的代码 | 108 |
+| 真正可达的代码 | 103 |
 | DEFERRED（BLOCKED） | 4 |
 | 默认关闭 | 4（CB008、CB010、公式源码长度、公式单行长度） |
-| 错误 / 警告 / 提示（家族） | 13 / 63 / 24 |
-| 错误 / 警告 / 提示（111 代码） | 13 / 69 / 29 |
-| 可达 102 代码 | 13 / 62 / 27 |
-| strict 可达 102 代码 | 15 / 66 / 21 |
-| 当前构建运行时闭包已证实 | 0（96 个 IMPLEMENTED 全部 UNVERIFIED） |
+| 错误 / 警告 / 提示（家族） | 13 / 64 / 24 |
+| 错误 / 警告 / 提示（112 代码） | 13 / 70 / 29 |
+| 可达 103 代码 | 13 / 63 / 27 |
+| strict 可达 103 代码 | 15 / 67 / 21 |
+| 当前构建运行时闭包已证实 | 0（97 个 IMPLEMENTED 全部 UNVERIFIED） |
 
 代码集合审计：`document-diagnostic-code-sets.ts` + `document-diagnostic-code-sets.test.ts`；五集合与差集守恒，不把家族/解析代码/展开代码/实例混淆。
 
@@ -70,9 +70,10 @@
 
 ### 3.3 B2（PARTIAL）
 
-已实现（9）：
+已实现（10）：
 - FRONTMATTER_MALFORMED
 - TABLE_COLUMN_COUNT_MISMATCH
+- TABLE_ALIGNMENT_INVALID（独立 delimiter cell 语法）
 - LIST_INDENTATION_INVALID
 - HEADING_NUMBER_SEQUENCE_INVALID
 - FIGURE_IMAGE_FORMAT_UNSUPPORTED（显式非图片扩展名）
@@ -84,7 +85,7 @@
 BLOCKED（有证据）：
 - LINK_LOCAL_FILE_ANCHOR_MISSING：无 canonical 跨文件 heading id/slug authority。
 - FIGURE / TABLE / FORMULA_REFERENCE_TARGET_MISSING：无 Typora 对象引用语法/canonical 对象引用 parser。
-- TABLE_ALIGNMENT_INVALID：GFM delimiter 语法已由 table parser 排除，无可靠“表内对齐错误”权威。
+- TABLE_ALIGNMENT_INVALID：已证明是独立缺陷（松 delimiter 识别 + 非法 cell），已实现，不再 BLOCKED。
 - 图片格式 / 重复图片：无可靠 file-info/字节 provider；仅实现“显式非图片扩展名”规则。
 - 公式渲染高度（可选）未做。
 
@@ -113,8 +114,8 @@ BLOCKED / NEEDS_MANUAL：
 | GIT-0 合并后 | 327 文件 / 5783 tests PASS | 同上 |
 | B1 | 329 文件 / 5805 tests PASS | `FD45A411B5B514161CAD673D975FE7EF7E6B728178381C9B64CCD493AFE1C4B4` |
 | B2 | 330 文件 / 5819 tests PASS | `BE23061EAFAA0A5717F28C0FFA7D0102EA04BBD61D09287B60E250C653D6078B` |
-| B2b / B3b / B2c | 331 文件 / 5840 tests PASS | `2E126B4B19DAE7BB4007970C75FB90B85098CA1CB6EDB1FAB26F502379D55DB8` |
-| B3 | 331 文件 / 5840 tests PASS | 同上 |
+| B2b / B3b / B2c / B2d | 332 文件 / 5853 tests PASS | `3578B8AF795ECEB4AF4FC7596AFD182A6E243B986C5654F2554BD98874F2FC1E` |
+| B3 | 332 文件 / 5853 tests PASS | 同上 |
 
 每批次 typecheck PASS；privacy PASS（SCANNED_LINES=0）；docs PASS（DOC_BROKEN_LINK_COUNT=0）。构建产物 `dist/` 被 `.gitignore` 忽略，未提交。
 
@@ -134,6 +135,6 @@ BLOCKED / NEEDS_MANUAL：
 
 ## 6. 最终结论
 
-**当前墨章文档诊断：100 个规则家族、111 个展开具体代码、106 个注册解析代码、107 个生产器代码、102 个真正可达代码；注册基准 13 错误 / 69 警告 / 29 提示；可达基准 13 / 62 / 27。**
+**当前墨章文档诊断：101 个规则家族、112 个展开具体代码、107 个注册解析代码、108 个生产器代码、103 个真正可达代码；注册基准 13 错误 / 70 警告 / 29 提示；可达基准 13 / 63 / 27。**
 
 GIT-0 与 B1 已安全合并；B2 的 8 条源规则与 B3 的 profile/width 模型、设置页/持久化、CSS 变量版心已合并。仍未达到全合同 PASS：4 条 DEFERRED（文件锚点 + 3 交叉引用）、表格对齐、图片格式，以及真实 GUI/DPI/主题/DOMRect 验收仍为 BLOCKED/NEEDS_MANUAL。**因此本轮不能写 `ALL_MANDATORY_TASKS_PASS`。**

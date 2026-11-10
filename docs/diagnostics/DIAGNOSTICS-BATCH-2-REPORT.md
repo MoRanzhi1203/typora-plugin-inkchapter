@@ -10,12 +10,12 @@
 | 项 | 状态 | 说明 |
 |---|---|---|
 | B2-01 五条 DEFERRED | **PARTIAL / 1 PASS + 4 BLOCKED** | FRONTMATTER_MALFORMED 已实现；文件锚点 + 3 条交叉引用因缺少 canonical 语法/文件锚点权威而 BLOCKED |
-| B2-02 表格结构 | PASS（列数） / BLOCKED（对齐） | TABLE_COLUMN_COUNT_MISMATCH 已实现；TABLE_ALIGNMENT_INVALID 没有可靠语法权威，未虚构 |
+| B2-02 表格结构 | PASS（列数 + 对齐） | TABLE_COLUMN_COUNT_MISMATCH 与 TABLE_ALIGNMENT_INVALID 均已实现；对齐规则针对松 delimiter 识别下的非法 cell |
 | B2-03 列表结构 | PASS（缩进） / TODO（标记/序号） | LIST_INDENTATION_INVALID 已实现；混合标记、非 1 起始有序列表都是合法 Markdown，未误报 |
 | B2-04 标题/编号 | PASS（序列） | 使用 canonical heading effective display path 的 HEADING_NUMBER_SEQUENCE_INVALID；未重推导编号 |
 | B2-05 图片资源 | PARTIAL（扩展名） | FIGURE_IMAGE_FORMAT_UNSUPPORTED 只对显式非图片扩展名；格式/重复内容需 file-info provider |
 | B2-06 公式 | PARTIAL | 源码长度、单行长度、渲染宽度、渲染失败已实现；高度可选规则未做（默认关闭） |
-| B2-07 注册/测试/能力矩阵 | PASS（已实现项） | 7 条规则完成注册、文案、定位、测试；能力矩阵计数更新 |
+| B2-07 注册/测试/能力矩阵 | PASS（已实现项） | 10 条规则完成注册、文案、定位、测试；能力矩阵计数更新 |
 | 全量测试 / 类型 / 构建 | SEE §5 | — |
 
 **结论：B2 的实现范围（7 条规则）通过代码与测试门禁；4 条 DEFERRED 与若干可选规则保持 BLOCKED，不能宣称 B2 全合同 PASS。**
@@ -24,19 +24,19 @@
 
 | 口径 | 数值 |
 |---|---:|
-| 规则家族 | 100 |
-| 注册表解析代码 | 106 |
-| 展开后的具体代码 | 111 |
-| 有生产器路径的代码 | 107 |
-| 真正可达的代码 | 102 |
+| 规则家族 | 101 |
+| 注册表解析代码 | 107 |
+| 展开后的具体代码 | 112 |
+| 有生产器路径的代码 | 108 |
+| 真正可达的代码 | 103 |
 | DEFERRED 家族 | 4（全部 BLOCKED） |
 | 默认关闭家族 | 4（CB008、CB010、两条公式源码规则） |
-| 错误 / 警告 / 提示（家族） | 13 / 63 / 24 |
-| 错误 / 警告 / 提示（111 代码） | 13 / 69 / 29 |
-| 可达 102 代码 | 13 / 62 / 27 |
-| strict 可达 102 代码 | 15 / 66 / 21 |
+| 错误 / 警告 / 提示（家族） | 13 / 64 / 24 |
+| 错误 / 警告 / 提示（112 代码） | 13 / 70 / 29 |
+| 可达 103 代码 | 13 / 63 / 27 |
+| strict 可达 103 代码 | 15 / 67 / 21 |
 
-集合守恒由 `document-diagnostic-code-sets.test.ts` 断言：107 个生产器代码 = 102 可达 + 4 默认关闭 + 1 已知不可达；111 展开代码 − 107 生产器代码 = 4 个 DEFERRED 代码。
+集合守恒由 `document-diagnostic-code-sets.test.ts` 断言：108 个生产器代码 = 103 可达 + 4 默认关闭 + 1 已知不可达；112 展开代码 − 108 生产器代码 = 4 个 DEFERRED 代码。
 
 ## 3. 已实现规则
 
@@ -56,6 +56,14 @@
 - 反误报：转义管道 `\|`、行内代码由唯一 table tokenizer 处理；围栏内的“表”不参与。
 - 源码：`document-diagnostics-b2-authority.ts:119-176`；`document-diagnostics.ts:3588-3622`。
 - 测试：三例（少列、转义管道、代码围栏）。
+
+### 3.2b TABLE_ALIGNMENT_INVALID（B2d）
+
+- 规则：TABLE_ALIGNMENT_INVALID；级别：警告；定位：source-range。
+- 触发：表格识别器使用松 `[\s:|-]+` delimiter 语法，非法 cell（如 `::`）仍被识别为表格；该规则逐单元格校验 `^\s*:?-+:?\s*$`。
+- 不触发：合法 `---` / `:---` / `---:` / `:---:`；fenced code 内伪表格由 `isRangeProtected` 排除。
+- 每个表格只报第一个非法单元格（根因优先）。
+- 测试：`document-diagnostics-b2-rules.test.ts` 三例。
 
 ### 3.3 LIST_INDENTATION_INVALID（B2-03）
 
@@ -140,8 +148,8 @@
 | TypeScript `tsc --noEmit` | PASS，exit 0 |
 | B2 规则定向测试 | 14 tests PASS |
 | 计数/能力/闭包测试 | 84 tests PASS（6 文件） |
-| 全量 Vitest | PASS，331 文件 / 5840 tests，142.45s |
-| 生产构建 | PASS，`dist/main.js` SHA256 `2E126B4B19DAE7BB4007970C75FB90B85098CA1CB6EDB1FAB26F502379D55DB8` |
+| 全量 Vitest | PASS，332 文件 / 5853 tests，225.42s |
+| 生产构建 | PASS，`dist/main.js` SHA256 `3578B8AF795ECEB4AF4FC7596AFD182A6E243B986C5654F2554BD98874F2FC1E` |
 | 隐私 / 文档检查 | PASS（SCANNED_LINES=0；DOC_BROKEN_LINK_COUNT=0） |
 
 ## 6. 合并决策
