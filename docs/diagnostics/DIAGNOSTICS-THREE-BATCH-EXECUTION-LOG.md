@@ -164,6 +164,6 @@
 - 规则总数：101 家族 / 107 注册解析代码 / 112 展开代码 / 108 生产器代码 / 103 可达；13-70-29 基准，可达 13-63-27
 - 全量测试：332 文件 / 5853 tests PASS，225.42s
 - 构建：PASS，`dist/main.js` SHA256 `3578B8AF795ECEB4AF4FC7596AFD182A6E243B986C5654F2554BD98874F2FC1E`
-- 合并：待执行
+- 合并：`git merge --no-ff feature/diagnostics-b2d-alignment-crossfile-anchor` → `1d0a3599c029defd652bf2c312f0042aefbf1613`
 
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）
