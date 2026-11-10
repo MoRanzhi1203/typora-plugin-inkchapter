@@ -399,6 +399,7 @@ export default class extends Plugin<InkChapterSettings> {
       reuseRemoteCount: preview.reuseRemoteCount,
       pendingUploadCount: preview.pendingUploadCount,
       pendingDownloadCount: preview.pendingDownloadCount,
+      missingLocalCount: preview.missingLocalCount,
       dualLinkCompleteCount: preview.dualLinkCompleteCount,
       policyText: summarizeImagePolicy(settings),
       scopeSource: this.activeImageScopeSource,

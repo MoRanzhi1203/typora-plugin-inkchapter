@@ -77,6 +77,8 @@ export class DocumentHubController {
   private panelEl: HTMLDivElement | null = null
   private filterPopupEl: HTMLElement | null = null
   private model: DocumentHubModel | null = null
+  /** The update(view) authority; the overview copy must use the SAME kind. */
+  private statusView: DocumentStatusView | null = null
   private mode: DocumentToolbarMode = 'collapsed'
   private tab: DocumentToolbarTab = 'diagnostics'
   private severityFilter: DiagnosticSeverityFilter = 'all'
@@ -199,6 +201,7 @@ export class DocumentHubController {
 
   update(view: DocumentStatusView, model: DocumentHubModel): void {
     this.model = model
+    this.statusView = view
     if (!this.rootEl) this.mount()
     const el = this.statusEl!
     el.dataset['status'] = view.code
@@ -407,9 +410,12 @@ export class DocumentHubController {
     const list = document.createElement('div')
     list.className = 'inkchapter-doc-expand__list'
     if (filtered.length === 0) {
-      list.appendChild(this.buildEmptyLine(
-        model.diagnostics.length === 0 ? '未发现问题' : `没有匹配项`,
-      ))
+      // A zero-diagnostic document is already explained by the overview
+      // ("未检查" / "未发现问题"); do not repeat it inside the list. Only a
+      // narrowed filter with no matches needs its own line.
+      if (model.diagnostics.length > 0) {
+        list.appendChild(this.buildEmptyLine('没有匹配项'))
+      }
     } else {
       for (const item of filtered) {
         list.appendChild(this.buildDiagnosticRow(item))
@@ -436,7 +442,9 @@ export class DocumentHubController {
     if (counts.error > 0) parts.push(`${counts.error} 项错误`)
     if (counts.warning > 0) parts.push(`${counts.warning} 项警告`)
     if (counts.info > 0) parts.push(`${counts.info} 项提示`)
-    summary.textContent = parts.length > 0 ? parts.join(' · ') : '未发现问题'
+    summary.textContent = parts.length > 0
+      ? parts.join(' · ')
+      : ((this.statusView?.code ?? model.status.code) === 'GRAY' ? '未检查' : '未发现问题')
     summary.setAttribute('aria-label', `检测结果：${summary.textContent}`)
     line.appendChild(summary)
 
@@ -640,12 +648,24 @@ export class DocumentHubController {
     const overview = this.buildLine('inkchapter-doc-expand__overview')
     const text = document.createElement('span')
     text.className = 'inkchapter-doc-expand__summary'
-    const pending: string[] = []
-    if (image.pendingUploadCount > 0) pending.push(`${image.pendingUploadCount} 待上传`)
-    if (image.pendingDownloadCount > 0) pending.push(`${image.pendingDownloadCount} 待下载`)
-    text.textContent = `${image.scopeLabel} · ${image.referenceCount} 处引用${pending.length > 0 ? ` · ${pending.join(' · ')}` : ''}`
+    text.textContent = `${image.scopeLabel} · ${image.referenceCount} 处引用`
     overview.appendChild(text)
     box.appendChild(overview)
+
+    // Resource facts are preview-supported only: missing local files are NOT
+    // uploadable, so they are reported separately from "可上传".
+    const resourceFacts: string[] = []
+    if (image.pendingUploadCount > 0) resourceFacts.push(`可上传 ${image.pendingUploadCount}`)
+    if (image.pendingDownloadCount > 0) resourceFacts.push(`可下载 ${image.pendingDownloadCount}`)
+    if ((image.missingLocalCount ?? 0) > 0) resourceFacts.push(`缺失 ${image.missingLocalCount}`)
+    const reusable = image.reuseLocalCount + image.reuseRemoteCount
+    if (reusable > 0) resourceFacts.push(`可复用 ${reusable}`)
+    if (resourceFacts.length > 0) {
+      const resourceLine = document.createElement('div')
+      resourceLine.className = 'inkchapter-doc-expand__meta'
+      resourceLine.textContent = resourceFacts.join(' · ')
+      box.appendChild(resourceLine)
+    }
 
     const facts: string[] = []
     if (image.insertionModeText) facts.push(`插入：${image.insertionModeText}`)

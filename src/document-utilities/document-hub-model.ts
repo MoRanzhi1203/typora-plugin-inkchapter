@@ -18,6 +18,8 @@ export interface DocumentHubImageSummary {
   reuseRemoteCount: number
   pendingUploadCount: number
   pendingDownloadCount: number
+  /** 预检确认的本地缺失资源数（缺失不等于可上传）。 */
+  missingLocalCount?: number
   dualLinkCompleteCount: number
   policyText: string
   scopeSource: ImageScopeSource

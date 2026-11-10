@@ -54,13 +54,13 @@ describe('resolveDocumentStatusCode', () => {
 
   it('uses the dedicated hint color when only hints exist', () => {
     expect(resolveDocumentStatusCode(facts({ hintCount: 4 }))).toBe('HINT')
-    expect(buildDocumentStatusView(facts({ hintCount: 4 }), false).color).toBe('#637f96')
+    expect(buildDocumentStatusView(facts({ hintCount: 4 }), false).color).toBe('#66869f')
   })
 
   it('keeps the lock outline independent from every severity color', () => {
     const locked = buildDocumentStatusView(facts({ warningCount: 1 }), true)
     expect(locked.code).toBe('YELLOW')
-    expect(locked.color).toBe('#d49320')
+    expect(locked.color).toBe('#d49a26')
     expect(locked.label).toContain('已锁定')
   })
 })
@@ -75,10 +75,10 @@ describe('buildDocumentStatusView', () => {
   })
 
   it('exposes the documented colors', () => {
-    expect(buildDocumentStatusView(facts(), false).color).toBe('#2e9869')
-    expect(buildDocumentStatusView(facts({ warningCount: 1 }), false).color).toBe('#d49320')
-    expect(buildDocumentStatusView(facts({ errorCount: 1 }), false).color).toBe('#d55050')
-    expect(buildDocumentStatusView(facts({ hasDocument: false }), false).color).toBe('#89919b')
+    expect(buildDocumentStatusView(facts(), false).color).toBe('#2f986d')
+    expect(buildDocumentStatusView(facts({ warningCount: 1 }), false).color).toBe('#d49a26')
+    expect(buildDocumentStatusView(facts({ errorCount: 1 }), false).color).toBe('#d24d57')
+    expect(buildDocumentStatusView(facts({ hasDocument: false }), false).color).toBe('#929aa4')
   })
 })
 

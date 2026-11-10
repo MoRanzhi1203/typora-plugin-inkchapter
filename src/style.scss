@@ -5277,17 +5277,18 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 
 /* ── 局部设计 tokens（只作用于工具栏根，不污染 #write / 全局） ─────── */
 .inkchapter-doc-toolbar-ui {
-  --ink-doc-surface: #fafaf9;
+  --ink-doc-surface: #fafafb;
   --ink-doc-surface-strong: #ffffff;
-  --ink-doc-hairline: #e7e9ec;
-  --ink-doc-text: #293241;
-  --ink-doc-secondary: #737d89;
-  --ink-doc-selection: #e9eef4;
-  --ink-doc-hover: rgba(41, 50, 65, 0.055);
-  --ink-doc-warning: #d49320;
-  --ink-doc-error: #d55050;
-  --ink-doc-success: #2e9869;
-  --ink-doc-hint: #637f96;
+  --ink-doc-hairline: #e2e5ea;
+  --ink-doc-text: #28313f;
+  --ink-doc-secondary: #677384;
+  --ink-doc-selection: #e9eff6;
+  --ink-doc-hover: #f1f3f6;
+  --ink-doc-warning: #d49a26;
+  --ink-doc-error: #d24d57;
+  --ink-doc-success: #2f986d;
+  --ink-doc-hint: #66869f;
+  --ink-doc-focus: #567faf;
   --ink-doc-radius: 6px;
   --ink-doc-radius-sm: 4px;
   position: fixed;
@@ -5307,6 +5308,11 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
     --ink-doc-secondary: #a0a0a0;
     --ink-doc-selection: #333333;
     --ink-doc-hover: rgba(255, 255, 255, 0.06);
+    /* Separate dark mapping (contrast-tuned, not the light hex literals). */
+    --ink-doc-error: #e06b72;
+    --ink-doc-warning: #e0ad4a;
+    --ink-doc-hint: #8fa9bf;
+    --ink-doc-success: #4db98a;
   }
 }
 
@@ -5331,7 +5337,7 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 .inkchapter-doc-expand__layout {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   box-sizing: border-box;
   width: 40px;
   min-width: 0;
@@ -5348,13 +5354,13 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   border-color: var(--ink-doc-hairline);
 }
 
-/* ── header：34px 高；三标签等分 + 38px 状态列（热区 32 居中） ─────── */
+/* ── header：36px 高；三标签等分 + 38px 状态列（热区 32 居中） ─────── */
 .inkchapter-doc-expand__row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 38px;
   align-items: center;
   width: 100%;
-  height: 34px;
+  height: 36px;
   min-width: 0;
   box-sizing: border-box;
 }
@@ -5392,11 +5398,11 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   border: 0;
   background: transparent;
   color: var(--ink-doc-secondary);
-  height: 28px;
+  height: 30px;
   padding: 0 4px;
   border-radius: var(--ink-doc-radius-sm);
   font-size: 12.5px;
-  line-height: 28px;
+  line-height: 30px;
   text-align: center;
   cursor: pointer;
   white-space: nowrap;
@@ -5467,7 +5473,7 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   width: 100%;
   min-width: 0;
   margin-top: 0;
-  padding: 8px 10px 9px;
+  padding: 12px;
   box-sizing: border-box;
   background: transparent;
   color: inherit;
@@ -5685,7 +5691,7 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   color: inherit;
   padding: 7px 8px;
   cursor: pointer;
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.4;
 }
 
@@ -5721,7 +5727,7 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 
 .inkchapter-doc-expand__diag-detail {
   color: var(--ink-doc-secondary);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;

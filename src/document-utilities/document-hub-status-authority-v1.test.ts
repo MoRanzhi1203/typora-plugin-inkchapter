@@ -14,8 +14,8 @@ import type { DocumentDiagnosticsProviders } from './document-diagnostics-author
 import type { DocumentUtilitiesContext } from './document-utilities-context'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
 
-let activeKey = 'doc:a'
-let activePath = '/vault/a.md'
+let activeKey: string | null = 'doc:a'
+let activePath: string | null = '/vault/a.md'
 
 function fakeContext(): DocumentUtilitiesContext {
   return {
@@ -124,7 +124,7 @@ describe('V5.2 hub status authority', () => {
     inject(host, snapshotFor('doc:a', 'warning', 1, false))
     expect(statusEl().dataset['status']).toBe('YELLOW')
     expect(statusEl().dataset['warningCount']).toBe('1')
-    expect(square().style.backgroundColor).toBe('rgb(212, 147, 32)')
+    expect(square().style.backgroundColor).toBe('rgb(212, 154, 38)')
     openHub(host)
     const rows = document.querySelectorAll('.inkchapter-doc-expand__diag')
     expect(rows).toHaveLength(1)
@@ -135,24 +135,24 @@ describe('V5.2 hub status authority', () => {
     const host = mountHost()
     inject(host, snapshotFor('doc:a', 'error', 2, false))
     expect(statusEl().dataset['status']).toBe('RED')
-    expect(square().style.backgroundColor).toBe('rgb(213, 80, 80)')
+    expect(square().style.backgroundColor).toBe('rgb(210, 77, 87)')
 
     inject(host, snapshotFor('doc:a', 'warning', 2, false))
     expect(statusEl().dataset['status']).toBe('YELLOW')
     expect(statusEl().dataset['warningCount']).toBe('2')
-    expect(square().style.backgroundColor).toBe('rgb(212, 147, 32)')
+    expect(square().style.backgroundColor).toBe('rgb(212, 154, 38)')
 
     inject(host, snapshotFor('doc:a', 'info', 3, false))
     expect(statusEl().dataset['status']).toBe('HINT')
-    expect(square().style.backgroundColor).toBe('rgb(99, 127, 150)')
+    expect(square().style.backgroundColor).toBe('rgb(102, 134, 159)')
 
     inject(host, snapshotFor('doc:a', 'warning', 0, true))
     expect(statusEl().dataset['status']).toBe('GREEN')
-    expect(square().style.backgroundColor).toBe('rgb(46, 152, 105)')
+    expect(square().style.backgroundColor).toBe('rgb(47, 152, 109)')
 
     inject(host, snapshotFor('doc:a', 'warning', 0, false))
     expect(statusEl().dataset['status']).toBe('GRAY')
-    expect(square().style.backgroundColor).toBe('rgb(137, 145, 155)')
+    expect(square().style.backgroundColor).toBe('rgb(146, 154, 164)')
   })
 
   it('keeps the lock outline independent from the severity color', () => {
@@ -163,9 +163,50 @@ describe('V5.2 hub status authority', () => {
     ;(host as unknown as { refreshDocumentHub: () => void }).refreshDocumentHub()
     expect(statusEl().dataset['status']).toBe('YELLOW')
     expect(statusEl().dataset['locked']).toBe('1')
-    expect(square().style.backgroundColor).toBe('rgb(212, 147, 32)')
+    expect(square().style.backgroundColor).toBe('rgb(212, 154, 38)')
     const frame = document.querySelector('.inkchapter-doc-status__lock-frame') as HTMLElement
     expect(frame.style.borderColor.toLowerCase()).toBe('currentcolor')
+  })
+
+  it('A(7w) -> B(1w) -> C(1e) -> D(0) -> empty and 10 reverse switches keep counts/colors/lists', () => {
+    const host = mountHost()
+    const visit = (
+      key: string,
+      severity: Severity,
+      count: number,
+      expectedStatus: string,
+      expectedRows: number,
+    ): void => {
+      activeKey = key
+      activePath = `/vault/${key}.md`
+      inject(host, snapshotFor(key, severity, count, true))
+      expect(statusEl().dataset['status']).toBe(expectedStatus)
+      openHub(host)
+      expect(document.querySelectorAll('.inkchapter-doc-expand__diag')).toHaveLength(expectedRows)
+    }
+    visit('doc:a', 'warning', 7, 'YELLOW', 7)
+    visit('doc:b', 'warning', 1, 'YELLOW', 1)
+    visit('doc:c', 'error', 1, 'RED', 1)
+    visit('doc:d', 'warning', 0, 'GREEN', 0)
+
+    // Empty workspace: no active document path -> unknown + empty list, never
+    // the previous document's warnings.
+    activeKey = null
+    activePath = null
+    inject(host, snapshotFor('doc:d', 'warning', 0, true))
+    expect(statusEl().dataset['status']).toBe('GRAY')
+    expect(document.querySelectorAll('.inkchapter-doc-expand__diag')).toHaveLength(0)
+
+    const reverse: Array<[string, Severity, number, string, number]> = [
+      ['doc:d', 'warning', 0, 'GREEN', 0],
+      ['doc:c', 'error', 1, 'RED', 1],
+      ['doc:b', 'warning', 1, 'YELLOW', 1],
+      ['doc:a', 'warning', 7, 'YELLOW', 7],
+    ]
+    for (let index = 0; index < 10; index++) {
+      const step = reverse[index % reverse.length]
+      visit(step[0], step[1], step[2], step[3], step[4])
+    }
   })
 
   it('rapid A -> B -> A switches never reuse the previous document color or list', () => {

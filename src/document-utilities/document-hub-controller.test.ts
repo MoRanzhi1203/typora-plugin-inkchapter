@@ -59,6 +59,7 @@ const IMAGE = {
   reuseRemoteCount: 1,
   pendingUploadCount: 1,
   pendingDownloadCount: 1,
+  missingLocalCount: 2,
   dualLinkCompleteCount: 0,
   policyText: '引用 本地相对路径 · GitHub 上传 · 自动：关闭',
   scopeSource: 'document' as const,
@@ -131,7 +132,7 @@ describe('V5.2 collapsed status square', () => {
     expect(el.style.border).toBe('')
     const square = mountEl.querySelector('.inkchapter-doc-status__square') as HTMLElement
     expect(square).not.toBeNull()
-    expect(square.style.backgroundColor).toBe('rgb(213, 80, 80)')
+    expect(square.style.backgroundColor).toBe('rgb(210, 77, 87)')
   })
 
   it('keeps the lock frame neutral + color-stable', () => {
@@ -143,7 +144,7 @@ describe('V5.2 collapsed status square', () => {
     const frame = mountEl.querySelector('.inkchapter-doc-status__lock-frame') as HTMLElement
     expect(frame.style.borderColor.toLowerCase()).toBe('currentcolor')
     const square = mountEl.querySelector('.inkchapter-doc-status__square') as HTMLElement
-    expect(square.style.backgroundColor).toBe('rgb(213, 80, 80)')
+    expect(square.style.backgroundColor).toBe('rgb(210, 77, 87)')
   })
 
   it('does not mark the document locked on focus', () => {
@@ -192,7 +193,7 @@ describe('V5.2 single equal-width layout authority', () => {
   it('CSS: layout is the only width authority; header/content both width:100% + border-box', () => {
     const layoutBody = ruleBodies('.inkchapter-doc-expand__layout')
     expect(layoutBody).toContain('width: 40px')
-    expect(layoutBody).toContain('gap: 5px')
+    expect(layoutBody).toContain('gap: 4px')
     expect(layoutBody).toContain('box-sizing: border-box')
     const expandedBody = ruleBodies('.inkchapter-doc-toolbar-ui[data-expanded="true"] .inkchapter-doc-expand__layout')
     expect(expandedBody).toContain('width: min(360px')
@@ -368,6 +369,9 @@ describe('V5.2 diagnostics list (no summary page)', () => {
     expect(controller.getSeverityFilter()).toBe('error')
     expect(controller.isFilterPopupOpen()).toBe(false)
     expect(panel(controller).querySelectorAll('.inkchapter-doc-expand__diag')).toHaveLength(1)
+    // Filtering only narrows the view: the real total summary must not shrink.
+    expect(panel(controller).querySelector('.inkchapter-doc-expand__summary')?.textContent)
+      .toContain('1 项错误 · 1 项警告')
     expect(mountEl.querySelectorAll('.inkchapter-doc-expand__panel')).toHaveLength(1)
     // Reopen and restore "all".
     panel(controller).querySelector<HTMLButtonElement>('.inkchapter-doc-expand__filter-button')!.click()
@@ -406,6 +410,19 @@ describe('V5.2 diagnostics list (no summary page)', () => {
       .find(o => o.dataset['filter'] === 'warning') as HTMLButtonElement).click()
     expect(panel(controller).textContent).toContain('没有匹配项')
     expect(panel(controller).textContent).not.toContain('未发现问题')
+  })
+
+  it('unchecked/unknown document says 未检查 instead of claiming a clean scan', () => {
+    const { controller } = mount()
+    controller.update(
+      buildDocumentStatusView({ ...FACTS, hasProjection: false }, false),
+      model(false, IMAGE, []),
+    )
+    status(controller).click()
+    vi.advanceTimersByTime(300)
+    expect(panel(controller).textContent).toContain('未检查')
+    expect(panel(controller).textContent).not.toContain('未发现问题')
+    expect(panel(controller).querySelectorAll('.inkchapter-doc-expand__diag')).toHaveLength(0)
   })
 
   it('shows an empty state when the snapshot has no diagnostics', () => {
@@ -451,6 +468,45 @@ describe('V5.2 images / lock tabs unchanged', () => {
     expect(panel(controller).textContent).not.toContain('0 处引用')
   })
 
+  it('images tab: preview-supported resource facts separate missing from uploadable', () => {
+    const { controller } = mount()
+    controller.update(
+      buildDocumentStatusView(FACTS, false),
+      model(false, {
+        ...IMAGE,
+        referenceCount: 3,
+        pendingUploadCount: 1,
+        pendingDownloadCount: 0,
+        missingLocalCount: 2,
+        reuseLocalCount: 0,
+        reuseRemoteCount: 0,
+      }),
+    )
+    status(controller).click()
+    vi.advanceTimersByTime(300)
+    ;(document.querySelectorAll('.inkchapter-doc-expand__tab')[1] as HTMLButtonElement).click()
+    const text = panel(controller).textContent ?? ''
+    expect(text).toContain('覆盖：当前文档 · 3 处引用')
+    expect(text).toContain('可上传 1')
+    expect(text).toContain('缺失 2')
+    expect(text).not.toContain('可上传 3')
+    expect(text).not.toContain('可复用')
+  })
+
+  it('switching detection/image/lock tabs never changes the diagnostic colour', () => {
+    const { controller } = mount()
+    status(controller).click()
+    vi.advanceTimersByTime(300)
+    const before = status(controller).dataset['status']
+    const beforeColor = (controller.getStatusElement()!.querySelector('.inkchapter-doc-status__square') as HTMLElement).style.backgroundColor
+    for (const index of [1, 2, 0]) {
+      ;(document.querySelectorAll('.inkchapter-doc-expand__tab')[index] as HTMLButtonElement).click()
+      expect(status(controller).dataset['status']).toBe(before)
+      const square = controller.getStatusElement()!.querySelector('.inkchapter-doc-status__square') as HTMLElement
+      expect(square.style.backgroundColor).toBe(beforeColor)
+    }
+  })
+
   it('lock tab: single line state + real lock action', () => {
     const { controller, actions: a } = mount()
     status(controller).click()
@@ -470,23 +526,23 @@ describe('V5.2 images / lock tabs unchanged', () => {
 describe('V5.2 Fluent Compact visual contract', () => {
   it('defines scoped Fluent tokens for light and dark themes', () => {
     const rootBody = ruleBodies('.inkchapter-doc-toolbar-ui')
-    expect(rootBody).toContain('--ink-doc-surface: #fafaf9')
-    expect(rootBody).toContain('--ink-doc-hairline: #e7e9ec')
-    expect(rootBody).toContain('--ink-doc-text: #293241')
-    expect(rootBody).toContain('--ink-doc-secondary: #737d89')
-    expect(rootBody).toContain('--ink-doc-selection: #e9eef4')
-    expect(rootBody).toContain('--ink-doc-warning: #d49320')
-    expect(rootBody).toContain('--ink-doc-error: #d55050')
-    expect(rootBody).toContain('--ink-doc-success: #2e9869')
-    expect(rootBody).toContain('--ink-doc-hint: #637f96')
+    expect(rootBody).toContain('--ink-doc-surface: #fafafb')
+    expect(rootBody).toContain('--ink-doc-hairline: #e2e5ea')
+    expect(rootBody).toContain('--ink-doc-text: #28313f')
+    expect(rootBody).toContain('--ink-doc-secondary: #677384')
+    expect(rootBody).toContain('--ink-doc-selection: #e9eff6')
+    expect(rootBody).toContain('--ink-doc-warning: #d49a26')
+    expect(rootBody).toContain('--ink-doc-error: #d24d57')
+    expect(rootBody).toContain('--ink-doc-success: #2f986d')
+    expect(rootBody).toContain('--ink-doc-hint: #66869f')
     expect(rootBody).toContain('--ink-doc-radius: 6px')
     // Dark theme overrides the same scoped surface token, not a second panel.
     expect(SCSS).toContain('--ink-doc-surface: #252526')
     expect(SCSS).toContain('--ink-doc-text: #e6e6e6')
   })
 
-  it('header is 34px tall; square is 15px inside a 32px hit region with a separate lock outline', () => {
-    expect(ruleBodies('.inkchapter-doc-expand__row')).toContain('height: 34px')
+  it('header is 36px tall; square is 15px inside a 32px hit region with a separate lock outline', () => {
+    expect(ruleBodies('.inkchapter-doc-expand__row')).toContain('height: 36px')
     const statusBody = ruleBodies('.inkchapter-doc-status')
     expect(statusBody).toContain('width: 32px')
     expect(statusBody).toContain('height: 32px')
@@ -502,7 +558,7 @@ describe('V5.2 Fluent Compact visual contract', () => {
     expect(expandedBody).toContain('background: var(--ink-doc-surface)')
     expect(expandedBody).toContain('border-color: var(--ink-doc-hairline)')
     expect(expandedBody).not.toContain('box-shadow')
-    expect(ruleBodies('.inkchapter-doc-expand__panel')).toContain('padding: 8px 10px 9px')
+    expect(ruleBodies('.inkchapter-doc-expand__panel')).toContain('padding: 12px')
   })
 
   it('image primary actions are an equal two-column grid; filter is a popup menu', () => {

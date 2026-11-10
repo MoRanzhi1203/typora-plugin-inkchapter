@@ -22921,7 +22921,10 @@ export class DocumentUtilityOverlayHost {
     const snapshotStale = this.snapshot?.documentKey != null
       && documentKey != null
       && this.snapshot.documentKey !== documentKey
-    const noDoc = snapshotStale || state.state === 'NO_ACTIVE_DOCUMENT' || !projection.hasProjection
+    const noDoc = documentPath == null
+      || snapshotStale
+      || state.state === 'NO_ACTIVE_DOCUMENT'
+      || !projection.hasProjection
     // V5.2 STATUS-AUTHORITY — the visible list and the square counts come from
     // the SAME admitted snapshot and the SAME document-domain projection.
     // Duplicate/stale runtime diagnostics can no longer inflate one of them.

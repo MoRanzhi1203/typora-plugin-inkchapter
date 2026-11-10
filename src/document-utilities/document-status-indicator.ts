@@ -40,11 +40,11 @@ export interface DocumentStatusView {
 }
 
 export const DOCUMENT_STATUS_COLORS: Readonly<Record<DocumentStatusCode, string>> = {
-  GREEN: '#2e9869',
-  YELLOW: '#d49320',
-  RED: '#d55050',
-  HINT: '#637f96',
-  GRAY: '#89919b',
+  GREEN: '#2f986d',
+  YELLOW: '#d49a26',
+  RED: '#d24d57',
+  HINT: '#66869f',
+  GRAY: '#929aa4',
 }
 
 /**
