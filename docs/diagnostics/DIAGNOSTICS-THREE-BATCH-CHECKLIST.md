@@ -26,7 +26,7 @@
 | B1-05 | source unavailable / 空代码块 / 空表去重；空行阈值注释 | PASS | 抑制测试；空行注释修正 |
 | B1-06 | 三条重名规则行为测试；动态 code / strict-loose / 多目标 / 文档切换测试 | PASS | b1-reliability 12 tests；hub 7 tests |
 | B1-07 | 当前构建的真实 Typora 运行时证据 | NEEDS_MANUAL | 无 Typora 控件级点击/截图能力；未伪造闭包 |
-| B1-08 | B1 报告 + 门禁 + 合并 `main` | DOING | 报告已生成；待合并 |
+| B1-08 | B1 报告 + 门禁 + 合并 `main` | PASS | merge `19bf0dc`；合并后 329×5805 PASS |
 
 ## B2 规则扩展
 

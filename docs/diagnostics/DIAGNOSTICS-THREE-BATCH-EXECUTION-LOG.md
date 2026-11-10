@@ -87,6 +87,9 @@
 - 隐私：PASS（SCANNED_LINES=0）；文档：PASS（DOC_BROKEN_LINK_COUNT=0）
 - GUI：`NEEDS_MANUAL`（自动测试无法代替真实 Typora 像素/点击验收；未伪造截图或 runtime closure）
 - B1 报告：`docs/diagnostics/DIAGNOSTICS-BATCH-1-REPORT.md`
-- 合并：待执行（本记录先于 merge commit；合并 SHA 见下一节）
+- 合并：`git merge --no-ff feature/diagnostics-b1-reliability` → `19bf0dc9317a6ee4ed3458e4f0cc78c5c9f73a0e`
+- 合并后全量：329 文件 / 5805 tests PASS，131.96s
+- 合并后 TypeScript / 构建 / 隐私：PASS（`dist/main.js` SHA256 `FD45A411B5B514161CAD673D975FE7EF7E6B728178381C9B64CCD493AFE1C4B4`）
+- 备注：B1-07 真实 GUI 确认仍为 `NEEDS_MANUAL`；B1 的代码/测试门禁已 PASS，未将 NEEDS_MANUAL 记为 PASS。
 
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）
