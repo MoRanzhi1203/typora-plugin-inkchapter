@@ -257,6 +257,30 @@ describe('B2c — image format support', () => {
       expect(codes(d), dest).not.toContain('FIGURE_IMAGE_FORMAT_UNSUPPORTED')
     }
   })
+
+  it('uses byte evidence when present: unrecognised bytes are reported even with .png', () => {
+    const d = run({
+      markdown: '![](assets/x.png)\n',
+      figureSourceOccurrences: [occurrence('assets/x.png')],
+      imageEvidenceByDestination: new Map([['assets/x.png', {
+        format: null, sha256: 'a'.repeat(64), sizeBytes: 4,
+      }]]),
+    })
+    const issue = d.find(x => x.code === 'FIGURE_IMAGE_FORMAT_UNSUPPORTED')
+    expect(issue).toBeTruthy()
+    expect(issue!.metadata?.reason).toBe('BYTE_SNIFF_UNKNOWN')
+  })
+
+  it('byte evidence with a known format overrides a misleading non-image extension', () => {
+    const d = run({
+      markdown: '![](assets/x.pdf)\n',
+      figureSourceOccurrences: [occurrence('assets/x.pdf')],
+      imageEvidenceByDestination: new Map([['assets/x.pdf', {
+        format: 'png', sha256: 'b'.repeat(64), sizeBytes: 4,
+      }]]),
+    })
+    expect(codes(d)).not.toContain('FIGURE_IMAGE_FORMAT_UNSUPPORTED')
+  })
 })
 
 describe('B3 §B3-01/03 — profile wiring', () => {  it('academic profile enables the opt-in formula source limits', () => {

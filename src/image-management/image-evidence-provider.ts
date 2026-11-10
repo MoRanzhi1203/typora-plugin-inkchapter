@@ -9,7 +9,7 @@
  * `sha256File` implementation and the existing `sniffImageFormat` byte sniffer.
  * A cache miss is `null` (UNKNOWN for diagnostics), never a fabricated fact.
  */
-import { promises as fsp } from 'node:fs'
+import { open } from 'fs/promises'
 import { sha256File } from './image-asset-index'
 import { sniffImageFormat } from './image-download-service'
 
@@ -152,7 +152,7 @@ export function createNodeImageEvidenceProvider(): ImageEvidenceProvider {
   return createImageEvidenceProvider({
     sha256File,
     async readHeader(pathValue, bytes) {
-      const handle = await fsp.open(pathValue, 'r')
+      const handle = await open(pathValue, 'r')
       try {
         const buffer = Buffer.alloc(bytes)
         const { bytesRead } = await handle.read(buffer, 0, bytes, 0)

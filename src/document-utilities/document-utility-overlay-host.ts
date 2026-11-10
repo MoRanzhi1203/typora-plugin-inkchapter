@@ -3463,6 +3463,14 @@ export class DocumentUtilityOverlayHost {
     return this.diagnostics.getSnapshot()
   }
 
+  /**
+   * B2d — explicit recompute request for an ASYNC fact that became ready
+   * (image evidence warm). It never performs IO itself.
+   */
+  requestDiagnosticsRecompute(reason = 'ASYNC_EVIDENCE_READY'): void {
+    try { this.diagnostics.recompute(reason) } catch { /* fail-open */ }
+  }
+
   /** V4 — single current problems projection (Toolbar/Drawer parity). */
   getCurrentProblemsProjection(): CurrentProblemsProjection {
     return this.currentProblemsProjection

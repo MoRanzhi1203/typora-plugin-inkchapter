@@ -154,8 +154,8 @@
 | TypeScript `tsc --noEmit` | PASS，exit 0 |
 | B2 规则定向测试 | 14 tests PASS |
 | 计数/能力/闭包测试 | 84 tests PASS（6 文件） |
-| 全量 Vitest | PASS，332 文件 / 5853 tests，225.42s |
-| 生产构建 | PASS，`dist/main.js` SHA256 `3578B8AF795ECEB4AF4FC7596AFD182A6E243B986C5654F2554BD98874F2FC1E` |
+| 全量 Vitest | PASS，336 文件 / 5878 tests，189.21s |
+| 生产构建 | PASS，`dist/main.js` SHA256 `17E64A21388DDE062A0F0E529AD508DB76BE759F6FD36610F27AC6238B9F5762` |
 | 隐私 / 文档检查 | PASS（SCANNED_LINES=0；DOC_BROKEN_LINK_COUNT=0） |
 
 ## 6. 合并决策
