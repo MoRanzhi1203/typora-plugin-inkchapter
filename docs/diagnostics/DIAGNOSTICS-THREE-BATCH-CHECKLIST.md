@@ -32,11 +32,12 @@
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
-| B2-01 | 5 条 DEFERRED 正式实现 | PARTIAL：1 PASS + 4 BLOCKED | FRONTMATTER_MALFORMED 已实现；文件锚点 + 3 交叉引用无 canonical 语法/文件锚点权威 |
+| B2-01 | 5 条 DEFERRED 正式实现 | PARTIAL：1 PASS + 3 BLOCKED + 1 接口就绪 | FRONTMATTER_MALFORMED 已实现；跨文件 anchor 三态接口 9 tests；文件锚点/3 交叉引用仍无 canonical authority |
 | B2-02 | 表格结构规则 | PASS（列数 + 对齐） | COLUMN 行为测试；ALIGNMENT 独立 delimiter cell 语法测试 |
+| B2-02b | 表格对齐独立诊断（B2d） | PASS | 已证明松 delimiter 下 `::` 是独立缺陷；3 tests |
 | B2-03 | 列表结构规则 | PASS（缩进）/ TODO（标记/序号） | LIST_INDENTATION_INVALID 三例；合法混合标记/非 1 起始不误报 |
 | B2-04 | 标题 / 自动编号规则 | PASS（序列） | HEADING_NUMBER_SEQUENCE_INVALID 使用 canonical displayCountedPath；四例测试 |
-| B2-05 | 图片资源规则 | PARTIAL（扩展名） | FIGURE_IMAGE_FORMAT_UNSUPPORTED 只对显式非图片扩展名；格式/重复内容需 file-info provider |
+| B2-05 | 图片资源规则 | PARTIAL（扩展名） | FIGURE_IMAGE_FORMAT_UNSUPPORTED 只对显式非图片扩展名；字节级/重复内容需异步 file-info provider |
 | B2-06 | 公式宽度 / 源码长度 / 单行 / 渲染失败 | PASS（4 项）/ TODO（高度可选） | 源码长度/单行/宽度/失败均有测试；高度默认关闭未做 |
 | B2-07 | 注册、默认策略、测试、能力矩阵 | PASS（已实现项） | 101 家族 / 107 解析代码 / 112 展开 / 108 生产器 / 103 可达 |
 | B2-08 | B2 报告 + 门禁 + 合并 `main` | PASS（PARTIAL 记录） | 全量 PASS；merge `8d5e475`；B2b 追加 HEADING_NUMBER_SEQUENCE_INVALID |
@@ -61,5 +62,6 @@
 | FINAL-01 | Git 总览与三次合并记录 | PASS | GIT-0 `3b20ea5`；B1 `19bf0dc`；B2 `8d5e475`；B3 `842074c` |
 | FINAL-02 | 最新规则家族 / 展开代码 / 级别分布重算 | PASS | 101 / 112 / 107；13-70-29；可达 103（13-63-27） |
 | FINAL-03 | 全量测试、构建 SHA、隐私审计 | PASS | 332×5853；`3578B8A…`；privacy/docs PASS |
+| FINAL-06 | B2/B3 阻塞解除专项审计（B2d） | PASS（可实施项） | 三态接口、表格对齐、引用方案、图片/GUI 审计；见 `DIAGNOSTICS-B2B3-UNBLOCK-AUDIT.md` |
 | FINAL-04 | GUI 证据 / NEEDS_MANUAL 清单 | NEEDS_MANUAL | 真实 Typora 截图/DOMRect 未获得；未伪造 |
 | FINAL-05 | 最终交付报告 | PASS | `DIAGNOSTICS-THREE-BATCH-FINAL-REPORT.md` |
