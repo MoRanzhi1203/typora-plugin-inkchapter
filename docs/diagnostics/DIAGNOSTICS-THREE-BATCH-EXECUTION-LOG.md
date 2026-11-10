@@ -116,6 +116,15 @@
 - TypeScript / 隐私 / 文档：PASS
 - 构建：PASS，`dist/main.js` SHA256 `084CD8277859AB15B1C116A5FC87494CF4242081151F6E02DFB1B36411FADECD`
 - B3 报告：`docs/diagnostics/DIAGNOSTICS-BATCH-3-REPORT.md`
-- 合并：待执行
+- 合并：`git merge --no-ff feature/diagnostics-b3-academic-ui` → `842074c89bed270a188071625a257f5fd2eb1920`
+- 状态：PARTIAL（profile/width 纯模型 PASS；设置 UI/版心写入 BLOCKED；真实 GUI NEEDS_MANUAL）
+
+### 2026-11-10 — 最终总验收
+
+- 最终 main（本文提交前）：`842074c89bed270a188071625a257f5fd2eb1920`
+- 规则：98 家族 / 104 注册解析代码 / 109 展开代码 / 105 生产器代码 / 100 可达；13-67-29 基准，可达 13-60-27
+- 测试：331 文件 / 5832 tests PASS；构建 SHA `084CD8277859AB15B1C116A5FC87494CF4242081151F6E02DFB1B36411FADECD`
+- 状态：GIT-0 / B1 代码 PASS；B2/B3 PARTIAL；GUI NEEDS_MANUAL；存在 BLOCKED，未达到 `ALL_MANDATORY_TASKS_PASS`
+- 最终报告：`docs/diagnostics/DIAGNOSTICS-THREE-BATCH-FINAL-REPORT.md`
 
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）

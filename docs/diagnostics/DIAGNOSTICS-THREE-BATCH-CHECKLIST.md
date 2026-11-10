@@ -52,14 +52,14 @@
 | B3-05 | 诊断列表 UI 语义 | 沿用 B1/B2 | 事件/行数语义已在 B1 落地 |
 | B3-06 | 图片页 / 锁定 / 导航器 | NEEDS_MANUAL | 既有能力保留；未 GUI 重验收 |
 | B3-07 | 真实 Typora GUI / DPI / 主题 / DOMRect 验收 | NEEDS_MANUAL | 无控件级点击/截图能力；未伪造证据 |
-| B3-08 | B3 报告 + 门禁 + 合并 `main` | DOING | 全量 331×5832 PASS；报告已生成；待合并 |
+| B3-08 | B3 报告 + 门禁 + 合并 `main` | PASS（PARTIAL 记录） | 全量 331×5832 PASS；merge `842074c` |
 
 ## 最终
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
-| FINAL-01 | Git 总览与三次合并记录 | TODO | — |
-| FINAL-02 | 最新规则家族 / 展开代码 / 级别分布重算 | TODO | — |
-| FINAL-03 | 全量测试、构建 SHA、隐私审计 | TODO | — |
-| FINAL-04 | GUI 证据 / NEEDS_MANUAL 清单 | TODO | — |
-| FINAL-05 | 最终交付报告 | TODO | — |
+| FINAL-01 | Git 总览与三次合并记录 | PASS | GIT-0 `3b20ea5`；B1 `19bf0dc`；B2 `8d5e475`；B3 `842074c` |
+| FINAL-02 | 最新规则家族 / 展开代码 / 级别分布重算 | PASS | 98 / 109 / 104；13-67-29；可达 100（13-60-27） |
+| FINAL-03 | 全量测试、构建 SHA、隐私审计 | PASS | 331×5832；`084CD827…`；privacy/docs PASS |
+| FINAL-04 | GUI 证据 / NEEDS_MANUAL 清单 | NEEDS_MANUAL | 真实 Typora 截图/DOMRect 未获得；未伪造 |
+| FINAL-05 | 最终交付报告 | PASS | `DIAGNOSTICS-THREE-BATCH-FINAL-REPORT.md` |
