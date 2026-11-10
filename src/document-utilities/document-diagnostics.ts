@@ -106,6 +106,7 @@ import {
   analyzeFormulaSourceMetrics,
   analyzeListIndentation,
   analyzeTableColumnMismatches,
+  detectNonImageDestination,
   B2_FORMULA_SOURCE_LENGTH_LIMIT,
   B2_FORMULA_SOURCE_LINE_LIMIT,
 } from './document-diagnostics-b2-authority'
@@ -385,6 +386,8 @@ export function resolveDocumentDiagnosticSeverity(
     // document structure is intact; only a referenced asset is absent), never
     // an error. Remote / data URLs can never reach this rule.
     case 'FIGURE_LOCAL_IMAGE_MISSING':
+      return 'warning'
+    case 'FIGURE_IMAGE_FORMAT_UNSUPPORTED':
       return 'warning'
     // Internal Blank-Line Policy V1 §2 — 2+ consecutive blank lines INSIDE the
     // body is a document-FORMAT warning. Fixed across strict and loose mode and
@@ -793,6 +796,7 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   'FIGURE_LOCAL_IMAGE_MISSING',
   'FIGURE_MISSING_NAME',
   FIGURE_MANUAL_NUMBER_PREFIX_CODE,
+  'FIGURE_IMAGE_FORMAT_UNSUPPORTED',
   // table
   TABLE_BLOCK_STRUCTURE_INVALID_CODE,
   'TABLE_DUPLICATE_NAME',
@@ -1812,6 +1816,35 @@ function emitB2SourceDiagnostics(
 ): void {
   const markdown = input.markdown
   if (markdown == null || markdown === '') return
+
+  // B2c — image syntax pointing at a PROVABLY non-image file. Source-first:
+  // only an explicit non-image extension triggers; unknown/new image extensions
+  // and remote/data URLs stay silent.
+  for (const occurrence of input.figureSourceOccurrences ?? []) {
+    const issue = detectNonImageDestination(occurrence.rawDestination)
+    if (!issue) continue
+    push(makeDiagnostic(input, 'figure', 'FIGURE_IMAGE_FORMAT_UNSUPPORTED',
+      `图片格式不支持：.${issue.extension}`, {
+      detail: `图片语法的目标「${issue.destination}」不是图片文件扩展名。`,
+      kind: 'object',
+      targetIdentity: `image-format:${occurrence.startLine}:${issue.destination}`,
+      metadata: {
+        ruleId: 'FIGURE-IMAGE-FORMAT-UNSUPPORTED',
+        reason: 'NON_IMAGE_EXTENSION',
+        extension: issue.extension,
+        destination: issue.destination,
+      },
+      location: {
+        kind: 'source-range',
+        startLine: occurrence.startLine,
+        startColumn: occurrence.startColumn,
+        endLine: occurrence.endLine,
+        endColumn: occurrence.endColumn,
+        sourceFingerprint: `image-format:${occurrence.startLine}:${issue.destination}`,
+        rawText: occurrence.rawText,
+      },
+    }))
+  }
 
   for (const mismatch of analyzeTableColumnMismatches(markdown)) {
     push(makeDiagnostic(input, 'table', 'TABLE_COLUMN_COUNT_MISMATCH',

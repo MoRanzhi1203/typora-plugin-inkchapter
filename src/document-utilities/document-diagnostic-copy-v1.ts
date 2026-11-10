@@ -130,6 +130,7 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   FIGURE_MISSING_NAME: 500,
   FIGURE_DUPLICATE_NAME: 510,
   FIGURE_LOCAL_IMAGE_MISSING: 520,
+  FIGURE_IMAGE_FORMAT_UNSUPPORTED: 525,
   FIGURE_BLOCK_STRUCTURE_INVALID: 530,
   // ── table ─────────────────────────────────────────────────────────────────
   TABLE_MISSING_NAME: 600,
@@ -298,6 +299,7 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   FIGURE_MISSING_NAME: { title: '图片缺少图名', description: '图片没有名称。', suggestion: '为图片补充图名。' },
   FIGURE_DUPLICATE_NAME: { description: '多张图片使用了相同的图名。', suggestion: '修改图名以互相区分。' },
   FIGURE_LOCAL_IMAGE_MISSING: { description: '图片引用的本地文件无法解析。', suggestion: '检查图片路径，或将图片重新插入文档。' },
+  FIGURE_IMAGE_FORMAT_UNSUPPORTED: { title: '图片格式不支持', description: '图片语法引用的文件扩展名明确不是图片格式。', suggestion: '改为 png/jpg/gif/svg/webp 等图片文件，或修正引用路径。' },
   FIGURE_BLOCK_STRUCTURE_INVALID: { title: '图片必须作为独立块插入', description: '图片不能放在列表项或引用块中。', suggestion: '将图片移动到独立段落。' },
   // ── table ─────────────────────────────────────────────────────────────────
   TABLE_MISSING_NAME: { title: '表格缺少表名', description: '表格没有名称。', suggestion: '为表格补充表名。' },

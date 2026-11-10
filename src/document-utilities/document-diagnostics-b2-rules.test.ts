@@ -193,6 +193,52 @@ describe('B2b — effective heading number sequence', () => {
   })
 })
 
+describe('B2c — image format support', () => {
+  const occurrence = (destination: string, line = 0) => ({
+    rawToken: `![](${destination})`,
+    rawDestination: destination,
+    altText: '',
+    resourceClass: 'local' as const,
+    isLocal: true,
+    tokenStart: 0,
+    tokenEnd: 0,
+    destinationStart: 0,
+    destinationEnd: 0,
+    startLine: line,
+    endLine: line,
+    startColumn: 0,
+    endColumn: 0,
+    rawText: `![](${destination})`,
+    canonicalDestination: destination,
+    occurrenceIndex: 0,
+    rawLineOrdinal: 0,
+    occurrenceWithinLine: 0,
+    localFileExists: false,
+    sourceRangeIdentity: null,
+  })
+
+  it('reports a provably non-image extension', () => {
+    const d = run({
+      markdown: '![](assets/spec.pdf)\n',
+      figureSourceOccurrences: [occurrence('assets/spec.pdf')],
+    })
+    const issue = d.find(x => x.code === 'FIGURE_IMAGE_FORMAT_UNSUPPORTED')
+    expect(issue).toBeTruthy()
+    expect(issue!.severity).toBe('warning')
+    expect(issue!.location?.kind).toBe('source-range')
+  })
+
+  it('does not report png / avif / remote / data / extensionless destinations', () => {
+    for (const dest of ['a.png', 'a.avif', 'https://x/a.pdf', 'data:image/png;base64,xx', 'assets/noext']) {
+      const d = run({
+        markdown: `![](${dest})\n`,
+        figureSourceOccurrences: [occurrence(dest)],
+      })
+      expect(codes(d), dest).not.toContain('FIGURE_IMAGE_FORMAT_UNSUPPORTED')
+    }
+  })
+})
+
 describe('B3 §B3-01/03 — profile wiring', () => {  it('academic profile enables the opt-in formula source limits', () => {
     const d = run({
       markdown: '$$\n' + 'x'.repeat(320) + '\n$$\n',

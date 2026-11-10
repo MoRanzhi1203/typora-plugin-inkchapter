@@ -16,6 +16,7 @@
 | B1 合并 | `main` | `19bf0dc` | 代码/测试 PASS；GUI NEEDS_MANUAL |
 | B2 合并 | `main` | `8d5e475` | PARTIAL；7 条规则实现，4 条 DEFERRED BLOCKED |
 | B2b 合并 | `main` | `c722e3a` | HEADING_NUMBER_SEQUENCE_INVALID 实现，B2 规则增至 8 条 |
+| B2c 合并 | `main` | 本次 B2c merge | FIGURE_IMAGE_FORMAT_UNSUPPORTED（显式非图片扩展名） |
 | B3b 合并 | `main` | `ca29669` | profile 设置页/持久化 + 版心 CSS 变量；代码 PASS，GUI NEEDS_MANUAL |
 | B3 合并 | `main` | `842074c` | PARTIAL；profile/width 纯模型 PASS，UI/GUI BLOCKED/NEEDS_MANUAL |
 | 最终 main | `main` | `b15e6c8`（B3b + 最终文档提交） | **未推送**；远端保护/可用性未验证，本地保留全部提交 |
@@ -27,18 +28,18 @@
 
 | 口径 | 数值 |
 |---|---:|
-| 规则家族 | 99 |
-| 注册表解析代码 | 105 |
-| 展开后的具体代码 | 110 |
-| 有生产器路径的代码 | 106 |
-| 真正可达的代码 | 101 |
+| 规则家族 | 100 |
+| 注册表解析代码 | 106 |
+| 展开后的具体代码 | 111 |
+| 有生产器路径的代码 | 107 |
+| 真正可达的代码 | 102 |
 | DEFERRED（BLOCKED） | 4 |
 | 默认关闭 | 4（CB008、CB010、公式源码长度、公式单行长度） |
-| 错误 / 警告 / 提示（家族） | 13 / 62 / 24 |
-| 错误 / 警告 / 提示（110 代码） | 13 / 68 / 29 |
-| 可达 101 代码 | 13 / 61 / 27 |
-| strict 可达 101 代码 | 15 / 65 / 21 |
-| 当前构建运行时闭包已证实 | 0（95 个 IMPLEMENTED 全部 UNVERIFIED） |
+| 错误 / 警告 / 提示（家族） | 13 / 63 / 24 |
+| 错误 / 警告 / 提示（111 代码） | 13 / 69 / 29 |
+| 可达 102 代码 | 13 / 62 / 27 |
+| strict 可达 102 代码 | 15 / 66 / 21 |
+| 当前构建运行时闭包已证实 | 0（96 个 IMPLEMENTED 全部 UNVERIFIED） |
 
 代码集合审计：`document-diagnostic-code-sets.ts` + `document-diagnostic-code-sets.test.ts`；五集合与差集守恒，不把家族/解析代码/展开代码/实例混淆。
 
@@ -69,11 +70,12 @@
 
 ### 3.3 B2（PARTIAL）
 
-已实现（8）：
+已实现（9）：
 - FRONTMATTER_MALFORMED
 - TABLE_COLUMN_COUNT_MISMATCH
 - LIST_INDENTATION_INVALID
 - HEADING_NUMBER_SEQUENCE_INVALID
+- FIGURE_IMAGE_FORMAT_UNSUPPORTED（显式非图片扩展名）
 - FORMULA_SOURCE_LENGTH_EXCEEDING（默认关闭）
 - FORMULA_SOURCE_LINE_TOO_LONG（默认关闭）
 - FORMULA_RENDER_WIDTH_OVERFLOW（需 MEASURED 事实）
@@ -83,7 +85,7 @@ BLOCKED（有证据）：
 - LINK_LOCAL_FILE_ANCHOR_MISSING：无 canonical 跨文件 heading id/slug authority。
 - FIGURE / TABLE / FORMULA_REFERENCE_TARGET_MISSING：无 Typora 对象引用语法/canonical 对象引用 parser。
 - TABLE_ALIGNMENT_INVALID：GFM delimiter 语法已由 table parser 排除，无可靠“表内对齐错误”权威。
-- 图片格式 / 重复图片：无可靠 file-info/字节 provider。
+- 图片格式 / 重复图片：无可靠 file-info/字节 provider；仅实现“显式非图片扩展名”规则。
 - 公式渲染高度（可选）未做。
 
 报告：`DIAGNOSTICS-BATCH-2-REPORT.md`。
@@ -111,8 +113,8 @@ BLOCKED / NEEDS_MANUAL：
 | GIT-0 合并后 | 327 文件 / 5783 tests PASS | 同上 |
 | B1 | 329 文件 / 5805 tests PASS | `FD45A411B5B514161CAD673D975FE7EF7E6B728178381C9B64CCD493AFE1C4B4` |
 | B2 | 330 文件 / 5819 tests PASS | `BE23061EAFAA0A5717F28C0FFA7D0102EA04BBD61D09287B60E250C653D6078B` |
-| B2b / B3b | 331 文件 / 5838 tests PASS | `9CB915D55EFE1BF74472180C6E4EAFB398F3160BADDFAC2FDE1BCF8D901D55CE` |
-| B3 | 331 文件 / 5838 tests PASS | 同上 |
+| B2b / B3b / B2c | 331 文件 / 5840 tests PASS | `2E126B4B19DAE7BB4007970C75FB90B85098CA1CB6EDB1FAB26F502379D55DB8` |
+| B3 | 331 文件 / 5840 tests PASS | 同上 |
 
 每批次 typecheck PASS；privacy PASS（SCANNED_LINES=0）；docs PASS（DOC_BROKEN_LINK_COUNT=0）。构建产物 `dist/` 被 `.gitignore` 忽略，未提交。
 
@@ -132,6 +134,6 @@ BLOCKED / NEEDS_MANUAL：
 
 ## 6. 最终结论
 
-**当前墨章文档诊断：99 个规则家族、110 个展开具体代码、105 个注册解析代码、106 个生产器代码、101 个真正可达代码；注册基准 13 错误 / 68 警告 / 29 提示；可达基准 13 / 61 / 27。**
+**当前墨章文档诊断：100 个规则家族、111 个展开具体代码、106 个注册解析代码、107 个生产器代码、102 个真正可达代码；注册基准 13 错误 / 69 警告 / 29 提示；可达基准 13 / 62 / 27。**
 
 GIT-0 与 B1 已安全合并；B2 的 8 条源规则与 B3 的 profile/width 模型、设置页/持久化、CSS 变量版心已合并。仍未达到全合同 PASS：4 条 DEFERRED（文件锚点 + 3 交叉引用）、表格对齐、图片格式，以及真实 GUI/DPI/主题/DOMRect 验收仍为 BLOCKED/NEEDS_MANUAL。**因此本轮不能写 `ALL_MANDATORY_TASKS_PASS`。**

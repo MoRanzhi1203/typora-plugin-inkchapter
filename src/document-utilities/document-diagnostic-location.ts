@@ -346,6 +346,7 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   FORMULA_BLOCK_STRUCTURE_INVALID: 'error',
   HEADING_AUTO_NUMBER_CONFLICT: 'error',
   FIGURE_LOCAL_IMAGE_MISSING: 'warning',
+  FIGURE_IMAGE_FORMAT_UNSUPPORTED: 'warning',
   EXCESSIVE_INTERNAL_BLANK_LINES: 'warning',
   DOCUMENT_EMPTY: 'info',
   DOCUMENT_INACTIVE: 'info',
@@ -691,6 +692,11 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   // the rule never enters the inline occurrence / duplicate-range resolver.
   FIGURE_BLOCK_STRUCTURE_INVALID: rule('FIGURE_BLOCK_STRUCTURE_INVALID', 'figure', 'source-block'),
   FIGURE_MANUAL_NUMBER_PREFIX: rule('FIGURE_MANUAL_NUMBER_PREFIX', 'figure', 'figure-occurrence', { area: 'caption-numbering', scope: 'object' }),
+  // B2c — an image token whose destination PROVABLY points at a non-image file.
+  FIGURE_IMAGE_FORMAT_UNSUPPORTED: rule('FIGURE_IMAGE_FORMAT_UNSUPPORTED', 'figure', 'source-range', {
+    area: 'figure', capabilityCategory: 'figure', scope: 'object',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
   TABLE_MISSING_NAME: rule('TABLE_MISSING_NAME', 'table', 'block-node'),
   TABLE_DUPLICATE_NAME: rule('TABLE_DUPLICATE_NAME', 'table', 'multi-target'),
   // VNext §18 — a table carrying a list/blockquote marker is not a standalone
