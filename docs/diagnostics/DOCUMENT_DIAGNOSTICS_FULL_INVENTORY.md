@@ -1,6 +1,6 @@
 # 墨章文档诊断全量盘点与分类统计（现行源码审计）
 
-> B2+B2b 更新（2026-11-10）：新增 FRONTMATTER_MALFORMED、TABLE_COLUMN_COUNT_MISMATCH、LIST_INDENTATION_INVALID、HEADING_NUMBER_SEQUENCE_INVALID、FORMULA_SOURCE_LENGTH_EXCEEDING、FORMULA_SOURCE_LINE_TOO_LONG、FORMULA_RENDER_WIDTH_OVERFLOW、FORMULA_LATEX_RENDER_FAILED 的生产器；当前 99 家族 / 105 注册解析代码 / 110 展开代码 / 106 生产器代码 / 101 可达代码。4 条跨文件/交叉引用 DEFERRED 仍为 BLOCKED（无 canonical 语法/文件锚点权威），见 `DIAGNOSTICS-BATCH-2-REPORT.md`。
+> B2+B2b+B2c 更新（2026-11-10）：新增 FRONTMATTER_MALFORMED、TABLE_COLUMN_COUNT_MISMATCH、LIST_INDENTATION_INVALID、HEADING_NUMBER_SEQUENCE_INVALID、FIGURE_IMAGE_FORMAT_UNSUPPORTED、FORMULA_SOURCE_LENGTH_EXCEEDING、FORMULA_SOURCE_LINE_TOO_LONG、FORMULA_RENDER_WIDTH_OVERFLOW、FORMULA_LATEX_RENDER_FAILED 的生产器；当前 100 家族 / 106 注册解析代码 / 111 展开代码 / 107 生产器代码 / 102 可达代码。4 条跨文件/交叉引用 DEFERRED 仍为 BLOCKED（无 canonical 语法/文件锚点权威），见 `DIAGNOSTICS-BATCH-2-REPORT.md`。
 
 > 审计对象：typora-plugin-inkchapter 当前工作树（未修改规则注册表、未修改任何诊断业务逻辑）。
 > 审计方式：读取真实源码 + 只读枚举脚本 + 定向测试 + 类型检查。
@@ -9,27 +9,27 @@
 
 ## 0. 结论摘要
 
-**当前墨章文档诊断总计 99 个规则家族、110 个具体诊断代码，其中错误 13 个、警告 68 个、提示 29 个，另有其他类别 0 个。**
+**当前墨章文档诊断总计 100 个规则家族、111 个具体诊断代码，其中错误 13 个、警告 69 个、提示 29 个，另有其他类别 0 个。**
 
-把动态代码按运行时真实展开后，110 是“规则全集”口径；其中：
+把动态代码按运行时真实展开后，111 是“规则全集”口径；其中：
 
-- 有生产器路径的具体代码 106 个（对应 95 个 IMPLEMENTED 家族）；
-- 在当前固定选项下真正可达的具体代码 101 个（CB008、CB010、两条默认关闭的公式源码规则、不可达动态代码 STRICT_FIRST_H1_DOCUMENT_EMPTY 除外）；
+- 有生产器路径的具体代码 107 个（对应 96 个 IMPLEMENTED 家族）；
+- 在当前固定选项下真正可达的具体代码 102 个（CB008、CB010、两条默认关闭的公式源码规则、不可达动态代码 STRICT_FIRST_H1_DOCUMENT_EMPTY 除外）；
 - 4 个 DEFERRED_BY_SPEC 家族没有任何生产器（LINK_LOCAL_FILE_ANCHOR_MISSING、3 条交叉引用），B2 已记录为 BLOCKED。
 
 | 关键指标 | 数值 | 口径 |
 | --- | ---: | --- |
-| 规则家族 | 99 | 注册表 familyId 去重 |
-| 注册表解析代码（官方） | 105 | LATENT 前缀只计 1 个 sentinel，含 4 个 DEFERRED |
-| 具体诊断代码（展开动态代码） | 110 | LATENT 展开 6 级、STRICT_FIRST 展开 7 码 |
-| 有生产器的具体代码 | 106 | 88 个 EXACT + 7 个 STRICT 码 + 6 个 LATENT 级别 + 新增 |
-| 真正可达的具体代码 | 101 | 106 减去 4 个默认关闭 + 1 个不可达动态代码 |
-| 错误 / 警告 / 提示（家族） | 13 / 62 / 24 | 注册表基准级别 |
-| 错误 / 警告 / 提示（具体代码） | 13 / 68 / 29 | 注册表基准级别，展开后 |
-| 接入生产器的家族 | 95 | 无条件 75 + 条件启用 16 + 默认关闭 4 |
+| 规则家族 | 100 | 注册表 familyId 去重 |
+| 注册表解析代码（官方） | 106 | LATENT 前缀只计 1 个 sentinel，含 4 个 DEFERRED |
+| 具体诊断代码（展开动态代码） | 111 | LATENT 展开 6 级、STRICT_FIRST 展开 7 码 |
+| 有生产器的具体代码 | 107 | 89 个 EXACT + 7 个 STRICT 码 + 6 个 LATENT 级别 + 新增 |
+| 真正可达的具体代码 | 102 | 107 减去 4 个默认关闭 + 1 个不可达动态代码 |
+| 错误 / 警告 / 提示（家族） | 13 / 63 / 24 | 注册表基准级别 |
+| 错误 / 警告 / 提示（具体代码） | 13 / 69 / 29 | 注册表基准级别，展开后 |
+| 接入生产器的家族 | 96 | 无条件 76 + 条件启用 16 + 默认关闭 4 |
 | 未接入（DEFERRED） | 4 | 无生产器（BLOCKED） |
-| 运行时闭包已证实 | 0 | 95 个 IMPLEMENTED 家族全部 UNVERIFIED |
-| 静态可定位家族 | 98 / 99 | 仅 DOCUMENT_EMPTY 声明不可定位 |
+| 运行时闭包已证实 | 0 | 96 个 IMPLEMENTED 家族全部 UNVERIFIED |
+| 静态可定位家族 | 99 / 100 | 仅 DOCUMENT_EMPTY 声明不可定位 |
 
 ## 1. 统计口径（必须先读）
 

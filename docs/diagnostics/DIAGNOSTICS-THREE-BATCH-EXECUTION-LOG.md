@@ -146,4 +146,13 @@
 - 构建：PASS，`dist/main.js` SHA256 `9CB915D55EFE1BF74472180C6E4EAFB398F3160BADDFAC2FDE1BCF8D901D55CE`
 - 合并：待执行
 
+### 2026-11-10 — B2c 图片格式规则
+
+- 分支：`feature/diagnostics-b2c-image-format`（从 `814d547` 创建）
+- 新增：FIGURE_IMAGE_FORMAT_UNSUPPORTED（显式非图片扩展名，警告，source-range）；不使用 allow-list 猜测未知/新图片格式
+- 规则总数：100 家族 / 106 注册解析代码 / 111 展开代码 / 107 生产器代码 / 102 可达；13-69-29 基准，可达 13-62-27
+- 全量测试：331 文件 / 5840 tests PASS，142.45s
+- 构建：PASS，`dist/main.js` SHA256 `2E126B4B19DAE7BB4007970C75FB90B85098CA1CB6EDB1FAB26F502379D55DB8`
+- 合并：待执行
+
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）

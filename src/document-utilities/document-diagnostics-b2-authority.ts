@@ -220,6 +220,43 @@ export function analyzeListIndentation(markdown: string | null | undefined): Lis
   return out
 }
 
+// ── B2-05 — image format support (conservative, source-only) ───────────────
+
+/**
+ * Explicit NON-image file extensions. Deliberately NOT an allow-list: an
+ * unknown/new image extension (avif, jxl, …) never reports. Only a destination
+ * that PROVABLY points at a non-image document is flagged.
+ */
+export const NON_IMAGE_FILE_EXTENSIONS: readonly string[] = Object.freeze([
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+  'zip', 'rar', '7z', 'tar', 'gz',
+  'md', 'markdown', 'txt', 'json', 'yaml', 'yml', 'csv',
+  'html', 'htm', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'css', 'scss',
+])
+
+export interface ImageFormatSupportIssue {
+  extension: string
+  destination: string
+}
+
+/**
+ * A Markdown image destination is a non-image file when its path ends with one
+ * of the EXPLICIT non-image extensions. Query / fragment / percent encoding are
+ * stripped first. No extension or an unknown extension → no verdict.
+ */
+export function detectNonImageDestination(rawDestination: string | null | undefined): ImageFormatSupportIssue | null {
+  const raw = String(rawDestination ?? '').trim()
+  if (raw === '' || /^(?:https?:|data:|blob:)/i.test(raw)) return null
+  let path = raw.split('#')[0].split('?')[0]
+  try { path = decodeURIComponent(path) } catch { /* keep raw */ }
+  const base = path.replace(/\\/g, '/').split('/').pop() ?? ''
+  const dot = base.lastIndexOf('.')
+  if (dot <= 0 || dot === base.length - 1) return null
+  const ext = base.slice(dot + 1).toLowerCase()
+  if (!NON_IMAGE_FILE_EXTENSIONS.includes(ext)) return null
+  return { extension: ext, destination: raw }
+}
+
 // ── B2-06 — formula source metrics ──────────────────────────────────────────
 
 export interface FormulaSourceMetric extends SourceIssueSpan {
