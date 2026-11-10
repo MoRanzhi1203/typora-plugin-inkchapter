@@ -46,6 +46,8 @@ export interface DocumentUtilitiesSources {
    */
   getStructuralMarkdown?: () => StructuralMarkdownSnapshot
   isStrictMode: () => boolean
+  /** B3 — resolved diagnostic profile provider (general when absent). */
+  getDiagnosticProfile?: () => import('./document-diagnostic-profile-v1').ResolvedDiagnosticProfile
   /** Phase 7R.3.11.8B.9 — conditional strict-policy activation gate
    *  (enabled && explicitly-configured && effective strict). Optional so
    *  legacy/test callers keep the isStrictMode-only semantics. */
@@ -326,6 +328,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
       getMarkdown: sources.getMarkdown,
       getStructuralMarkdown: sources.getStructuralMarkdown,
       isStrictMode: sources.isStrictMode,
+      getDiagnosticProfile: sources.getDiagnosticProfile,
       getHeadingPolicyState: sources.getHeadingPolicyState,
       getEffectiveHeadingModeRevision: () => sources.getEffectiveHeadingModeRevision?.() ?? 0,
       vaultRoot: sources.vaultRoot,

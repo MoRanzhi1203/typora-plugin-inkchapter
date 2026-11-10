@@ -16,6 +16,7 @@
 | B1 合并 | `main` | `19bf0dc` | 代码/测试 PASS；GUI NEEDS_MANUAL |
 | B2 合并 | `main` | `8d5e475` | PARTIAL；7 条规则实现，4 条 DEFERRED BLOCKED |
 | B2b 合并 | `main` | `c722e3a` | HEADING_NUMBER_SEQUENCE_INVALID 实现，B2 规则增至 8 条 |
+| B3b 合并 | `main` | 本次 B3b merge | profile 设置页/持久化 + 版心 CSS 变量；代码 PASS，GUI NEEDS_MANUAL |
 | B3 合并 | `main` | `842074c` | PARTIAL；profile/width 纯模型 PASS，UI/GUI BLOCKED/NEEDS_MANUAL |
 | 最终报告提交 | `main` | 本次 docs commit 后 `git rev-parse main` | 本文提交 |
 | 远端 | `origin` | `origin/main` 仍为 `6341c06` | **未推送**；远端可用性/保护规则未验证，本地保留全部提交 |
@@ -95,10 +96,9 @@ BLOCKED（有证据）：
 - profile → 公式源码限制 / 宽度 cap 接线；3 tests。
 
 BLOCKED / NEEDS_MANUAL：
-- profile 设置 UI 与持久化：无受控 settings service/UI。
-- 版心写入：无安全入口，不改用户 CSS/文档。
 - 学术/实验报告其余可选规则：无确定语义，未虚构规则 ID。
 - 真实 GUI/DPI/主题/DOMRect：无法在 DSH 完成控件级点击/截屏验收，标记 NEEDS_MANUAL。
+- profile 设置页/版心写入已实现代码级与设置页接线；真实视觉仍 NEEDS_MANUAL。
 
 报告：`DIAGNOSTICS-BATCH-3-REPORT.md`。
 
@@ -110,8 +110,8 @@ BLOCKED / NEEDS_MANUAL：
 | GIT-0 合并后 | 327 文件 / 5783 tests PASS | 同上 |
 | B1 | 329 文件 / 5805 tests PASS | `FD45A411B5B514161CAD673D975FE7EF7E6B728178381C9B64CCD493AFE1C4B4` |
 | B2 | 330 文件 / 5819 tests PASS | `BE23061EAFAA0A5717F28C0FFA7D0102EA04BBD61D09287B60E250C653D6078B` |
-| B2b | 331 文件 / 5836 tests PASS | `124EECEBC2A5834D758AD021B29F538B8973C983F537764CDD9AA1A2796BCA09` |
-| B3 | 331 文件 / 5836 tests PASS | 同上 |
+| B2b / B3b | 331 文件 / 5838 tests PASS | `9CB915D55EFE1BF74472180C6E4EAFB398F3160BADDFAC2FDE1BCF8D901D55CE` |
+| B3 | 331 文件 / 5838 tests PASS | 同上 |
 
 每批次 typecheck PASS；privacy PASS（SCANNED_LINES=0）；docs PASS（DOC_BROKEN_LINK_COUNT=0）。构建产物 `dist/` 被 `.gitignore` 忽略，未提交。
 
@@ -125,8 +125,8 @@ BLOCKED / NEEDS_MANUAL：
 | B2 table alignment | BLOCKED | canonical table parser 提供 alignment 结果 |
 | B2 heading sequence | BLOCKED | heading effective-number provider |
 | B2 image format/duplicate | BLOCKED | 可靠 image file-info/字节 provider |
-| B3 profile settings UI | BLOCKED | profile schema + 设置面板 + 持久化 |
-| B3 width write | BLOCKED | 受控 width provider（只影响墨章 UI） |
+| B3 profile settings UI | PASS（设置页/持久化） | 真实视觉 NEEDS_MANUAL |
+| B3 width write | PASS（墨章命名空间 CSS 变量） | 真实视觉 NEEDS_MANUAL |
 | B3 GUI/DPI/theme/DOMRect | NEEDS_MANUAL | 真实 Typora 截图/DOMRect |
 
 ## 6. 最终结论

@@ -88,6 +88,47 @@ export class InkChapterUiSettingTab extends SettingTab {
       ui.ribbon,
       v => this.patch({ ribbon: v }),
     )
+
+    this.addSettingTitle('文档诊断 · 学术档案')
+    this.addSetting(s => {
+      s.addName('诊断档案')
+      s.addDescription('决定默认启用的可选规则（如公式源码长度限制）。只影响墨章检测，不改 Markdown。')
+      s.addSelect(sel => {
+        sel.add(new Option('通用（默认）', 'general'))
+        sel.add(new Option('学术论文', 'academic'))
+        sel.add(new Option('实验报告', 'lab-report'))
+        sel.add(new Option('自定义', 'custom'))
+        sel.value = ui.diagnosticProfile
+        sel.onchange = () => this.patch({ diagnosticProfile: sel.value as typeof ui.diagnosticProfile })
+      })
+    })
+    this.addSetting(s => {
+      s.addName('版心宽度')
+      s.addDescription('学术/实验报告档案的正文最大宽度；自定义值会被限制在 560–1200px。仅影响墨章学术版心。')
+      s.addSelect(sel => {
+        sel.add(new Option('窄 720px', 'narrow'))
+        sel.add(new Option('标准 820px', 'standard'))
+        sel.add(new Option('宽 960px', 'wide'))
+        sel.add(new Option('实验报告 900px', 'lab-report'))
+        sel.add(new Option('自定义', 'custom'))
+        sel.value = ui.academicWidthPreset
+        sel.onchange = () => this.patch({ academicWidthPreset: sel.value as typeof ui.academicWidthPreset })
+      })
+    })
+    this.addSetting(s => {
+      s.addName('自定义版心宽度（px）')
+      s.addDescription('仅当版心宽度选择「自定义」时使用。')
+      s.addText(input => {
+        input.type = 'number'
+        input.min = '560'
+        input.max = '1200'
+        input.value = String(ui.academicCustomWidthPx)
+        input.onchange = () => {
+          const n = Number.parseInt(input.value, 10)
+          if (Number.isFinite(n)) this.patch({ academicCustomWidthPx: n })
+        }
+      })
+    })
     })
   }
 

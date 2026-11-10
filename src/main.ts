@@ -89,6 +89,8 @@ import { installGuiCaretAudit } from './runtime/gui-caret-audit'
 // the `runtime` domain; it is adapted here and never enters the user Drawer.
 import { refreshRuntimeIntegrity, runtimeIntegrityFindingsFromIdentity } from './document-utilities/diagnostic-domain-v1'
 import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentUtilities } from './document-utilities/document-utilities'
+import { resolveDiagnosticProfile, type ResolvedDiagnosticProfile } from './document-utilities/document-diagnostic-profile-v1'
+import { resolveAcademicWidthModel } from './document-utilities/document-diagnostic-academic-width-v1'
 // Heading Auto-Number Conflict V1.2 §21/§22 — dev/test-only bridge IO (report sink).
 import { writeHeadingConflictBridgeReport, readHeadingConflictBridgeFile, consumeHeadingConflictBridgeFile } from './heading-numbering/heading-conflict-test-bridge'
 import { DocumentViewContextMenu, type DocViewPlatform } from './document-utilities/document-view-context-menu'
@@ -937,6 +939,38 @@ export default class extends Plugin<InkChapterSettings> {
   }
 
   /**
+   * B3 — apply the selected academic profile only to the plugin's own CSS
+   * namespace. It never rewrites the user's Markdown or Typora configuration.
+   */
+  private applyAcademicProfile(): void {
+    try {
+      const ui = this.readUiSettings()
+      const profile = resolveDiagnosticProfile(ui.diagnosticProfile)
+      const width = ui.academicWidthPreset === 'custom'
+        ? resolveAcademicWidthModel({ customPx: ui.academicCustomWidthPx })
+        : resolveAcademicWidthModel({ preset: ui.academicWidthPreset })
+      const body = document.body
+      if (!body) return
+      const active = ui.diagnosticProfile !== 'general'
+      document.documentElement.style.setProperty('--inkchapter-content-width', `${width.contentWidthPx}px`)
+      body.classList.toggle('inkchapter-academic-width', active)
+      body.dataset['inkchapterDiagnosticProfile'] = profile.id
+      emitRuntimeAudit('INKCHAPTER-ACADEMIC-PROFILE', {
+        profile: profile.id,
+        contentWidthPx: width.contentWidthPx,
+        clamped: width.clamped,
+        active,
+      })
+    } catch { /* fail-open: a broken setting must never break the plugin */ }
+  }
+
+  private readDiagnosticProfile(): ResolvedDiagnosticProfile {
+    try { return resolveDiagnosticProfile(this.readUiSettings().diagnosticProfile) } catch {
+      return resolveDiagnosticProfile('general')
+    }
+  }
+
+  /**
    * 有界取证（A3）——3 次一次性心跳，证明 onload 之后主线程仍在运行、以及最终的
    * Ribbon 状态；发射完即停止，**不做任何轮询 / 长期观察器**。仅用于 Runtime 验收。
    */
@@ -1128,7 +1162,10 @@ export default class extends Plugin<InkChapterSettings> {
 
     // ── 界面配置：Ribbon 可见性（在 sink 就绪后应用；幂等、无长期观察器） ──
     try {
-      this.register(this.settings.onChange('*', () => this.applyRibbonVisibility()))
+      this.register(this.settings.onChange('*', () => {
+      this.applyRibbonVisibility()
+      this.applyAcademicProfile()
+    }))
     } catch { /* fail-open */ }
     this.applyRibbonVisibility()
     this.emitResponsiveHeartbeats()
@@ -1461,6 +1498,7 @@ export default class extends Plugin<InkChapterSettings> {
             return this.numberingService?.getEffectiveHeadingMode() === 'strict'
           } catch { return false }
         },
+        getDiagnosticProfile: () => this.readDiagnosticProfile(),
         // Phase 7R.3.11.8B.10 — Heading Policy Activation Authority. Stored
         // mode ('strict' legacy seed) NEVER implies activation. The resolver
         // separates featureEnabled / explicit-global / explicit-document and
@@ -2266,6 +2304,7 @@ export default class extends Plugin<InkChapterSettings> {
         write: (next) => {
           this.settings.set('ui' as keyof InkChapterSettings, next as never)
           this.applyRibbonVisibility()
+          this.applyAcademicProfile()
         },
       }))
       console.log('[InkChapter] ui settings tab registered')

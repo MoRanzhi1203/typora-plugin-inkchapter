@@ -9,11 +9,11 @@
 
 | 项 | 状态 | 说明 |
 |---|---|---|
-| B3-01 Profile 模型与继承 | PASS（纯模型） | general / academic / lab-report / custom；继承、显式启停、未知规则校验、循环检测；10 tests |
-| B3-01 Profile 设置 UI / 持久化 | BLOCKED | 没有受控的设置面板/持久化 provider；未伪造 UI |
+| B3-01 Profile 模型与继承 | PASS（模型 + 设置页+持久化） | general/academic/lab-report/custom；设置页下拉、`resolveUiSettings` 校验、写回持久化；10+3 tests |
+| B3-01 Profile 设置 UI / 持久化 | PASS（代码/设置页）；GUI NEEDS_MANUAL | `inkchapter-ui-setting-tab.ts` 新增诊断档案/版心控件；真实 Typora 视觉未验收 |
 | B3-02 学术/实验报告可选规则 | PARTIAL | academic 通过 profile 启用两条公式源码规则；其余可选规则未定义，避免虚构 |
-| B3-03 版心模型 | PASS（纯模型） | narrow/standard/wide/lab-report + 自定义 px；上下界 clamp 与 comfortable range；测试覆盖 |
-| B3-03 版心写入文档 / UI | BLOCKED | 没有可安全写入的版心设置入口；不改用户 CSS/文档 |
+| B3-03 版心模型 | PASS（模型 + 运行时 CSS 变量） | 预设 + clamp；`applyAcademicProfile` 写 `--inkchapter-content-width` 与 body class |
+| B3-03 版心写入文档 / UI | PASS（仅墨章命名空间）；GUI NEEDS_MANUAL | CSS 仅作用于 `body.inkchapter-academic-width #write`，不改用户 CSS/文档 |
 | B3-04 顶部方块 + 三标签 + 上下等宽 | NEEDS_MANUAL | 现有 V5.2 已有 检测/图片/锁定 三标签与 360px 展开宽度；B3 未能在真实 Typora 中重验收 |
 | B3-05 诊断列表 UI 语义 | 沿用 B1/B2 | 事件/行数语义已在 B1 落地，B3 未新增列表功能 |
 | B3-06 图片页 / 锁定 / 导航器 | NEEDS_MANUAL | 既有能力保留，未改；真实 GUI 交互未重新验收 |
@@ -48,22 +48,29 @@
 
 ## 3. BLOCKED / NEEDS_MANUAL
 
-### 3.1 Profile 设置 UI / 持久化（BLOCKED）
+### 3.1 Profile 设置 UI / 持久化（代码 PASS；GUI NEEDS_MANUAL）
 
-- 需要一个受控设置面板、schema 校验与持久化位置；当前项目没有面向诊断 profile 的 settings service/UI。
-- 不做：直接写 Typora 配置或用户 CSS。
-- 解除条件：定义 profile JSON schema、设置面板、默认值/迁移；由 UI 调用 `resolveDiagnosticProfile`。
+- 设置页新增「文档诊断 · 学术档案」：诊断档案下拉、版心宽度下拉、自定义 px 输入。
+- 保存走既有 `InkChapterUiSettings` 持久化；`resolveUiSettings` 校验非法值并回落默认。
+- 写回时 `main.applyAcademicProfile()` 立即应用；加载时也应用一次。
+- GUI 视觉/交互仍需人工验收，标 NEEDS_MANUAL。
 
-### 3.2 学术/实验报告可选规则（PARTIAL）
+### 3.2 版心写入（代码 PASS；GUI NEEDS_MANUAL）
+
+- 运行时写 `--inkchapter-content-width` 与 `body.inkchapter-academic-width`。
+- CSS 仅在 `body.inkchapter-academic-width #write` 下生效，默认 general 不加类；不写用户 CSS 文件、不改 Markdown。
+- 自定义宽度 clamp 到 560–1200px。
+
+### 3.3 学术/实验报告可选规则（PARTIAL）
 
 - 已定义并接线：公式源码长度/单行（通过 profile limits）。
 - 其余“学术规则”（如引用完整性、图表编号风格）没有本任务书之外的确定语义；不虚构 ID。
 - 解除条件：给出可验证的规则定义与 canonical 事实源。
 
-### 3.3 版心写入（BLOCKED）
+### 3.4 版心写入（已由 B3 实现，GUI 待验收）
 
-- 版心模型可计算，但没有安全的“写入编辑器/预览 CSS”入口；改用户 CSS 会越界。
-- 解除条件：提供受控 width provider（只影响墨章 UI，不改用户文档），并做 GUI 验收。
+- 已实现受控 width provider：只影响墨章 CSS 命名空间，不改用户文档/CSS。
+- 解除条件剩：真实 Typora 中确认 `#write` max-width 与 DPI/主题表现。
 
 ### 3.4 真实 GUI（NEEDS_MANUAL）
 
@@ -85,8 +92,8 @@ B3 未新增注册规则；规则总数仍为 **98 家族 / 104 注册解析代�
 |---|---|
 | TypeScript `tsc --noEmit` | PASS |
 | B3 profile/width + B2 profile wiring | 27 tests PASS（2 文件） |
-| 全量 Vitest | PASS，331 文件 / 5832 tests，126.31s |
-| 生产构建 | PASS，`dist/main.js` SHA256 `084CD8277859AB15B1C116A5FC87494CF4242081151F6E02DFB1B36411FADECD` |
+| 全量 Vitest | PASS，331 文件 / 5838 tests，147.69s |
+| 生产构建 | PASS，`dist/main.js` SHA256 `9CB915D55EFE1BF74472180C6E4EAFB398F3160BADDFAC2FDE1BCF8D901D55CE` |
 | 隐私 / 文档 | PASS（SCANNED_LINES=0；DOC_BROKEN_LINK_COUNT=0） |
 
 ## 6. 合并决策
