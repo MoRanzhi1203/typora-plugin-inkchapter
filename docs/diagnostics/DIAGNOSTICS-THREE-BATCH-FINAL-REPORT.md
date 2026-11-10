@@ -115,8 +115,8 @@ BLOCKED / NEEDS_MANUAL：
 | GIT-0 合并后 | 327 文件 / 5783 tests PASS | 同上 |
 | B1 | 329 文件 / 5805 tests PASS | `FD45A411B5B514161CAD673D975FE7EF7E6B728178381C9B64CCD493AFE1C4B4` |
 | B2 | 330 文件 / 5819 tests PASS | `BE23061EAFAA0A5717F28C0FFA7D0102EA04BBD61D09287B60E250C653D6078B` |
-| B2b / B3b / B2c / B2d | 332 文件 / 5853 tests PASS | `3578B8AF795ECEB4AF4FC7596AFD182A6E243B986C5654F2554BD98874F2FC1E` |
-| B3 | 332 文件 / 5853 tests PASS | 同上 |
+| B2b / B3b / B2c / B2d / 2026-11-11 专项 | 334 文件 / 5865 tests PASS | `3578B8AF795ECEB4AF4FC7596AFD182A6E243B986C5654F2554BD98874F2FC1E` |
+| B3 | 334 文件 / 5865 tests PASS | 同上 |
 
 每批次 typecheck PASS；privacy PASS（SCANNED_LINES=0）；docs PASS（DOC_BROKEN_LINK_COUNT=0）。构建产物 `dist/` 被 `.gitignore` 忽略，未提交。
 
@@ -134,7 +134,19 @@ BLOCKED / NEEDS_MANUAL：
 | B3 width write | PASS（墨章命名空间 CSS 变量） | 真实视觉 NEEDS_MANUAL |
 | B3 GUI/DPI/theme/DOMRect | NEEDS_MANUAL | 真实 Typora 截图/DOMRect |
 
-## 6. 最终结论
+## 7. 2026-11-11 B2/B3 阻塞专项补充
+
+| 项 | 状态 | 已验证证据 | 仍需外部条件 |
+|---|---|---|---|
+| 跨文件锚点 | 接口 PASS / 规则 BLOCKED | `document-cross-file-anchor-v1.ts` 三态契约 9 tests；文件缺失/无权威均 UNKNOWN | Typora canonical heading id/slug authority；插件需能读取目标文件实际 heading id |
+| 结构化引用 | 规范 + parser PASS / 规则未启用 | `inkchapter-ref:` 规范；`document-object-reference-v1.ts` 5 tests；拒绝显示编号 | 产品确认 captionId 跨文件持久化位置；Typora 显示/导出行为需人工实测 |
+| 图片证据 | Provider PASS / 字节级规则未启用 | `image-evidence-provider.ts` 异步预热 + 同步快照 7 tests；复用 sha256File/sniffImageFormat；无上传/下载 | 运行时预热接线与 UI 刷新策略；字节级规则审批 |
+| 表格对齐 | PASS | `TABLE_ALIGNMENT_INVALID` 3 tests；独立于列数/块结构 | 无 |
+| GUI | BLOCKED / NEEDS_MANUAL | 旧实例 runtime-load 为旧 build `3AFA056A…`；新 build `3578B8A…` 已复制到 test vault；旧实例关闭后本会话无法重启 Typora（exit 0/1/9） | 人工启动 Typora，加载新 build 并采证工具条/三标签/版心/DPI |
+
+> 说明：结构化引用与图片 Provider 是**模块级实现**，尚未产出对应诊断规则；不得写成规则已上线或 GUI 已通过。
+
+## 8. 最终结论
 
 **当前墨章文档诊断：101 个规则家族、112 个展开具体代码、107 个注册解析代码、108 个生产器代码、103 个真正可达代码；注册基准 13 错误 / 70 警告 / 29 提示；可达基准 13 / 63 / 27。**
 
