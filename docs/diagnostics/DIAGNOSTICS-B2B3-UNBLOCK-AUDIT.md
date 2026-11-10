@@ -76,7 +76,21 @@ resolveCrossFileAnchor({
 - 跨文件解析：目标文件的 `CaptionRegistry` 记录可持久化（现有 registry 已有 documentKey），因此可返回 EXISTS/MISSING；目标文件未加载/未索引时返回 UNKNOWN。
 - 迁移：旧文纯文字引用不报错；只有带 `inkchapter-ref:` 的链接参与校验；不强制迁移。
 
-### 2.3 仍需决定
+### 2.3 已实现（parser only，未启用规则）
+
+`src/document-utilities/document-object-reference-v1.ts` 已实现：
+
+```ts
+parseObjectReference('#inkchapter-ref:figure:cap_ab12')
+→ { ok: true, reference: { kind: 'figure', captionId: 'cap_ab12', fragment } }
+```
+
+- 只接受 `figure|table|formula` + `cap_*`；`figure:1` 明确返回 `DISPLAY_NUMBER_NOT_IDENTITY`；
+- 普通 `#heading`、空 fragment、非保留前缀返回 `NOT_OBJECT_REFERENCE`；
+- 测试 5 例（含跨文件、percent 编码、非法 kind/id、显示编号、构建器）。
+- 仍**不产出诊断、不改 Markdown、不解析 caption registry**；等产品确认持久化位置后再接。
+
+### 2.4 仍需决定
 
 - 是否接受该 fragment 约定（会进入用户可见 URL）。
 - `captionId` 的跨文件持久化位置（项目侧 registry 文件 vs 文档 sidecar）。
@@ -118,7 +132,17 @@ const TABLE_DELIMITER_RE = /^\s*\|?[\s:|-]+\|?\s*$/
 - 但 `sha256File` 是**异步**，诊断 compute 是同步；不能在渲染线程同步等待 Promise。
 - `ImageAssetIndex` 需要服务实例与索引路径，诊断 authority 没有该依赖；资源索引也不是每个本地图片都必然有条目。
 
-### 4.2 结论
+### 4.2 已实现 Provider（模块级，未接运行时预热）
+
+`src/image-management/image-evidence-provider.ts`：
+
+- `warm(path)`：异步调用现有 `sha256File` + 512 字节 header + `sniffImageFormat`；并发去重；失败缓存为 `ERROR`，不重复打 IO。
+- `getSync(path)`：纯内存快照，无文件 IO、无哈希；未预热/失败返回 `null`（UNKNOWN）。
+- `invalidate(path?)`；无上传/下载能力。
+- 7 tests：预热前 UNKNOWN、缓存复用、并发去重、force 重算、ERROR 不重试、未知格式 null、invalidate。
+- 尚未接入诊断 rule/DOM 预热；诊断仍用扩展名级 `FIGURE_IMAGE_FORMAT_UNSUPPORTED`，不把模块存在写成字节级规则已上线。
+
+### 4.3 结论
 
 - 可复用 `sniffImageFormat` 做**未来异步预取**；不能把 async 索引硬塞进同步诊断。
 - 现有 `FIGURE_IMAGE_FORMAT_UNSUPPORTED` 仍只做“显式非图片扩展名”保守判断，不冒充字节级格式检测。
@@ -130,6 +154,8 @@ const TABLE_DELIMITER_RE = /^\s*\|?[\s:|-]+\|?\s*$/
 - 启动命令只有文档路径，**没有 `--remote-debugging-port`**；监听端口查询无结果，无法通过 CDP 连接。
 - 渲染进程带 `--user-data-dir=C:\Users\MSIPC\AppData\Roaming\Typora`；测试 vault 配置指向 `test/vault/.typora/plugins`，但当前窗口未渲染墨章工具条。
 - 已尝试隔离 profile 启动第二实例，Typora 单实例行为未产生新窗口；不反复尝试。
+- 本轮为验证新构建，复制 `dist/main.js`（SHA `3578B8A…`）到 test vault 并关闭旧 Typora；随后 `Start-Process`/`cmd start` 启动均立即退出（exit 0/1/9），无法在本会话重新启动 GUI。当前 Typora 已关闭，需人工重新打开。
+- 旧实例的 `inkchapter-runtime-load.json` 证明它运行的是旧构建 `3AFA056A…`，不是当前 `3578B8A…`；工具条未渲染的根因仍需新实例/DevTools 复核。
 - 结论：GUI 证据只能人工采证；不得把 Vitest/jsdom 写成真实 GUI 通过。
 
 ## 6. 本轮实施清单
@@ -138,13 +164,14 @@ const TABLE_DELIMITER_RE = /^\s*\|?[\s:|-]+\|?\s*$/
 |---|---|---|
 | 跨文件 anchor 三态接口 | 已实现（未接 provider） | 9 tests |
 | 表格对齐独立诊断 | 已实现 | 3 tests + 定向 36 tests |
-| 结构化引用语法 | 方案（未实现规则） | 本文 §2 |
-| 图片字节级格式 | 未实施（异步 provider 缺失） | 本文 §4 |
-| GUI | NEEDS_MANUAL | 本文 §5 |
+| 结构化引用 parser | 已实现（未启用规则） | 5 tests；拒绝显示编号 |
+| 图片异步证据 Provider | 已实现（未接运行时） | 7 tests；复用 sha256File/sniffImageFormat |
+| 图片字节级格式/重复内容 | 未实施（异步 provider 未接诊断） | 见 §4 |
+| GUI | BLOCKED / NEEDS_MANUAL | 旧 build 3AFA；新 build 3578 已复制；Typora 无法在本会话重启 |
 
 ## 7. 需要人工决定
 
-1. 批准 `inkchapter-ref:` fragment 约定与 `captionId` 跨文件持久化位置。
+1. 确认 `captionId` 跨文件持久化位置，并人工实测 `inkchapter-ref:` 在 Typora 的显示/点击/导出行为（当前 parser 已实现，规则未启用）。
 2. 提供 Typora heading id 的 canonical 生成接口（或接受 GitHub slug 作为权威）。
-3. 批准异步 `ImageEvidenceProvider`（格式 + SHA-256 + 尺寸）并允许预热缓存。
-4. 人工完成 GUI 采证（详见三批次报告 B1-07/B3-04）。
+3. 批准并接线异步 `ImageEvidenceProvider` 的运行时预热（格式 + SHA-256 + 尺寸）；当前仅模块级实现，无诊断规则消费。
+4. 人工启动 Typora（当前实例已在采证中关闭，本会话 `Start-Process` 均退出），加载 test vault 新 build 后完成 GUI 采证（B1-07/B3-04）。
