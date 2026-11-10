@@ -70,6 +70,9 @@ export const DEFAULT_UI_SETTINGS: InkChapterUiSettings = {
   ribbon: false,
   codeBlockPreviewLines: 10,
   codeBlockAutoExpandOnEdit: true,
+  diagnosticProfile: 'general',
+  academicWidthPreset: 'standard',
+  academicCustomWidthPx: 820,
 }
 
 /** 把可能不完整的 `ui` 配置按默认值补齐（纯函数，读取侧唯一权威）。 */
@@ -95,6 +98,17 @@ export function resolveUiSettings(
       typeof raw?.codeBlockAutoExpandOnEdit === 'boolean'
         ? raw.codeBlockAutoExpandOnEdit
         : DEFAULT_UI_SETTINGS.codeBlockAutoExpandOnEdit,
+    diagnosticProfile: raw?.diagnosticProfile === 'academic' || raw?.diagnosticProfile === 'lab-report'
+      || raw?.diagnosticProfile === 'custom'
+      ? raw.diagnosticProfile
+      : DEFAULT_UI_SETTINGS.diagnosticProfile,
+    academicWidthPreset: raw?.academicWidthPreset === 'narrow' || raw?.academicWidthPreset === 'wide'
+      || raw?.academicWidthPreset === 'lab-report' || raw?.academicWidthPreset === 'custom'
+      ? raw.academicWidthPreset
+      : DEFAULT_UI_SETTINGS.academicWidthPreset,
+    academicCustomWidthPx: typeof raw?.academicCustomWidthPx === 'number' && Number.isFinite(raw.academicCustomWidthPx)
+      ? Math.round(raw.academicCustomWidthPx)
+      : DEFAULT_UI_SETTINGS.academicCustomWidthPx,
   }
 }
 

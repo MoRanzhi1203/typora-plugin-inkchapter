@@ -5792,3 +5792,11 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   .inkchapter-doc-expand__panel { transition: none; }
   .inkchapter-doc-status__square { transition: none; }
 }
+
+/* B3 — academic profile width: runtime-only, opt-in, never edits user CSS or Markdown. */
+body.inkchapter-academic-width #write {
+  max-width: var(--inkchapter-content-width, 820px);
+  margin-left: auto;
+  margin-right: auto;
+}
+

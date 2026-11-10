@@ -86,6 +86,8 @@ export interface DocumentUtilitiesAuthorityContext {
   getStructuralMarkdown?: () => StructuralMarkdownSnapshot
   /** Strict heading structure mode (numbering authority). */
   isStrictMode: () => boolean
+  /** B3 — resolved diagnostic profile provider (general when absent). */
+  getDiagnosticProfile?: () => import('./document-diagnostic-profile-v1').ResolvedDiagnosticProfile
   /**
    * Phase 7R.3.11.8B.9 — CONDITIONAL strict-policy activation. Only when this
    * reports strictPolicyActive === true may Document Diagnostics emit
@@ -291,6 +293,7 @@ export function collectDiagnosticsInput(
     codes: structural.codes,
     formulas: structural.formulas,
     formulaRenderFacts: structural.formulaRenderFacts,
+    diagnosticProfile: ctx.authority.getDiagnosticProfile?.(),
     links: structural.links,
     canonicalDuplicateIdentities: ctx.authority.getCanonicalDuplicateIdentities(),
     captionDuplicateNames: ctx.authority.getCaptionDuplicateNames(),

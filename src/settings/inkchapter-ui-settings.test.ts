@@ -69,6 +69,28 @@ describe('UI-SETTINGS — resolveUiSettings', () => {
     expect(r.fileTreeLocateFlash).toBe(true)
     expect(r.emptyWorkspaceCreate).toBe(true)
   })
+
+  it('B3 diagnostic profile / academic width defaults and invalid values', () => {
+    expect(DEFAULT_UI_SETTINGS.diagnosticProfile).toBe('general')
+    expect(DEFAULT_UI_SETTINGS.academicWidthPreset).toBe('standard')
+    expect(DEFAULT_UI_SETTINGS.academicCustomWidthPx).toBe(820)
+    const academic = resolveUiSettings({ diagnosticProfile: 'academic', academicWidthPreset: 'lab-report' })
+    expect(academic.diagnosticProfile).toBe('academic')
+    expect(academic.academicWidthPreset).toBe('lab-report')
+    const invalid = resolveUiSettings({
+      diagnosticProfile: 'nope' as never,
+      academicWidthPreset: 'huge' as never,
+      academicCustomWidthPx: Number.NaN,
+    })
+    expect(invalid.diagnosticProfile).toBe('general')
+    expect(invalid.academicWidthPreset).toBe('standard')
+    expect(invalid.academicCustomWidthPx).toBe(820)
+  })
+
+  it('B3 academic width CSS is opt-in and scoped to the plugin body class', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
+    expect(css).toMatch(/body\.inkchapter-academic-width #write\s*\{[\s\S]{0,120}max-width:\s*var\(--inkchapter-content-width/)
+  })
 })
 
 describe('UI-MENU — 文档查看菜单项显隐', () => {

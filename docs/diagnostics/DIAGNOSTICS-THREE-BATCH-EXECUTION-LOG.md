@@ -137,4 +137,13 @@
 - 状态：GIT-0 / B1 代码 PASS；B2/B3 PARTIAL；GUI NEEDS_MANUAL；存在 BLOCKED，未达到 `ALL_MANDATORY_TASKS_PASS`
 - 最终报告：`docs/diagnostics/DIAGNOSTICS-THREE-BATCH-FINAL-REPORT.md`
 
+### 2026-11-10 — B3b profile 设置页与版心写入
+
+- 分支：`feature/diagnostics-b3b-profile-settings`（从 `850524a` 创建）
+- 新增：设置页「文档诊断 · 学术档案」诊断档案/版心宽度/自定义 px；`resolveUiSettings` 校验；`main.applyAcademicProfile()` 写 `--inkchapter-content-width` + `body.inkchapter-academic-width`；诊断输入接入 `diagnosticProfile`（公式限制/宽度 cap）
+- GUI：设置页视觉/实际 `#write` 宽度仍为 NEEDS_MANUAL
+- 全量测试：331 文件 / 5838 tests PASS，147.69s
+- 构建：PASS，`dist/main.js` SHA256 `9CB915D55EFE1BF74472180C6E4EAFB398F3160BADDFAC2FDE1BCF8D901D55CE`
+- 合并：待执行
+
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）

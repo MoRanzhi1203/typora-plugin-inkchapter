@@ -49,6 +49,12 @@ export interface InkChapterUiSettings {
    * 纯点击、选中、光标移动不改变折叠状态。
    */
   codeBlockAutoExpandOnEdit: boolean
+  /** B3 — diagnostic profile (general / academic / lab-report / custom). */
+  diagnosticProfile: 'general' | 'academic' | 'lab-report' | 'custom'
+  /** B3 — academic content width preset. */
+  academicWidthPreset: 'narrow' | 'standard' | 'wide' | 'lab-report' | 'custom'
+  /** B3 — custom content width (used when preset is custom; clamped). */
+  academicCustomWidthPx: number
 }
 
 export interface InkChapterSettings {
