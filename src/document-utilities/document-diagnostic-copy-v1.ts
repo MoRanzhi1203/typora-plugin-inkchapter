@@ -140,6 +140,7 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   TABLE_HEADER_EMPTY: 640,
   TABLE_HEADER_DUPLICATE: 650,
   TABLE_COLUMN_COUNT_MISMATCH: 660,
+  TABLE_ALIGNMENT_INVALID: 665,
   // ── code ──────────────────────────────────────────────────────────────────
   CODE_MISSING_NAME: 700,
   CODE_MISSING_LANGUAGE: 710,
@@ -307,6 +308,7 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   TABLE_BLOCK_STRUCTURE_INVALID: { title: '表格必须作为独立块插入', description: '表格不能放在列表项或引用块中。', suggestion: '将表格移动到独立段落。' },
   TABLE_EMPTY_CONTENT: { title: '表格没有数据行', description: '当前表格只有表头，没有数据行。', suggestion: '为表格补充数据行，或删除空表格。' },
   TABLE_COLUMN_COUNT_MISMATCH: { title: '表格列数不一致', description: '表头、分隔行或数据行的列数不一致。', suggestion: '补齐或删除多余单元格，使每行列数一致。' },
+  TABLE_ALIGNMENT_INVALID: { title: '表格对齐标记非法', description: '表格分隔行中的某个单元格不是合法的 GFM 对齐标记。', suggestion: '使用 ---、:---、---: 或 :---: 作为分隔单元格。' },
   LIST_INDENTATION_INVALID: { title: '列表缩进不一致', description: '列表项缩进与当前父级或同级缩进不一致。', suggestion: '按同一层级统一缩进，避免悬空缩进。' },
   TABLE_HEADER_EMPTY: { title: '表头单元格为空', description: '表格存在空的表头单元格。', suggestion: '为空的表头单元格补充列名。' },
   TABLE_HEADER_DUPLICATE: { title: '表头重复', description: '同一表头文字在表格中出现多次。', suggestion: '重命名重复的表头以区分列。' },

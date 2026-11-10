@@ -155,4 +155,15 @@
 - 构建：PASS，`dist/main.js` SHA256 `2E126B4B19DAE7BB4007970C75FB90B85098CA1CB6EDB1FAB26F502379D55DB8`
 - 合并：`git merge --no-ff feature/diagnostics-b2c-image-format` → `316e06dce156e7df9f173160ae019c9bb4b4bb25`
 
+### 2026-11-10 — B2d 表格对齐 + 跨文件 anchor 三态接口
+
+- 分支：`feature/diagnostics-b2d-alignment-crossfile-anchor`（从 `0e4197a` 创建）
+- 新增：TABLE_ALIGNMENT_INVALID（独立 delimiter cell 语法，警告，source-range）
+- 新增：`document-cross-file-anchor-v1.ts` 三态接口（EXISTS/MISSING/UNKNOWN）；无 canonical authority 返回 UNKNOWN，不把 UNKNOWN 当 MISSING；9 tests
+- 审计文档：`docs/diagnostics/DIAGNOSTICS-B2B3-UNBLOCK-AUDIT.md`
+- 规则总数：101 家族 / 107 注册解析代码 / 112 展开代码 / 108 生产器代码 / 103 可达；13-70-29 基准，可达 13-63-27
+- 全量测试：332 文件 / 5853 tests PASS，225.42s
+- 构建：PASS，`dist/main.js` SHA256 `3578B8AF795ECEB4AF4FC7596AFD182A6E243B986C5654F2554BD98874F2FC1E`
+- 合并：待执行
+
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）

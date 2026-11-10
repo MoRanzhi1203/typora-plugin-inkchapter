@@ -374,6 +374,7 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   CB105: 'info',
   TABLE_EMPTY_CONTENT: 'info',
   TABLE_COLUMN_COUNT_MISMATCH: 'warning',
+  TABLE_ALIGNMENT_INVALID: 'warning',
   LIST_INDENTATION_INVALID: 'warning',
   FORMULA_SOURCE_LENGTH_EXCEEDING: 'warning',
   FORMULA_SOURCE_LINE_TOO_LONG: 'warning',
@@ -705,6 +706,10 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   TABLE_EMPTY_CONTENT: rule('TABLE_EMPTY_CONTENT', 'table', 'source-range', { area: 'document-completeness', scope: 'object' }),
   // B2 §B2-02 — header / delimiter / body rows must expose the same cell count.
   TABLE_COLUMN_COUNT_MISMATCH: rule('TABLE_COLUMN_COUNT_MISMATCH', 'table', 'source-range', {
+    area: 'table', capabilityCategory: 'table', scope: 'object',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  TABLE_ALIGNMENT_INVALID: rule('TABLE_ALIGNMENT_INVALID', 'table', 'source-range', {
     area: 'table', capabilityCategory: 'table', scope: 'object',
     producerAuthority: 'computeDocumentDiagnostics',
   }),

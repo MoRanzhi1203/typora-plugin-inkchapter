@@ -106,6 +106,7 @@ import {
   analyzeFormulaSourceMetrics,
   analyzeListIndentation,
   analyzeTableColumnMismatches,
+  analyzeTableAlignment,
   detectNonImageDestination,
   B2_FORMULA_SOURCE_LENGTH_LIMIT,
   B2_FORMULA_SOURCE_LINE_LIMIT,
@@ -415,6 +416,7 @@ export function resolveDocumentDiagnosticSeverity(
     // B2 — structural warnings that never become errors.
     case 'FRONTMATTER_MALFORMED':
     case 'TABLE_COLUMN_COUNT_MISMATCH':
+    case 'TABLE_ALIGNMENT_INVALID':
     case 'LIST_INDENTATION_INVALID':
     case 'FORMULA_SOURCE_LENGTH_EXCEEDING':
     case 'FORMULA_SOURCE_LINE_TOO_LONG':
@@ -805,6 +807,7 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   TABLE_MANUAL_NUMBER_PREFIX_CODE,
   // B2 — table / list source structure.
   'TABLE_COLUMN_COUNT_MISMATCH',
+  'TABLE_ALIGNMENT_INVALID',
   'LIST_INDENTATION_INVALID',
   // B2 — formula source metrics / render state.
   'FORMULA_SOURCE_LENGTH_EXCEEDING',
@@ -1867,6 +1870,30 @@ function emitB2SourceDiagnostics(
         endColumn: mismatch.endColumn,
         sourceFingerprint: mismatch.identity,
         rawText: mismatch.rawText,
+      },
+    }))
+  }
+
+  for (const issue of analyzeTableAlignment(markdown)) {
+    push(makeDiagnostic(input, 'table', 'TABLE_ALIGNMENT_INVALID',
+      `表格对齐标记非法：第 ${issue.cellIndex + 1} 列「${issue.rawCell.trim()}」`, {
+      detail: issue.detail,
+      kind: 'object',
+      targetIdentity: issue.identity,
+      metadata: {
+        ruleId: 'TABLE-ALIGNMENT-INVALID',
+        reason: 'INVALID_ALIGNMENT_CELL',
+        cellIndex: issue.cellIndex,
+        rawCell: issue.rawCell,
+      },
+      location: {
+        kind: 'source-range',
+        startLine: issue.startLine,
+        startColumn: issue.startColumn,
+        endLine: issue.endLine,
+        endColumn: issue.endColumn,
+        sourceFingerprint: issue.identity,
+        rawText: issue.rawText,
       },
     }))
   }
