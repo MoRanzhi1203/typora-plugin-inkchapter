@@ -18,7 +18,7 @@
 | B2b 合并 | `main` | `c722e3a` | HEADING_NUMBER_SEQUENCE_INVALID 实现，B2 规则增至 8 条 |
 | B3b 合并 | `main` | `ca29669` | profile 设置页/持久化 + 版心 CSS 变量；代码 PASS，GUI NEEDS_MANUAL |
 | B3 合并 | `main` | `842074c` | PARTIAL；profile/width 纯模型 PASS，UI/GUI BLOCKED/NEEDS_MANUAL |
-| 最终 main | `main` | `ca29669`（B3b 合并；本报告提交后更新为最新 docs commit） | **未推送**；远端保护/可用性未验证，本地保留全部提交 |
+| 最终 main | `main` | `b15e6c8`（B3b + 最终文档提交） | **未推送**；远端保护/可用性未验证，本地保留全部提交 |
 | 远端 | `origin` | `origin/main` 仍为 `6341c06` | **未推送**；远端可用性/保护规则未验证，本地保留全部提交 |
 
 未执行 `reset --hard` / `clean -fd` / `push --force`；未删除分支、stash、worktree；既有 stash 与 `runtime/ab/A|B` worktree 未触碰。
@@ -94,6 +94,7 @@ BLOCKED（有证据）：
 - `document-diagnostic-profile-v1.ts`：general / academic / lab-report / custom；继承、显式启停、未知规则 issue、循环检测；10 tests。
 - `document-diagnostic-academic-width-v1.ts`：narrow/standard/wide/lab-report + 自定义 px clamp；3 tests。
 - profile → 公式源码限制 / 宽度 cap 接线；3 tests。
+- 设置页「文档诊断 · 学术档案」：诊断档案/版心宽度/自定义 px；`resolveUiSettings` 校验；写回持久化；`applyAcademicProfile()` 应用 CSS 变量 + body class；仅作用于墨章命名空间。
 
 BLOCKED / NEEDS_MANUAL：
 - 学术/实验报告其余可选规则：无确定语义，未虚构规则 ID。
@@ -133,4 +134,4 @@ BLOCKED / NEEDS_MANUAL：
 
 **当前墨章文档诊断：99 个规则家族、110 个展开具体代码、105 个注册解析代码、106 个生产器代码、101 个真正可达代码；注册基准 13 错误 / 68 警告 / 29 提示；可达基准 13 / 61 / 27。**
 
-GIT-0 与 B1 已安全合并；B2 的 7 条源规则与 B3 的 profile/width 纯模型已合并。B2/B3 未达到全合同 PASS：4 条 DEFERRED（文件锚点 + 3 交叉引用）以及表格对齐、标题编号、图片格式、profile 设置 UI、版心写入与真实 GUI 仍有 BLOCKED/NEEDS_MANUAL。**因此本轮不能写 `ALL_MANDATORY_TASKS_PASS`。**
+GIT-0 与 B1 已安全合并；B2 的 8 条源规则与 B3 的 profile/width 模型、设置页/持久化、CSS 变量版心已合并。仍未达到全合同 PASS：4 条 DEFERRED（文件锚点 + 3 交叉引用）、表格对齐、图片格式，以及真实 GUI/DPI/主题/DOMRect 验收仍为 BLOCKED/NEEDS_MANUAL。**因此本轮不能写 `ALL_MANDATORY_TASKS_PASS`。**
