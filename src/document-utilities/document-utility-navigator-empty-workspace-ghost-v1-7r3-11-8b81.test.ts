@@ -156,8 +156,10 @@ describe('NAV-MOUNT / NAV-NONSCROLL / NAV-TRANSITION — host DOM', () => {
     makeShell(shellRect, 300, 300) // scrollHeight === clientHeight
     const h = new DocumentUtilityOverlayHost({ ctx: makeContext(() => activeWs), providers: fakeProviders(), onBindDocument: () => {} })
     h.mount()
-    expect(navEl()!.hidden).toBe(true)
-    expect(navEl()!.dataset.rail).toBe('hidden')
+    // 只有真实纵向滚动范围才显示导航器。
+    const nav = navEl()!
+    expect(nav.hidden).toBe(true)
+    expect(nav.dataset.rail).toBe('hidden')
   })
 
   it('long scrollable doc → navigator visible on the right rail (mode ∈ {gutter, inset})', () => {

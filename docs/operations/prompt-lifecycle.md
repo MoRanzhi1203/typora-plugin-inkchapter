@@ -4,6 +4,10 @@
 > 全部提示词的有效信息已并入 [../modules/](../modules/)、[../architecture/](../architecture/)、
 > [../operations/](../operations/) 与 [../maintenance/prompt-consolidation-record.md](../maintenance/prompt-consolidation-record.md)。
 > 本文件仅保留"证据核对"与"内容压缩"的通用原则，供未来处理一次性工程任务时参考。
+>
+> **现行本地策略（2026-11-06 起）**：已执行完成的提示词**原件**保留在本地归档目录（`.gitignore` 内、不发布到
+> GitHub），并在 [../maintenance/prompt-archive-manifest-2026-11-06.md](../maintenance/prompt-archive-manifest-2026-11-06.md)
+> 登记状态、动作、AbsorbedBy 与 SHA-256；本地待执行提示词目录 只保留未完成任务。归档原件不重复进入正式文档。
 
 ---
 

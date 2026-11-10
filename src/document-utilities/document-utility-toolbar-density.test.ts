@@ -202,65 +202,72 @@ describe('TB-DENSITY-CSS wide authoritative tokens', () => {
   })
 })
 
-describe('TB-DENSITY-1/2/3/5 single shell, same status group, natural counts', () => {
-  it('one shell, one status group containing error+warning', () => {
+describe('TB-DENSITY-1/2/3/5 single shell, one status square', () => {
+  it('one shell with one compact status square (no expanded count strip)', () => {
     const h = mountHost()
     injectCounts(h, 5, 22)
     expect(document.querySelectorAll('.inkchapter-doc-toolbar')).toHaveLength(1)
-    const control = document.querySelector('.inkchapter-problems-control')
-    expect(control).toBeTruthy()
-    const segments = Array.from(control!.querySelectorAll('.inkchapter-toolbar-segment'))
-    expect(segments).toHaveLength(2)
-    expect(segments[0].getAttribute('data-severity')).toBe('error')
-    expect(segments[1].getAttribute('data-severity')).toBe('warning')
-    expect(segments[0].querySelector('.inkchapter-toolbar-segment__count')?.textContent).toBe('5')
-    expect(segments[1].querySelector('.inkchapter-toolbar-segment__count')?.textContent).toBe('22')
-    // edit/lock action is a toolbar sibling of the status group (not inside it)
-    const lock = document.querySelector('.inkchapter-doc-toolbar__btn--lock')
-    expect(lock?.parentElement?.classList.contains('inkchapter-doc-toolbar')).toBe(true)
+    // 旧计数条只作为隐藏兼容节点存在，视觉入口只有状态方块。
+    const legacyControl = document.querySelector('.inkchapter-problems-control') as HTMLElement
+    expect(legacyControl?.hidden).toBe(true)
+    const square = document.querySelector('.inkchapter-doc-status')
+    expect(square).toBeTruthy()
+    expect(square?.getAttribute('data-status')).toBe('RED')
+    expect(square?.getAttribute('data-error-count')).toBe('5')
+    expect(square?.getAttribute('data-warning-count')).toBe('22')
   })
 
-  it('0/0 renders the healthy smart entry; 99/99 uses natural-width counters', () => {
+  it('0/0 renders GREEN; 99/99 keeps both counts as data attributes', () => {
     const h = mountHost()
     injectCounts(h, 0, 0)
-    expect(document.querySelectorAll('.inkchapter-toolbar-segment')).toHaveLength(0)
     expect(document.querySelectorAll('.inkchapter-doc-toolbar')).toHaveLength(1)
-    const entry = document.querySelector('.inkchapter-toolbar-entry')
-    expect(entry?.classList.contains('is-healthy')).toBe(true)
+    const square = document.querySelector('.inkchapter-doc-status')
+    expect(square?.getAttribute('data-status')).toBe('GREEN')
     injectCounts(h, 99, 99)
-    const counts = Array.from(document.querySelectorAll('.inkchapter-toolbar-segment__count')).map(el => el.textContent)
-    expect(counts).toEqual(['99', '99'])
+    expect(square?.getAttribute('data-status')).toBe('RED')
+    expect(square?.getAttribute('data-error-count')).toBe('99')
+    expect(square?.getAttribute('data-warning-count')).toBe('99')
   })
 })
 
-describe('TB-DENSITY-4 one status/action divider', () => {
-  it('divider count is enforced by CSS (control border-right), not by inline DOM borders', () => {
-    const h = mountHost()
-    injectCounts(h, 5, 22)
-    const control = document.querySelector('.inkchapter-problems-control') as HTMLElement
-    const lock = document.querySelector('.inkchapter-doc-toolbar__btn--lock') as HTMLElement
-    expect(control.style.borderRight).toBe('')
-    expect(lock.style.borderLeft).toBe('')
-    const segBodies = ruleBodies('.inkchapter-toolbar-segment').join('\n')
-    expect(segBodies).not.toMatch(/border-(left|right)/)
+describe('TB-DENSITY-4 one status/action shell', () => {
+  it('the status square frame is drawn by CSS, never by inline borders', () => {
+    mountHost()
+    const square = document.querySelector('.inkchapter-doc-status') as HTMLElement
+    const frame = document.querySelector('.inkchapter-doc-status__lock-frame') as HTMLElement
+    expect(square.style.borderLeft).toBe('')
+    expect(square.style.borderRight).toBe('')
+    expect(frame.style.borderLeft).toBe('')
+    expect(frame.style.borderRight).toBe('')
+    const frameBodies = ruleBodies('.inkchapter-doc-status__lock-frame').join('\n')
+    expect(frameBodies).toMatch(/border/)
   })
 })
 
 describe('TB-DENSITY-6/9 edit-lock semantics + locked state', () => {
-  it('clicking toggles 编辑 <-> 已锁定 and keeps one toolbar', () => {
+  it('clicking the hub lock action toggles the status square lock frame and keeps one toolbar', () => {
     const write = document.createElement('div')
     write.id = 'write'
     write.setAttribute('contenteditable', 'true')
     document.body.appendChild(write)
-    mountHost()
-    const lockBtn = document.querySelector('.inkchapter-doc-toolbar__btn--lock') as HTMLButtonElement
-    expect(lockBtn.textContent).toBe('编辑')
-    lockBtn.click()
-    expect(lockBtn.textContent).toBe('已锁定')
-    expect(lockBtn.classList.contains('is-locked')).toBe(true)
-    lockBtn.click()
-    expect(lockBtn.textContent).toBe('编辑')
-    expect(lockBtn.classList.contains('is-locked')).toBe(false)
+    const h = mountHost()
+    const square = document.querySelector('.inkchapter-doc-status') as HTMLButtonElement
+    expect(square.classList.contains('is-locked')).toBe(false)
+    const hub = (h as unknown as { documentHub: { open(): void; switchTab(tab: 'lock'): void; getPanelElement(): HTMLElement | null } }).documentHub
+    hub.open()
+    hub.switchTab('lock')
+    const panel = hub.getPanelElement()!
+    const lockButton = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
+      .find(btn => btn.textContent === '锁定')
+    expect(lockButton).toBeTruthy()
+    lockButton!.click()
+    expect(square.classList.contains('is-locked')).toBe(true)
+    // 面板在锁定后重建为“解锁文档”
+    const unlock = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
+      .find(btn => btn.textContent === '解锁')
+    expect(unlock).toBeTruthy()
+    unlock!.click()
+    expect(square.classList.contains('is-locked')).toBe(false)
     expect(document.querySelectorAll('.inkchapter-doc-toolbar')).toHaveLength(1)
   })
 })
@@ -275,14 +282,14 @@ describe('TB-DENSITY-7 full/compact/suppressed authority unchanged', () => {
 })
 
 describe('TB-DENSITY-8/10 hover structure + no duplicate mount', () => {
-  it('hovering edit/lock keeps exactly one toolbar shell', () => {
+  it('hovering the status square keeps exactly one toolbar shell', () => {
     const h = mountHost()
     injectCounts(h, 5, 22)
-    const buttons = Array.from(document.querySelectorAll<HTMLElement>('.inkchapter-doc-toolbar .inkchapter-doc-toolbar__btn'))
-    expect(buttons.length).toBe(3) // error + warning + edit/lock
-    const lock = document.querySelector('.inkchapter-doc-toolbar__btn--lock') as HTMLElement
-    lock.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    const square = document.querySelector('.inkchapter-doc-status') as HTMLElement
+    expect(square).toBeTruthy()
+    square.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
     expect(document.querySelectorAll('.inkchapter-doc-toolbar')).toHaveLength(1)
+    expect(document.querySelectorAll('.inkchapter-doc-status')).toHaveLength(1)
   })
 
   it('repeated bindDocument keeps exactly one toolbar + navigator (no duplicate mount)', () => {

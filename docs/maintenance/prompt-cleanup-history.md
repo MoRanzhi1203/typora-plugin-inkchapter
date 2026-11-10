@@ -7,6 +7,13 @@
 > 说明：2026-10-05 的整合轮次之后，项目**不再保留任何提示词 Markdown 文件**；本文件只保留历次清理的日期、数量与去向摘要，不再指向已删除文件路径。
 > 2026-10-24 曾按用户要求把两批提示词恢复到 `docs/prompts/pending/`，随后完成二次整合并再次移出（见下节）。
 
+## 2026-11-06 — 已执行提示词归档（ARCHIVE_EXECUTED，6 个）
+
+- 对 `docs/prompts/pending/` 的 6 个提示词逐项核对代码 / 测试 / 提交证据，全部判定 `EXECUTED_CONFIRMED`，按 `ARCHIVE_EXECUTED` 移动到 `docs/prompts/archive/2026-11-06/`（**保留原件，不删除**）；`docs/prompts/pending/` 目录按本地规则保留，当前无未完成任务。
+- 归档清单、SHA-256 与逐项 AbsorbedBy 见 [prompt-archive-manifest-2026-11-06.md](prompt-archive-manifest-2026-11-06.md)。
+- 说明：`docs/prompts/` 整体在 `.gitignore` 中（本地保存、不发布到 GitHub），本批次不改变该发布策略；未删除任何未完成提示词、归档原件、原始数据或用户未提交修改。
+- 遗留事实：GitHub 历史清理的旧提交 SHA 在平台完成 GC 前仍可能通过旧链接访问，属平台侧行为；当前树已通过隐私门禁。
+
 ## 2026-10-30 — 空行 / 诊断 / 公式 / 审计批次整合（MERGE_THEN_DELETE）
 
 - 清理 `docs/prompts/pending/` 中 **20 个文件（18 个唯一提示词 + 2 个重复副本 `…LIFECYCLE-R3 (1).md` / `…REALTIME-V2-CLOSURE (1).md`）**；**目录 `docs/prompts/pending/` 按规则保留**，正文移出到外部备份 `D:\TyporaPluginProjects\_prompt-backups\inkchapter-prompt-reorg-20261030\`。

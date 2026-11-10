@@ -98,9 +98,15 @@ describe('INTERACTION-2 lock blocks edits, allows selection/copy/scroll, unlock 
     write.setAttribute('contenteditable', 'true')
     document.body.appendChild(write)
     const h = mountHost()
-    const lockBtn = document.querySelector('.inkchapter-doc-toolbar__btn--lock') as HTMLButtonElement
-    lockBtn.click()
-    expect(lockBtn.textContent).toBe('已锁定')
+    const status = document.querySelector('.inkchapter-doc-status') as HTMLButtonElement
+    const hub = (h as unknown as { documentHub: { open(): void; switchTab(tab: 'lock'): void; getPanelElement(): HTMLElement | null } }).documentHub
+    hub.open()
+    hub.switchTab('lock')
+    const panel = hub.getPanelElement()!
+    const lock = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
+      .find(btn => btn.textContent === '锁定')!
+    lock.click()
+    expect(status.classList.contains('is-locked')).toBe(true)
 
     const beforeInput = (inputType: string): Event => {
       const e = new Event('beforeinput', { bubbles: true, cancelable: true }) as Event & { inputType: string }
@@ -136,8 +142,10 @@ describe('INTERACTION-2 lock blocks edits, allows selection/copy/scroll, unlock 
     expect(write.style.pointerEvents).not.toBe('none')
 
     // Unlock restores.
-    lockBtn.click()
-    expect(lockBtn.textContent).toBe('编辑')
+    const unlock = Array.from(panel.querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
+      .find(btn => btn.textContent === '解锁')!
+    unlock.click()
+    expect(status.classList.contains('is-locked')).toBe(false)
     expect(beforeInput('insertText').defaultPrevented).toBe(false)
   })
 })

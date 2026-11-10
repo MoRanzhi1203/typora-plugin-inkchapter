@@ -18,6 +18,7 @@
 | [format-application-state](format-application-state.md) | 格式库 vs 已应用快照 vs 版本管理 |
 | [sidebar-integration](sidebar-integration.md) | Typora 原生侧栏兼容，Ribbon 禁用 |
 | [ui-visual-system](ui-visual-system.md) | 插件 UI 视觉体系（Typora Native+）：design tokens、组件规范、响应式、主题跟随、结构门禁 |
+| [document-hub-and-image-batch](document-hub-and-image-batch.md) | V5.1 文档状态方块（三色 + 锁定外框）、统一文档管理中心（检测/锁定/当前文档图片策略）、图片批量服务（预览→确认→执行、复用优先、默认不改写）、导航器真实滚动范围规则 |
 
 > 构建部署 → [operations/build-and-deploy.md](../operations/build-and-deploy.md)
 > 测试环境 → [operations/testing.md](../operations/testing.md)

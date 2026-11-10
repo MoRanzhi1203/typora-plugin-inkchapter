@@ -12,6 +12,10 @@
  */
 import { DocumentDiagnosticsAuthority } from './document-diagnostics-authority'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
+// V5.1 — 右上角状态方块 + 统一文档管理中心。
+import { DocumentHubController } from './document-hub-controller'
+import { buildDocumentHubModel, type DocumentHubImageSummary } from './document-hub-model'
+import { buildDocumentStatusView } from './document-status-indicator'
 import { DocumentDiagnosticLocator, prefersReducedMotion, DIAGNOSTIC_HIGHLIGHT_CLASS } from './document-diagnostic-locator'
 import type { DiagnosticLocateResult } from './document-diagnostic-locator'
 import {
@@ -586,6 +590,7 @@ import {
   type DocumentPositionContext,
   type DrawerOrderV514R1Counters,
 } from './document-diagnostic-drawer-order-v514-r1'
+import { resolveDiagnosticCopy } from './document-diagnostic-copy-v1'
 // View Order V1 — the ONE sort-mode / type-filter / grouping authority for the
 // Drawer list (default = Markdown source position). Pure, no DOM.
 import {
@@ -1186,6 +1191,18 @@ function pseudoIsPainted(view: Window, el: HTMLElement, pseudo: '::before' | '::
 export interface DocumentUtilitiesOverlayOptions {
   ctx: DocumentUtilitiesContext
   providers: DocumentDiagnosticsProviders
+  /**
+   * V5.1 — 文档管理中心图片区（由插件 main.ts 注入；缺省时面板只显示检测/锁定）。
+   * provider 只读；批量动作只在用户点击面板按钮后执行。
+   */
+  documentHub?: {
+    getImageSummary: () => DocumentHubImageSummary | null
+    uploadAll: () => void
+    downloadAll: () => void
+    checkDualLink: () => void
+    openImageSettings: () => void
+    getHint?: () => string | null
+  }
   /** Recompute triggers wired by the caller (document switch etc.). */
   onBindDocument?: (bind: () => void) => void
   /**
@@ -2747,6 +2764,9 @@ export class DocumentUtilityOverlayHost {
   private drawerListEl: HTMLDivElement | null = null
   private problemsControlEl: HTMLDivElement | null = null
   private lockButtonEl: HTMLButtonElement | null = null
+  /** V5.1 — 右上角状态方块与统一文档管理中心。 */
+  private documentHub?: DocumentHubController
+  private documentHubMountEl: HTMLElement | null = null
   /** V1.1 — Drawer severity filter, shared with the Toolbar status segments. */
   private drawerFilter: DiagnosticsSeverityFilter = 'all'
   private drawerFiltersEl: HTMLDivElement | null = null
@@ -19426,7 +19446,7 @@ export class DocumentUtilityOverlayHost {
       terminalReason: reason,
       selectedDiagnosticBefore: selectedBefore,
       selectedDiagnosticAfter: this.lastLocatedDiagnosticId,
-      reopenAuthorityAvailable: !!this.problemsControlEl && this.problemsControlEl.isConnected,
+      reopenAuthorityAvailable: !!this.documentHub?.getStatusElement()?.isConnected,
       txVisualRetryCount: this.txVisualRetryCount,
       sessionVisualRecoveryCount: this.locateLayoutRecoveryCount,
     })
@@ -20649,6 +20669,9 @@ export class DocumentUtilityOverlayHost {
       ])
       const full = identityChanged || DOC_SWITCH_REASONS.has(reason)
       if (full) {
+        // V5.2 — a real document switch collapses the expandable toolbar and
+        // drops the previous document's detail list.
+        this.documentHub?.close()
         this.authorityReady = { canonical: false, caption: false }
         if (/CANONICAL/i.test(reason)) this.authorityReady.canonical = true
         this.cancelScrollOperation('CANCELLED_DOCUMENT_SWITCH')
@@ -20922,15 +20945,12 @@ export class DocumentUtilityOverlayHost {
     this.syncEmptyWorkspaceUx()
   }
 
-  /** Empty-document projection cleanup: counts → 0, edit text → empty. */
+  /** Empty-document projection cleanup: the status square drops to GRAY. */
   private clearToolbarProjection(): void {
+    // Compatibility: the legacy hidden strip must be empty for EMPTY docs;
+    // the user-facing status square drops to GRAY via the refresh below.
     if (this.problemsControlEl) this.problemsControlEl.replaceChildren()
-    if (this.toolbarEl) {
-      for (const el of this.toolbarEl.querySelectorAll<HTMLElement>('.inkchapter-toolbar-segment__count')) el.textContent = '0'
-      const lockLabel = this.toolbarEl.querySelector<HTMLElement>('.inkchapter-editlock__label')
-      if (lockLabel) lockLabel.textContent = ''
-      if (this.lockButtonEl) this.lockButtonEl.classList.remove('is-locked')
-    }
+    this.refreshDocumentHub()
   }
 
   /** Read the REAL rendered-visibility chain for toolbar + problems control. */
@@ -20978,9 +20998,25 @@ export class DocumentUtilityOverlayHost {
       const lockLabel = tracked.querySelector<HTMLElement>('.inkchapter-editlock__label')?.textContent ?? ''
       if (tracked.querySelector('.inkchapter-editlock.is-locked') || /锁定/.test(lockLabel)) projectedEdit = 'LOCKED'
       else if (lockLabel.trim() !== '') projectedEdit = 'EDITABLE'
+      // V5.1 — the compact status square carries the SAME projection as data
+      // attributes (no numbers painted), so auditing stays authoritative.
+      const statusEl = tracked.querySelector<HTMLElement>('.inkchapter-doc-status')
+      if (statusEl) {
+        projectedError = Number.parseInt(statusEl.dataset.errorCount ?? '0', 10) || 0
+        projectedWarning = Number.parseInt(statusEl.dataset.warningCount ?? '0', 10) || 0
+        projectedHint = Number.parseInt(statusEl.dataset.hintCount ?? '0', 10) || 0
+        projectedEdit = statusEl.dataset.locked === '1' ? 'LOCKED' : 'EDITABLE'
+      }
     }
     const renderedToolbarCount = toolbarEls.filter(isRenderedVisible).length
-    const renderedProblemsControlCount = problemsEls.filter(isRenderedVisible).length
+    // V5.1 — the compact status square carries the same projection as the old
+    // problems control; count it so visibility invariants stay authoritative.
+    const renderedStatusSquareCount = Array.from(document.querySelectorAll<HTMLElement>('.inkchapter-doc-status'))
+      .filter(isRenderedVisible).length
+    const renderedProblemsControlCount = Math.max(
+      problemsEls.filter(isRenderedVisible).length,
+      renderedStatusSquareCount,
+    )
     const visuallyProven = rectWidth > 0 && rectHeight > 0 && clientRectCount > 0
     const measureMode: 'REAL' | 'HEADLESS' = display === 'none' || visuallyProven ? 'REAL' : 'HEADLESS'
     return {
@@ -21294,7 +21330,7 @@ export class DocumentUtilityOverlayHost {
     // Untitled + 0 chars is NOT a scrollable Markdown document.
     const emptyUntitled = (fp == null || fp === '') && (md == null || md.replace(/\s/g, '') === '')
     const root = resolveBusinessContentRoot()
-    return decideNavigatorEligibilityPure({
+    const eligibility = decideNavigatorEligibilityPure({
       presenceState: ev.presence.state,
       hasActiveDocument: ev.hasActiveDocument,
       documentKey: this.opts.ctx.authority.getDocumentKey(),
@@ -21303,6 +21339,22 @@ export class DocumentUtilityOverlayHost {
       canonicalReady: this.authorityReady.canonical,
       realLayout: !isHeadlessTestRuntime(),
     })
+    // P0 FIX — CANONICAL_FRAME_NOT_READY is a TRANSIENT switch state, not a
+    // final "no document" decision. `authorityReady.canonical` is reset by the
+    // ACTIVE_TAB_CHANGED / ACTIVE_LEAF_CHANGED / FILE_OPEN reconciles that
+    // follow CANONICAL_FRAME_CHANGED, so a document switch used to leave the
+    // navigator permanently hidden. A real active file + document key keeps
+    // the navigator mounted while the canonical frame settles.
+    if (
+      !eligibility.eligible
+      && eligibility.reason === 'CANONICAL_FRAME_NOT_READY'
+      && ev.presence.state === 'ACTIVE'
+      && fp != null && fp !== ''
+      && this.opts.ctx.authority.getDocumentKey() != null
+    ) {
+      return { eligible: true, reason: 'ACTIVE_DOCUMENT_CANONICAL_PENDING' }
+    }
+    return eligibility
   }
 
   // ── Native word-count panel avoidance (presentation-only) ─────────────────
@@ -21548,10 +21600,22 @@ export class DocumentUtilityOverlayHost {
   }
 
   /** Phase 2-B.3 — SINGLE DOM writer for navigator display/rail. */
+
   private applyNavigatorPresentation(presentation: NavigatorPresentation, insetRightPx: number | null): void {
     if (!this.navigatorEl) return
     this.navigatorEl.dataset.rail = presentation
     this.navigatorEl.hidden = presentation === 'hidden'
+    // P0 FIX — `hidden` is NOT the only visibility channel: the geometry writer
+    // sets an inline `display:none` while hidden, and that inline value would
+    // survive a later hidden=false write (document switch: hide on the
+    // transition frame → show on the new document → inline none persisted →
+    // the navigator stayed invisible). The presentation writer now owns BOTH
+    // channels so a visible decision always clears the stale inline display.
+    if (presentation === 'hidden') {
+      this.navigatorEl.style.display = 'none'
+    } else {
+      this.navigatorEl.style.removeProperty('display')
+    }
     this.navigatorEl.setAttribute('aria-hidden', String(presentation === 'hidden'))
     // NOTE — the navigator's right/bottom anchor is NEVER written here. The
     // single geometry writer commits base anchor + word-count avoidance offset;
@@ -21932,7 +21996,11 @@ export class DocumentUtilityOverlayHost {
     // (gutter → inset rail → hidden/NO_SAFE_PLACEMENT). Left/bottom-left
     // fallback is permanently forbidden.
     const navEligibility = this.resolveNavigatorActiveDocEligibility()
-    if (next.scrollable && navEligibility.eligible) {
+    // V5.1 fix — the navigator is a document-tool module, not a scroll-only
+    // affordance: it must stay MOUNTED AND VISIBLE for every active document.
+    // For a shorter-than-viewport document both arrows are simply disabled;
+    // hiding the whole module looked like the feature had been deleted.
+    if (navEligibility.eligible) {
       // True-Inset — measure the REAL scrollbar boundary BEFORE the rail.
       let scrollbarKnowledge: 'known' | 'unknown' = 'unknown'
       let scrollbarWidth: number | null = null
@@ -21988,7 +22056,7 @@ export class DocumentUtilityOverlayHost {
           })
         : null
       const rawPres = decideNavigatorPresentation({
-        scrollable: true,
+        scrollable: next.scrollable,
         hasVisibleEditor,
         editorCanContainNavigator,
         gutterCandidateValid,
@@ -22006,7 +22074,7 @@ export class DocumentUtilityOverlayHost {
         this.stabilizationRemeasurePending = false
       }
       const stab = applyNavigatorStabilization({
-        scrollable: true,
+        scrollable: next.scrollable,
         presentation: rawPres.presentation,
         reason: rawPres.reason,
         lastStableVisible: this.lastStableNavigatorPresentation,
@@ -22640,21 +22708,46 @@ export class DocumentUtilityOverlayHost {
     toolbar.style.position = 'absolute'
     toolbar.style.pointerEvents = 'auto'
 
-    // DocumentProblemsControl = StatusSegment(error) + StatusSegment(warning)
-    // + Divider + EditLockAction inside ONE shell. Segments are rebuilt on every
-    // diagnostics publish by renderDiagnosticsButton (Smart Summary).
+    // V5.1 — ONE compact status square replaces the always-expanded
+    // error/warning counts + edit/lock strip. Clicking it opens the unified
+    // document hub (detection + lock + current-document image policy/batch).
+    const mount = document.createElement('div')
+    mount.className = 'inkchapter-doc-status-host'
+    mount.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
+    toolbar.appendChild(mount)
+    this.documentHubMountEl = mount
+    this.documentHub = new DocumentHubController({
+      mountEl: mount,
+      actions: {
+        recheck: () => { void this.diagnostics.recompute('DOCUMENT_HUB_RECHECK') },
+        toggleLock: () => this.toggleLock(),
+        uploadAll: () => { this.opts.documentHub?.uploadAll() },
+        downloadAll: () => { this.opts.documentHub?.downloadAll() },
+        dualLink: () => { this.opts.documentHub?.checkDualLink() },
+        openImageSettings: () => { this.opts.documentHub?.openImageSettings() },
+        locateDiagnostic: (diagnosticId) => this.locateDiagnostic(diagnosticId),
+      },
+      getHint: () => this.opts.documentHub?.getHint?.() ?? null,
+    })
+    this.documentHub.mount()
+
+    // V5.1 compatibility shell: legacy runtime probes/tests still address these
+    // nodes, but they are NEVER visible (hidden + aria-hidden). The compact
+    // status square above is the ONLY user-facing entry.
     const control = document.createElement('div')
     control.className = 'inkchapter-problems-control'
     control.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
-    this.problemsControlEl = control
+    control.hidden = true
+    control.setAttribute('aria-hidden', 'true')
     toolbar.appendChild(control)
+    this.problemsControlEl = control
 
     const lockBtn = document.createElement('button')
     lockBtn.type = 'button'
     lockBtn.className = 'inkchapter-doc-toolbar__btn inkchapter-doc-toolbar__btn--lock inkchapter-editlock'
     lockBtn.setAttribute(UTILITY_UI_ROOT_ATTR, UTILITY_UI_ROOT_VALUE)
-    lockBtn.setAttribute('aria-label', '编辑 / 已锁定')
-    lockBtn.title = '编辑 / 已锁定'
+    lockBtn.hidden = true
+    lockBtn.setAttribute('aria-hidden', 'true')
     lockBtn.addEventListener('click', () => this.toggleLock())
     this.lockButtonEl = lockBtn
     toolbar.appendChild(lockBtn)
@@ -22789,6 +22882,106 @@ export class DocumentUtilityOverlayHost {
       entry.addEventListener('click', () => this.openDrawer('all'))
       control.appendChild(entry)
     }
+    this.refreshDocumentHub()
+  }
+
+  /**
+   * V5.1 — push the authoritative status into the ONE status square / hub.
+   * Called on every diagnostics publish, document switch and lock transition.
+   */
+
+  /**
+   * V5.1 — push the authoritative status into the ONE status square / hub.
+   * Called on every diagnostics publish, document switch and lock transition.
+   */
+  private refreshDocumentHub(): void {
+    try {
+      this.refreshDocumentHubUnsafe()
+    } catch (error) {
+      // Fail-open: the hub is presentation-only. A failure here must NEVER
+      // break the diagnostics / geometry / navigator pipeline.
+      console.error('[InkChapter] document hub refresh failed', error)
+    }
+  }
+
+  private refreshDocumentHubUnsafe(): void {
+    const hub = this.documentHub
+    if (!hub) return
+    const projection = deriveDocumentProblemsProjection(this.snapshot)
+    const state = deriveDiagnosticsState(this.snapshot)
+    const getDocumentKey = (this.opts.ctx.authority as { getDocumentKey?: () => string | null }).getDocumentKey
+    const documentKey = typeof getDocumentKey === 'function' ? getDocumentKey.call(this.opts.ctx.authority) : null
+    const documentPath =
+      (this.opts.ctx.authority as { getActiveFilePath?: () => string | null }).getActiveFilePath?.() ?? null
+    const locked = documentKey != null ? (this.lockState.get(documentKey) ?? false) : false
+    // V5.2 STATUS-AUTHORITY — a snapshot that belongs to ANOTHER document can
+    // never paint the current document's list/square. Admission already rejects
+    // those results; this is the presentation-side defense so a transitional
+    // frame shows GRAY/empty instead of the previous document's warning color.
+    const snapshotStale = this.snapshot?.documentKey != null
+      && documentKey != null
+      && this.snapshot.documentKey !== documentKey
+    const noDoc = documentPath == null
+      || snapshotStale
+      || state.state === 'NO_ACTIVE_DOCUMENT'
+      || !projection.hasProjection
+    // V5.2 STATUS-AUTHORITY — the visible list and the square counts come from
+    // the SAME admitted snapshot and the SAME document-domain projection.
+    // Duplicate/stale runtime diagnostics can no longer inflate one of them.
+    const snapshotDiagnostics = noDoc ? [] : selectDocumentDiagnostics(this.snapshot?.diagnostics ?? [])
+    const diagnosticsById = new Map(snapshotDiagnostics.map(d => [d.id, d]))
+    const projections = sortProjectionsByDocumentPosition(
+      flattenDiagnosticsToProjections(snapshotDiagnostics),
+    )
+    const diagnostics = projections.map((projection) => {
+      const diagnostic = diagnosticsById.get(projection.diagnosticId)
+      const copy = resolveDiagnosticCopy({
+        code: projection.ruleId,
+        message: diagnostic?.message ?? null,
+        detail: diagnostic?.detail ?? null,
+        severity: projection.severity,
+        category: diagnostic?.category ?? null,
+      })
+      return {
+        id: projection.diagnosticId,
+        severity: (projection.severity === 'error' || projection.severity === 'warning' ? projection.severity : 'info') as 'error' | 'warning' | 'hint' | 'info',
+        title: copy.title,
+        detail: copy.description,
+        line: projection.sourceLine,
+        targetIndex: projection.targetIndex,
+        targetCount: projection.targetCount,
+      }
+    })
+    // Counts derive from the rendered list itself: the overview ("N 项警告"),
+    // the filter counts and the square color share ONE source of truth.
+    const counts = { error: 0, warning: 0, hint: 0 }
+    for (const item of diagnostics) {
+      if (item.severity === 'error') counts.error++
+      else if (item.severity === 'warning') counts.warning++
+      else counts.hint++
+    }
+    const facts = {
+      hasDocument: documentPath != null,
+      diagnosticsEnabled: true,
+      checking: false,
+      structuralVerified: this.snapshot?.structuralVerified !== false,
+      hasProjection: projection.hasProjection && !noDoc,
+      errorCount: counts.error,
+      warningCount: counts.warning,
+      hintCount: counts.hint,
+    }
+    const view = buildDocumentStatusView(facts, locked)
+    const image = this.opts.documentHub?.getImageSummary?.() ?? null
+    const model = buildDocumentHubModel({
+      documentPath,
+      saved: documentPath != null,
+      status: view,
+      locked,
+      image,
+      diagnosticsAvailable: true,
+      diagnostics,
+    })
+    hub.update(view, model)
   }
 
   /**
@@ -22888,7 +23081,9 @@ export class DocumentUtilityOverlayHost {
     const transition = resolveLockGuardTransition(locked, this.editGuard.isLocked())
     if (transition === 'LOCK') this.editGuard.lock()
     else if (transition === 'UNLOCK') this.editGuard.unlock()
+    this.refreshDocumentHub()
   }
+
 
   private lockState = new Map<string, boolean>()
 
@@ -31434,7 +31629,7 @@ export class DocumentUtilityOverlayHost {
           ? (requestedOpenAtTerminal ? 'COMMITTED_DRAWER_RESTORED' : 'COMMITTED_DRAWER_CLOSED_BY_USER')
           : 'COMMITTED_NO_VISUAL',
         terminalReason: completionReason,
-        reopenAuthorityAvailable: !!this.problemsControlEl && this.problemsControlEl.isConnected,
+        reopenAuthorityAvailable: !!this.documentHub?.getStatusElement()?.isConnected,
         txVisualRetryCount: this.txVisualRetryCount,
         sessionVisualRecoveryCount: this.locateLayoutRecoveryCount,
       })
