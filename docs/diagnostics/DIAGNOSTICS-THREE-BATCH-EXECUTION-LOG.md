@@ -112,7 +112,7 @@
 - 规则总数：99 家族 / 105 注册解析代码 / 110 展开代码 / 106 生产器代码 / 101 可达；13-68-29 基准，可达 13-61-27
 - 全量测试：331 文件 / 5836 tests PASS，172.15s
 - 构建：PASS，`dist/main.js` SHA256 `124EECEBC2A5834D758AD021B29F538B8973C983F537764CDD9AA1A2796BCA09`
-- 合并：待执行
+- 合并：`git merge --no-ff feature/diagnostics-b2b-heading-sequence` → `c722e3ac61a48fd6968856f45f962c1eca9300e0`
 
 - 状态：PARTIAL（实现项 PASS；4 条 DEFERRED 与表格对齐/标题编号/图片格式 BLOCKED，未虚假标记）
 
