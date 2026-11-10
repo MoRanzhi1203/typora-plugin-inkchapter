@@ -35,11 +35,11 @@
 | B2-01 | 5 条 DEFERRED 正式实现 | PARTIAL：1 PASS + 4 BLOCKED | FRONTMATTER_MALFORMED 已实现；文件锚点 + 3 交叉引用无 canonical 语法/文件锚点权威 |
 | B2-02 | 表格结构规则 | PASS（列数）/ BLOCKED（对齐） | TABLE_COLUMN_COUNT_MISMATCH 行为测试；ALIGNMENT 无可靠语法权威 |
 | B2-03 | 列表结构规则 | PASS（缩进）/ TODO（标记/序号） | LIST_INDENTATION_INVALID 三例；合法混合标记/非 1 起始不误报 |
-| B2-04 | 标题 / 自动编号规则 | BLOCKED | 缺少 heading effective-number provider，未虚构 |
+| B2-04 | 标题 / 自动编号规则 | PASS（序列） | HEADING_NUMBER_SEQUENCE_INVALID 使用 canonical displayCountedPath；四例测试 |
 | B2-05 | 图片资源规则 | BLOCKED | 缺少可靠 image file-info provider，未用扩展名猜测 |
 | B2-06 | 公式宽度 / 源码长度 / 单行 / 渲染失败 | PASS（4 项）/ TODO（高度可选） | 源码长度/单行/宽度/失败均有测试；高度默认关闭未做 |
-| B2-07 | 注册、默认策略、测试、能力矩阵 | PASS（已实现项） | 98 家族 / 104 解析代码 / 109 展开 / 105 生产器 / 100 可达 |
-| B2-08 | B2 报告 + 门禁 + 合并 `main` | PASS（PARTIAL 记录） | 全量 330×5819 PASS；merge `8d5e475` |
+| B2-07 | 注册、默认策略、测试、能力矩阵 | PASS（已实现项） | 99 家族 / 105 解析代码 / 110 展开 / 106 生产器 / 101 可达 |
+| B2-08 | B2 报告 + 门禁 + 合并 `main` | PASS（PARTIAL 记录） | 全量 PASS；merge `8d5e475`；B2b 追加 HEADING_NUMBER_SEQUENCE_INVALID |
 
 ## B3 学术档案与 Compact Inspector UI
 
@@ -59,7 +59,7 @@
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
 | FINAL-01 | Git 总览与三次合并记录 | PASS | GIT-0 `3b20ea5`；B1 `19bf0dc`；B2 `8d5e475`；B3 `842074c` |
-| FINAL-02 | 最新规则家族 / 展开代码 / 级别分布重算 | PASS | 98 / 109 / 104；13-67-29；可达 100（13-60-27） |
-| FINAL-03 | 全量测试、构建 SHA、隐私审计 | PASS | 331×5832；`084CD827…`；privacy/docs PASS |
+| FINAL-02 | 最新规则家族 / 展开代码 / 级别分布重算 | PASS | 99 / 110 / 105；13-68-29；可达 101（13-61-27） |
+| FINAL-03 | 全量测试、构建 SHA、隐私审计 | PASS | 331×5836；`124EECE…`；privacy/docs PASS |
 | FINAL-04 | GUI 证据 / NEEDS_MANUAL 清单 | NEEDS_MANUAL | 真实 Typora 截图/DOMRect 未获得；未伪造 |
 | FINAL-05 | 最终交付报告 | PASS | `DIAGNOSTICS-THREE-BATCH-FINAL-REPORT.md` |

@@ -1348,6 +1348,8 @@ export class DocumentDiagnosticsAuthority {
       element: f.element,
       autoNumberingEffective: autoNumberingFacts.enabled === true
         && autoNumberingFacts.isEffectiveForElement(f.element),
+      counted: f.counted,
+      displayCountedPath: f.displayCountedPath,
     }))
     const headingAutoNumbering = {
       enabled: autoNumberingFacts.enabled === true,

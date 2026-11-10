@@ -32,6 +32,10 @@ export interface DiagnosticCanonicalHeadingFact {
   physicalLevel: number
   /** Normalized heading text (trimmed element text). "" = canonical EMPTY_HEADING. */
   text: string
+  /** B2b — whether the heading consumed an automatic number. */
+  counted?: boolean
+  /** B2b — effective display path (e.g. [1,2,1]); empty when not counted. */
+  displayCountedPath?: readonly number[]
 }
 
 export interface DiagnosticCanonicalHeadingAuthorityResult {
@@ -114,6 +118,8 @@ export function mapCanonicalHeadingFrameForDiagnostics(
       element: entry.element ?? null,
       physicalLevel: level,
       text: (entry.element?.textContent ?? '').trim(),
+      counted: entry.semanticState?.counted === true,
+      displayCountedPath: [...(entry.semanticState?.displayCountedPath ?? [])],
     }
     headings.push(fact)
     physicalLevels.push(level)

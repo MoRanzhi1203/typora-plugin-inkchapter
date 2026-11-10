@@ -12,7 +12,7 @@
 | B2-01 五条 DEFERRED | **PARTIAL / 1 PASS + 4 BLOCKED** | FRONTMATTER_MALFORMED 已实现；文件锚点 + 3 条交叉引用因缺少 canonical 语法/文件锚点权威而 BLOCKED |
 | B2-02 表格结构 | PASS（列数） / BLOCKED（对齐） | TABLE_COLUMN_COUNT_MISMATCH 已实现；TABLE_ALIGNMENT_INVALID 没有可靠语法权威，未虚构 |
 | B2-03 列表结构 | PASS（缩进） / TODO（标记/序号） | LIST_INDENTATION_INVALID 已实现；混合标记、非 1 起始有序列表都是合法 Markdown，未误报 |
-| B2-04 标题/编号 | BLOCKED | 需要 heading effective-number authority；当前没有可安全消费的 provider，未虚构规则 |
+| B2-04 标题/编号 | PASS（序列） | 使用 canonical heading effective display path 的 HEADING_NUMBER_SEQUENCE_INVALID；未重推导编号 |
 | B2-05 图片资源 | BLOCKED | 需要真实文件/字节信息；没有可靠 image file-info provider，未用扩展名猜测 |
 | B2-06 公式 | PARTIAL | 源码长度、单行长度、渲染宽度、渲染失败已实现；高度可选规则未做（默认关闭） |
 | B2-07 注册/测试/能力矩阵 | PASS（已实现项） | 7 条规则完成注册、文案、定位、测试；能力矩阵计数更新 |
@@ -24,19 +24,19 @@
 
 | 口径 | 数值 |
 |---|---:|
-| 规则家族 | 98 |
-| 注册表解析代码 | 104 |
-| 展开后的具体代码 | 109 |
-| 有生产器路径的代码 | 105 |
-| 真正可达的代码 | 100 |
+| 规则家族 | 99 |
+| 注册表解析代码 | 105 |
+| 展开后的具体代码 | 110 |
+| 有生产器路径的代码 | 106 |
+| 真正可达的代码 | 101 |
 | DEFERRED 家族 | 4（全部 BLOCKED） |
 | 默认关闭家族 | 4（CB008、CB010、两条公式源码规则） |
-| 错误 / 警告 / 提示（家族） | 13 / 61 / 24 |
-| 错误 / 警告 / 提示（109 代码） | 13 / 67 / 29 |
-| 可达 100 代码 | 13 / 60 / 27 |
-| strict 可达 100 代码 | 15 / 64 / 21 |
+| 错误 / 警告 / 提示（家族） | 13 / 62 / 24 |
+| 错误 / 警告 / 提示（110 代码） | 13 / 68 / 29 |
+| 可达 101 代码 | 13 / 61 / 27 |
+| strict 可达 101 代码 | 15 / 65 / 21 |
 
-集合守恒由 `document-diagnostic-code-sets.test.ts` 断言：105 个生产器代码 = 100 可达 + 4 默认关闭 + 1 已知不可达；109 展开代码 − 105 生产器代码 = 4 个 DEFERRED 代码。
+集合守恒由 `document-diagnostic-code-sets.test.ts` 断言：106 个生产器代码 = 101 可达 + 4 默认关闭 + 1 已知不可达；110 展开代码 − 106 生产器代码 = 4 个 DEFERRED 代码。
 
 ## 3. 已实现规则
 
@@ -65,7 +65,15 @@
 - 源码：`document-diagnostics-b2-authority.ts:183-250`；`document-diagnostics.ts:3624-3654`。
 - 测试：三例。
 
-### 3.4 公式规则（B2-06）
+### 3.4 标题编号序列（B2b）
+
+- 规则：HEADING_NUMBER_SEQUENCE_INVALID；级别：警告；定位：canonical-node。
+- 触发：canonical heading 的 `counted=true` 且 `displayCountedPath` 在同层级跳号/重复（如 1.1 → 1.3）。
+- 不触发：未 counted 的标题；层级跳级由 HEADING_LEVEL_GAP 拥有并重置序列基线，不双报。
+- 源码：`document-h1-authority-bridge.ts:112-120`；`document-diagnostics.ts:2856-2899`。
+- 测试：`document-diagnostics-b2-rules.test.ts` 四例（跳号、连续、未 counted、层级跳级）。
+
+### 3.5 公式规则（B2-06）
 
 | 规则 | 级别 | 默认 | 触发 |
 |---|---|---|---|
@@ -102,11 +110,10 @@
 - 不做：对任意 `:` 位置做猜测。
 - 解除条件：提供 canonical table parser 的 alignment 结果。
 
-### 4.4 HEADING_NUMBER_SEQUENCE_INVALID（BLOCKED）
+### 4.4 HEADING_NUMBER_SEQUENCE_INVALID（已由 B2b 实现）
 
-- 需要：编号服务暴露每标题的 effective number / sequence 事实。
-- 现状：诊断输入只有 `headingAutoNumbering.enabled` 与逐标题 `autoNumberingEffective`，没有编号序列；现有 `HEADING_LEVEL_GAP` / `HEADING_AUTO_NUMBER_CONFLICT` 不能替代。
-- 不做：按标题文本或序号字符串自行推导。
+- 已使用 canonical heading `counted` + `displayCountedPath`；不再 BLOCKED。
+- 不按标题文本/序号字符串自行推导。
 
 ### 4.5 FIGURE_IMAGE_FORMAT_UNSUPPORTED / 重复图片（BLOCKED）
 

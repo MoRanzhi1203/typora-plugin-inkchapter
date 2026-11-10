@@ -132,6 +132,12 @@ export interface DiagnosticHeadingFact {
    * legacy callers) means "not effective" → the conflict rule stays silent.
    */
   autoNumberingEffective?: boolean
+  /**
+   * B2b — canonical heading numbering authority facts. Only `counted` headings
+   * participate in the sequence rule; the path is the effective display path.
+   */
+  counted?: boolean
+  displayCountedPath?: readonly number[]
 }
 
 /**
@@ -327,6 +333,9 @@ export function resolveDocumentDiagnosticSeverity(
     case 'FORMULA_DUPLICATE_VISIBLE_TAG':
     case 'HEADING_DUPLICATE_IDENTITY':
       return 'error'
+    // B2b — an effective display-path gap is a structural numbering warning.
+    case 'HEADING_NUMBER_SEQUENCE_INVALID':
+      return 'warning'
     // TRAE V3 — an unclosed code fence / formula block swallows the rest of the
     // document as one protected range and a duplicate footnote definition breaks
     // the footnote model: all are ERRORS.
@@ -774,6 +783,7 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   'LATENT_ATX_HEADING_MARKER_LEVEL_6',
   // heading structure
   'HEADING_DUPLICATE_IDENTITY',
+  'HEADING_NUMBER_SEQUENCE_INVALID',
   'HEADING_DUPLICATE_TEXT',
   'HEADING_EMPTY_TEXT',
   'HEADING_LEVEL_GAP',
@@ -2843,8 +2853,50 @@ export function computeDocumentDiagnostics(
         prevLevel = h.level
       }
     }
+    // B2b — effective heading NUMBER sequence (canonical display path). This is
+    // NOT a re-derivation: only `counted` headings with an authority-provided
+    // path participate. A level-gap is owned by HEADING_LEVEL_GAP and resets the
+    // sequence baseline, so the two rules never double-report the same jump.
+    const lastNumberByDepth: number[] = []
+    let prevLevelForSequence: number | null = null
+    for (const h of input.headings) {
+      const levelGap = prevLevelForSequence != null && h.level > prevLevelForSequence + 1
+      prevLevelForSequence = h.level
+      if (levelGap) {
+        lastNumberByDepth.length = 0
+        continue
+      }
+      if (h.counted !== true) continue
+      const path = h.displayCountedPath
+      if (path == null || path.length === 0) continue
+      const depth = path.length
+      const actual = path[depth - 1]
+      if (!Number.isFinite(actual)) continue
+      const expected = (lastNumberByDepth[depth - 1] ?? 0) + 1
+      if (actual !== expected) {
+        push(
+          makeDiagnostic(input, 'heading', 'HEADING_NUMBER_SEQUENCE_INVALID',
+            `标题编号序列异常：${path.join('.')}（预期 ${[...path.slice(0, -1), expected].join('.')}）`, {
+            detail: `当前标题的有效显示编号为 ${path.join('.')}，同层级应连续递增。`,
+            stableIdentity: h.stableIdentity,
+            element: h.element,
+            targetIdentity: h.stableIdentity
+              ? `heading-number-sequence:${h.stableIdentity}`
+              : `heading-number-sequence:line:${h.element?.getAttribute?.('data-line') ?? ''}`,
+            kind: 'heading',
+            metadata: {
+              ruleId: 'HEADING-NUMBER-SEQUENCE-INVALID',
+              displayPath: path,
+              expectedNumber: expected,
+              actualNumber: actual,
+            },
+          }),
+        )
+      }
+      lastNumberByDepth[depth - 1] = actual
+      lastNumberByDepth.length = depth
+    }
   }
-
   // ── V5.15 §6/§9 — STANDALONE OBJECT BLOCK INVARIANT (figure structure gate) ──
   // The gate runs BEFORE every normal figure business rule. An invalid owning
   // block never reaches figure numbering / naming / resource diagnostics: it
