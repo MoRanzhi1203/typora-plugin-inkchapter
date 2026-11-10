@@ -230,6 +230,8 @@ export function collectDiagnosticsInput(
     tables: DocumentDiagnosticsInput['tables']
     codes: DocumentDiagnosticsInput['codes']
     formulas: DocumentDiagnosticsInput['formulas']
+    /** B2 §B2-06 — DOM-measured formula render facts (optional). */
+    formulaRenderFacts?: DocumentDiagnosticsInput['formulaRenderFacts']
     links: DocumentDiagnosticsInput['links']
     /**
      * Heading Auto-Number Conflict V1 §2/§4 — the numbering authority's global
@@ -288,6 +290,7 @@ export function collectDiagnosticsInput(
     tables: structural.tables,
     codes: structural.codes,
     formulas: structural.formulas,
+    formulaRenderFacts: structural.formulaRenderFacts,
     links: structural.links,
     canonicalDuplicateIdentities: ctx.authority.getCanonicalDuplicateIdentities(),
     captionDuplicateNames: ctx.authority.getCaptionDuplicateNames(),

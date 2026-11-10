@@ -54,6 +54,7 @@ import type {
   DiagnosticObjectFact,
   DocumentDiagnosticsComputed,
   DocumentDiagnosticsInput,
+  FormulaRenderFact,
   HeadingDiagnosticAuthority,
   LatentAtxMarkerInput,
 } from './document-diagnostics'
@@ -1305,6 +1306,8 @@ export class DocumentDiagnosticsAuthority {
     tables: DiagnosticObjectFact[]
     codes: DiagnosticObjectFact[]
     formulas: DiagnosticFormulaFact[]
+    /** B2 §B2-06 — DOM-measured formula render facts (PENDING when unmeasurable). */
+    formulaRenderFacts: FormulaRenderFact[]
     links: DiagnosticLinkFact[]
     /** Heading Auto-Number Conflict V1 §2/§4 — global effectiveness audit facts. */
     headingAutoNumbering: { enabled: boolean; h1NumberingEnabled: boolean; styleKey?: string }
@@ -1314,6 +1317,7 @@ export class DocumentDiagnosticsAuthority {
     const tables: DiagnosticObjectFact[] = []
     const codes: DiagnosticObjectFact[] = []
     const formulas: DiagnosticFormulaFact[] = []
+    const formulaRenderFacts: FormulaRenderFact[] = []
     const links: DiagnosticLinkFact[] = []
     // Phase 7R.3.11.8B.1 — canonical H1 authority bridge (WAIT/INVALID/READY).
     // Phase 7R.3.11.8B.4 — the SAME bridge is the ONLY diagnostics heading
@@ -1440,10 +1444,26 @@ export class DocumentDiagnosticsAuthority {
       // Formula — block math hosts; projection invariants only.
       let formulaOrdinal = 0
       for (const host of Array.from(root.querySelectorAll<HTMLElement>('.md-math-block'))) {
+        const identity = `block:formula:${formulaOrdinal++}`
         formulas.push({
           visibleTagTokens: this.providers.getFormulaVisibleTagTokens(host),
           element: host,
-          targetIdentity: `block:formula:${formulaOrdinal++}`,
+          targetIdentity: identity,
+        })
+        // B2 §B2-06 — measure the INTERNAL math content width, not the clipped
+        // host frame. `clientWidth === 0` (hidden / not laid out / jsdom) is
+        // PENDING, never an overflow.
+        const math = host.querySelector<HTMLElement>('.math, .mathjax, svg')
+        const rect = math?.getBoundingClientRect?.()
+        const natural = rect != null && Number.isFinite(rect.width) && rect.width > 0
+          ? rect.width
+          : (math?.scrollWidth ?? 0)
+        const available = host.clientWidth > 0 ? host.clientWidth : host.getBoundingClientRect?.().width ?? 0
+        formulaRenderFacts.push({
+          targetIdentity: identity,
+          status: natural > 0 && available > 0 ? 'MEASURED' : 'PENDING',
+          naturalWidth: natural > 0 ? natural : undefined,
+          availableWidth: available > 0 ? available : undefined,
         })
       }
     }
@@ -1546,7 +1566,7 @@ export class DocumentDiagnosticsAuthority {
       }
     }
 
-    return { headings, h1Facts, headingAuthority, latentAtxMarkers, figures, figureSourceOccurrences, tables, codes, formulas, links, headingAutoNumbering }
+    return { headings, h1Facts, headingAuthority, latentAtxMarkers, figures, figureSourceOccurrences, tables, codes, formulas, formulaRenderFacts, links, headingAutoNumbering }
   }
 
   /** Phase 7R.3.11.8B.4.1 — LATENT-ATX marker transition log (state-deduped). */

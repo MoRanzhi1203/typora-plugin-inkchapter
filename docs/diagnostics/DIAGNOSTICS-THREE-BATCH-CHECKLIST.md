@@ -32,14 +32,14 @@
 
 | ID | 任务 | 状态 | 证据 |
 |---|---|---|---|
-| B2-01 | 5 条 DEFERRED 正式实现 | TODO | — |
-| B2-02 | 表格结构规则 | TODO | — |
-| B2-03 | 列表结构规则 | TODO | — |
-| B2-04 | 标题 / 自动编号规则 | TODO | — |
-| B2-05 | 图片资源规则 | TODO | — |
-| B2-06 | 公式宽度 / 源码长度 / 单行 / 渲染失败 | TODO | — |
-| B2-07 | 注册、默认策略、测试、能力矩阵 | TODO | — |
-| B2-08 | B2 报告 + 门禁 + 合并 `main` | TODO | — |
+| B2-01 | 5 条 DEFERRED 正式实现 | PARTIAL：1 PASS + 4 BLOCKED | FRONTMATTER_MALFORMED 已实现；文件锚点 + 3 交叉引用无 canonical 语法/文件锚点权威 |
+| B2-02 | 表格结构规则 | PASS（列数）/ BLOCKED（对齐） | TABLE_COLUMN_COUNT_MISMATCH 行为测试；ALIGNMENT 无可靠语法权威 |
+| B2-03 | 列表结构规则 | PASS（缩进）/ TODO（标记/序号） | LIST_INDENTATION_INVALID 三例；合法混合标记/非 1 起始不误报 |
+| B2-04 | 标题 / 自动编号规则 | BLOCKED | 缺少 heading effective-number provider，未虚构 |
+| B2-05 | 图片资源规则 | BLOCKED | 缺少可靠 image file-info provider，未用扩展名猜测 |
+| B2-06 | 公式宽度 / 源码长度 / 单行 / 渲染失败 | PASS（4 项）/ TODO（高度可选） | 源码长度/单行/宽度/失败均有测试；高度默认关闭未做 |
+| B2-07 | 注册、默认策略、测试、能力矩阵 | PASS（已实现项） | 98 家族 / 104 解析代码 / 109 展开 / 105 生产器 / 100 可达 |
+| B2-08 | B2 报告 + 门禁 + 合并 `main` | DOING | 全量 330×5819 PASS；报告已生成；待合并 |
 
 ## B3 学术档案与 Compact Inspector UI
 

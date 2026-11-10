@@ -371,6 +371,12 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   CB104: 'warning',
   CB105: 'info',
   TABLE_EMPTY_CONTENT: 'info',
+  TABLE_COLUMN_COUNT_MISMATCH: 'warning',
+  LIST_INDENTATION_INVALID: 'warning',
+  FORMULA_SOURCE_LENGTH_EXCEEDING: 'warning',
+  FORMULA_SOURCE_LINE_TOO_LONG: 'warning',
+  FORMULA_RENDER_WIDTH_OVERFLOW: 'warning',
+  FORMULA_LATEX_RENDER_FAILED: 'error',
   FORMULA_EMPTY_CONTENT: 'info',
   BLOCKQUOTE_EMPTY: 'info',
   LATENT_ATX_HEADING_MARKER: 'info',
@@ -685,6 +691,17 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   // block (proven by the source parser, never by DOM position).
   TABLE_BLOCK_STRUCTURE_INVALID: rule('TABLE_BLOCK_STRUCTURE_INVALID', 'table', 'source-range'),
   TABLE_EMPTY_CONTENT: rule('TABLE_EMPTY_CONTENT', 'table', 'source-range', { area: 'document-completeness', scope: 'object' }),
+  // B2 §B2-02 — header / delimiter / body rows must expose the same cell count.
+  TABLE_COLUMN_COUNT_MISMATCH: rule('TABLE_COLUMN_COUNT_MISMATCH', 'table', 'source-range', {
+    area: 'table', capabilityCategory: 'table', scope: 'object',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  // B2 §B2-03 — conservative source list-tree indentation (dedent to a level
+  // that never existed). Mixed markers / non-1 ordered starts are NOT errors.
+  LIST_INDENTATION_INVALID: rule('LIST_INDENTATION_INVALID', 'document', 'source-range', {
+    area: 'document-format', capabilityCategory: 'document', scope: 'block',
+    reasonChip: false, producerAuthority: 'computeDocumentDiagnostics',
+  }),
   CODE_MISSING_NAME: rule('CODE_MISSING_NAME', 'code', 'block-node'),
   CODE_MISSING_LANGUAGE: rule('CODE_MISSING_LANGUAGE', 'code', 'block-node'),
   CODE_DUPLICATE_NAME: rule('CODE_DUPLICATE_NAME', 'code', 'multi-target'),
@@ -768,6 +785,27 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   // `source-block` locator is figure-specific and must not be reused here.
   FORMULA_BLOCK_STRUCTURE_INVALID: rule('FORMULA_BLOCK_STRUCTURE_INVALID', 'formula', 'source-range'),
   FORMULA_EMPTY_CONTENT: rule('FORMULA_EMPTY_CONTENT', 'formula', 'source-range', { area: 'document-completeness', scope: 'object' }),
+  // B2 §B2-06 — source length / single-line length are opt-in (default off).
+  FORMULA_SOURCE_LENGTH_EXCEEDING: rule('FORMULA_SOURCE_LENGTH_EXCEEDING', 'formula', 'source-range', {
+    area: 'formula', capabilityCategory: 'formula', scope: 'object',
+    producerAuthority: 'computeDocumentDiagnostics', defaultEnabled: false,
+    runtimeAvailabilityReason: 'OPT_IN_FORMULA_SOURCE_LENGTH',
+  }),
+  FORMULA_SOURCE_LINE_TOO_LONG: rule('FORMULA_SOURCE_LINE_TOO_LONG', 'formula', 'source-range', {
+    area: 'formula', capabilityCategory: 'formula', scope: 'object',
+    producerAuthority: 'computeDocumentDiagnostics', defaultEnabled: false,
+    runtimeAvailabilityReason: 'OPT_IN_FORMULA_SOURCE_LINE',
+  }),
+  // B2 §B2-06 — rendered width / render failure only when the runtime provider
+  // supplies a MEASURED / FAILED fact; absent facts stay PENDING (no diagnostic).
+  FORMULA_RENDER_WIDTH_OVERFLOW: rule('FORMULA_RENDER_WIDTH_OVERFLOW', 'formula', 'block-node', {
+    area: 'formula', capabilityCategory: 'formula', scope: 'object',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  FORMULA_LATEX_RENDER_FAILED: rule('FORMULA_LATEX_RENDER_FAILED', 'formula', 'block-node', {
+    area: 'formula', capabilityCategory: 'formula', scope: 'object',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
   BLOCKQUOTE_EMPTY: rule('BLOCKQUOTE_EMPTY', 'document', 'source-range', { area: 'document-completeness', scope: 'block' }),
   LINK_LOCAL_TARGET_MISSING: rule('LINK_LOCAL_TARGET_MISSING', 'link', 'block-node'),
 
@@ -819,12 +857,12 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
     presentationKind: 'source-syntax-error',
     suppressionGroup: 'frontmatter-integrity', producerAuthority: 'computeDocumentDiagnostics',
   }),
-  // NO canonical YAML parser exists in the repo → MALFORMED can never be faked
-  // with a regex. It registers as DEFERRED with the explicit reason.
+  // B2 — a conservative YAML-subset validator (tab indentation / duplicate
+  // top-level key / missing colon) owns MALFORMED; UNCLOSED suppresses it.
   FRONTMATTER_MALFORMED: rule('FRONTMATTER_MALFORMED', 'document', 'source-range', {
-    area: 'document-state', capabilityCategory: 'document', scope: 'document', internalSeverity: 'warning',
+    area: 'document-state', capabilityCategory: 'document', scope: 'source-syntax', internalSeverity: 'warning',
     suppressionGroup: 'frontmatter-integrity', suppressionParentFamilyId: 'FRONTMATTER_UNCLOSED',
-    implementationStatus: 'DEFERRED_BY_SPEC', producerAuthority: 'NONE',
+    producerAuthority: 'computeDocumentDiagnostics',
   }),
   TABLE_HEADER_EMPTY: rule('TABLE_HEADER_EMPTY', 'table', 'target-group', {
     area: 'table', capabilityCategory: 'table', scope: 'object', internalSeverity: 'info',

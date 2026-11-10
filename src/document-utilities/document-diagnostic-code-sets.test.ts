@@ -10,11 +10,11 @@ const audit = computeDocumentDiagnosticCodeSetAudit()
 
 describe('B1 §B1-01 — diagnostic code-set authority', () => {
   it('keeps families, resolved keys, expanded codes and producer codes separate', () => {
-    expect(audit.counts.registeredFamilyCount).toBe(92)
-    expect(audit.counts.registryResolvedKeyCount).toBe(98)
-    expect(audit.counts.expandedRuntimeCodeCount).toBe(103)
-    expect(audit.counts.producerSupportedCodeCount).toBe(98)
-    expect(audit.counts.runtimeReachableCodeCount).toBe(95)
+    expect(audit.counts.registeredFamilyCount).toBe(98)
+    expect(audit.counts.registryResolvedKeyCount).toBe(104)
+    expect(audit.counts.expandedRuntimeCodeCount).toBe(109)
+    expect(audit.counts.producerSupportedCodeCount).toBe(105)
+    expect(audit.counts.runtimeReachableCodeCount).toBe(100)
   })
 
   it('expands LATENT to six concrete codes but keeps one registry sentinel', () => {
@@ -27,17 +27,17 @@ describe('B1 §B1-01 — diagnostic code-set authority', () => {
     expect(audit.differences.registryResolvedNotExpanded).toEqual(['LATENT_ATX_HEADING_MARKER_*'])
   })
 
-  it('producer 98 and registry 98 are the SAME SIZE but NOT the same set', () => {
-    expect(audit.counts.producerSupportedCodeCount).toBe(audit.counts.registryResolvedKeyCount)
+  it('producer 105 and registry 104 differ in BOTH size and set', () => {
+    expect(audit.counts.producerSupportedCodeCount).toBe(105)
+    expect(audit.counts.registryResolvedKeyCount).toBe(104)
     expect(audit.differences.producerNotRegistryResolved).toEqual([...LATENT_ATX_LEVEL_CODES].sort())
     expect(audit.differences.registryResolvedNotProducer).toEqual(
       [
-        'FRONTMATTER_MALFORMED',
+        'FIGURE_REFERENCE_TARGET_MISSING',
+        'FORMULA_REFERENCE_TARGET_MISSING',
         'LATENT_ATX_HEADING_MARKER_*',
         'LINK_LOCAL_FILE_ANCHOR_MISSING',
-        'FIGURE_REFERENCE_TARGET_MISSING',
         'TABLE_REFERENCE_TARGET_MISSING',
-        'FORMULA_REFERENCE_TARGET_MISSING',
       ].sort(),
     )
   })
@@ -49,53 +49,58 @@ describe('B1 §B1-01 — diagnostic code-set authority', () => {
     expect(audit.deferredFamilies).toEqual([
       'FIGURE_REFERENCE_TARGET_MISSING',
       'FORMULA_REFERENCE_TARGET_MISSING',
-      'FRONTMATTER_MALFORMED',
       'LINK_LOCAL_FILE_ANCHOR_MISSING',
       'TABLE_REFERENCE_TARGET_MISSING',
     ])
     expect(audit.deferredCodes).toEqual([
       'FIGURE_REFERENCE_TARGET_MISSING',
       'FORMULA_REFERENCE_TARGET_MISSING',
-      'FRONTMATTER_MALFORMED',
       'LINK_LOCAL_FILE_ANCHOR_MISSING',
       'TABLE_REFERENCE_TARGET_MISSING',
     ])
   })
 
-  it('reachability is derived from defaultEnabled + knownUnreachable, not from a hand-written 94/95', () => {
-    expect(audit.defaultDisabledCodes).toEqual(['CB008', 'CB010'])
+  it('reachability is derived from defaultEnabled + knownUnreachable, not from a hand-written number', () => {
+    expect(audit.defaultDisabledCodes).toEqual([
+      'CB008',
+      'CB010',
+      'FORMULA_SOURCE_LENGTH_EXCEEDING',
+      'FORMULA_SOURCE_LINE_TOO_LONG',
+    ])
     expect(audit.knownUnreachableCodes).toEqual(['STRICT_FIRST_H1_DOCUMENT_EMPTY'])
-    expect(audit.producerUnreachableCodes).toEqual(['CB008', 'CB010', 'STRICT_FIRST_H1_DOCUMENT_EMPTY'])
+    expect(audit.producerUnreachableCodes).toEqual([
+      'CB008',
+      'CB010',
+      'FORMULA_SOURCE_LENGTH_EXCEEDING',
+      'FORMULA_SOURCE_LINE_TOO_LONG',
+      'STRICT_FIRST_H1_DOCUMENT_EMPTY',
+    ])
     expect(audit.runtimeReachableCodes).toContain('CB007')
     expect(audit.runtimeReachableCodes).not.toContain('STRICT_FIRST_H1_DOCUMENT_EMPTY')
     expect(audit.runtimeReachableCodes).not.toContain('CB008')
     expect(audit.runtimeReachableCodes).not.toContain('CB010')
+    expect(audit.runtimeReachableCodes).not.toContain('FORMULA_SOURCE_LENGTH_EXCEEDING')
+    expect(audit.runtimeReachableCodes).not.toContain('FORMULA_SOURCE_LINE_TOO_LONG')
     expect(audit.invariants.reachablePlusUnreachableEqualsProducer).toBe(true)
-    expect(audit.counts.runtimeReachableCodeCount).toBe(95)
+    expect(audit.counts.runtimeReachableCodeCount).toBe(100)
   })
 
   it('severity counts are conserved in baseline and strict modes', () => {
-    expect(audit.counts.expandedBySeverity).toEqual({ error: 12, warning: 62, hint: 29 })
-    expect(audit.counts.expandedBySeverityStrict).toEqual({ error: 14, warning: 66, hint: 23 })
-    expect(audit.counts.producerBySeverity).toEqual({ error: 12, warning: 57, hint: 29 })
-    expect(audit.counts.producerBySeverityStrict).toEqual({ error: 14, warning: 61, hint: 23 })
-    expect(audit.counts.reachableBySeverity).toEqual({ error: 12, warning: 56, hint: 27 })
-    expect(audit.counts.reachableBySeverityStrict).toEqual({ error: 14, warning: 60, hint: 21 })
-    for (const counts of [
-      audit.counts.expandedBySeverity,
-      audit.counts.expandedBySeverityStrict,
-      audit.counts.producerBySeverity,
-      audit.counts.producerBySeverityStrict,
-      audit.counts.reachableBySeverity,
-      audit.counts.reachableBySeverityStrict,
-    ]) {
-      expect(counts.error + counts.warning + counts.hint).toBe(
-        counts === audit.counts.expandedBySeverity || counts === audit.counts.expandedBySeverityStrict
-          ? 103
-          : counts === audit.counts.producerBySeverity || counts === audit.counts.producerBySeverityStrict
-            ? 98
-            : 95,
-      )
+    expect(audit.counts.expandedBySeverity).toEqual({ error: 13, warning: 67, hint: 29 })
+    expect(audit.counts.expandedBySeverityStrict).toEqual({ error: 15, warning: 71, hint: 23 })
+    expect(audit.counts.producerBySeverity).toEqual({ error: 13, warning: 63, hint: 29 })
+    expect(audit.counts.producerBySeverityStrict).toEqual({ error: 15, warning: 67, hint: 23 })
+    expect(audit.counts.reachableBySeverity).toEqual({ error: 13, warning: 60, hint: 27 })
+    expect(audit.counts.reachableBySeverityStrict).toEqual({ error: 15, warning: 64, hint: 21 })
+    for (const [counts, total] of [
+      [audit.counts.expandedBySeverity, 109],
+      [audit.counts.expandedBySeverityStrict, 109],
+      [audit.counts.producerBySeverity, 105],
+      [audit.counts.producerBySeverityStrict, 105],
+      [audit.counts.reachableBySeverity, 100],
+      [audit.counts.reachableBySeverityStrict, 100],
+    ] as const) {
+      expect(counts.error + counts.warning + counts.hint).toBe(total)
     }
   })
 
