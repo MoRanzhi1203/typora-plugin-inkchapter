@@ -100,7 +100,7 @@ BLOCKED（有证据）：
 
 BLOCKED / NEEDS_MANUAL：
 - 学术/实验报告其余可选规则：无确定语义，未虚构规则 ID。
-- 真实 GUI/DPI/主题/DOMRect：无法在 DSH 完成控件级点击/截屏验收，标记 NEEDS_MANUAL。
+- 真实 GUI/DPI/主题/DOMRect：无法在 DSH 完成控件级点击/截屏验收，标记 NEEDS_MANUAL。本轮尝试 `--user-data-dir` 隔离 Typora 实例，未出现新窗口（单实例行为），未伪造截图。
 - profile 设置页/版心写入已实现代码级与设置页接线；真实视觉仍 NEEDS_MANUAL。
 
 报告：`DIAGNOSTICS-BATCH-3-REPORT.md`。
