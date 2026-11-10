@@ -52,7 +52,7 @@
 | B3-05 | 诊断列表 UI 语义 | 沿用 B1/B2 | 事件/行数语义已在 B1 落地 |
 | B3-06 | 图片页 / 锁定 / 导航器 | NEEDS_MANUAL | 既有能力保留；未 GUI 重验收 |
 | B3-07 | 真实 Typora GUI / DPI / 主题 / DOMRect 验收 | NEEDS_MANUAL | 无控件级点击/截图能力；未伪造证据 |
-| B3-08 | B3 报告 + 门禁 + 合并 `main` | PASS（PARTIAL 记录） | 全量 331×5832 PASS；merge `842074c` |
+| B3-08 | B3 报告 + 门禁 + 合并 `main` | PASS（PARTIAL 记录） | 全量 331×5838 PASS；merge `842074c` + B3b `ca29669` |
 
 ## 最终
 

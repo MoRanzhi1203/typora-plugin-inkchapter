@@ -16,9 +16,9 @@
 | B1 合并 | `main` | `19bf0dc` | 代码/测试 PASS；GUI NEEDS_MANUAL |
 | B2 合并 | `main` | `8d5e475` | PARTIAL；7 条规则实现，4 条 DEFERRED BLOCKED |
 | B2b 合并 | `main` | `c722e3a` | HEADING_NUMBER_SEQUENCE_INVALID 实现，B2 规则增至 8 条 |
-| B3b 合并 | `main` | 本次 B3b merge | profile 设置页/持久化 + 版心 CSS 变量；代码 PASS，GUI NEEDS_MANUAL |
+| B3b 合并 | `main` | `ca29669` | profile 设置页/持久化 + 版心 CSS 变量；代码 PASS，GUI NEEDS_MANUAL |
 | B3 合并 | `main` | `842074c` | PARTIAL；profile/width 纯模型 PASS，UI/GUI BLOCKED/NEEDS_MANUAL |
-| 最终报告提交 | `main` | 本次 docs commit 后 `git rev-parse main` | 本文提交 |
+| 最终 main | `main` | `ca29669`（B3b 合并；本报告提交后更新为最新 docs commit） | **未推送**；远端保护/可用性未验证，本地保留全部提交 |
 | 远端 | `origin` | `origin/main` 仍为 `6341c06` | **未推送**；远端可用性/保护规则未验证，本地保留全部提交 |
 
 未执行 `reset --hard` / `clean -fd` / `push --force`；未删除分支、stash、worktree；既有 stash 与 `runtime/ab/A|B` worktree 未触碰。
