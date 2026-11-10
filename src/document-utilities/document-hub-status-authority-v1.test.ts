@@ -125,10 +125,62 @@ describe('V5.2 hub status authority', () => {
     expect(statusEl().dataset['status']).toBe('YELLOW')
     expect(statusEl().dataset['warningCount']).toBe('1')
     expect(square().style.backgroundColor).toBe('rgb(212, 154, 38)')
+    expect(getComputedStyle(square()).backgroundColor).toBe('rgb(212, 154, 38)')
     openHub(host)
     const rows = document.querySelectorAll('.inkchapter-doc-expand__diag')
     expect(rows).toHaveLength(1)
     expect(document.querySelector('.inkchapter-doc-expand__summary')?.textContent).toContain('1 项警告')
+  })
+
+  it('B1 §B1-02 — a stale same-document revision is rejected by the admission fence', () => {
+    const host = mountHost()
+    const admit = (host as unknown as {
+      admitDiagnosticsSnapshot: (
+        snapshot: DocumentDiagnosticsSnapshot,
+        source: string,
+      ) => { decision: string; reason: string }
+    }).admitDiagnosticsSnapshot.bind(host)
+    const fresh = snapshotFor('doc:a', 'warning', 2, true)
+    fresh.revision = 2
+    expect(admit(fresh, 'TEST').decision).toBe('ADMITTED')
+    const stale = snapshotFor('doc:a', 'warning', 0, true)
+    stale.revision = 1
+    const rejected = admit(stale, 'TEST')
+    expect(rejected.decision).toBe('DISCARD_STALE_DIAGNOSTICS_RESULT')
+    expect(rejected.reason).toBe('STALE_REVISION')
+  })
+
+  it('B1 §B1-03 — a multi-target warning is ONE event but TWO clickable rows', () => {
+    const host = mountHost()
+    const multi = diagnostic('doc:a:multi', 'warning') as unknown as Record<string, unknown>
+    multi['code'] = 'HEADING_DUPLICATE_TEXT'
+    multi['category'] = 'heading'
+    multi['location'] = {
+      kind: 'multi-target',
+      targets: [
+        { kind: 'source-range', startLine: 1, startColumn: 0 },
+        { kind: 'source-range', startLine: 4, startColumn: 0 },
+      ],
+    }
+    inject(host, {
+      documentKey: 'doc:a',
+      revision: 1,
+      sourceRevision: 1,
+      generatedAt: 0,
+      diagnostics: [multi as unknown as DocumentDiagnosticsSnapshot['diagnostics'][number]],
+      errorCount: 0,
+      warningCount: 1,
+      infoCount: 0,
+      structuralVerified: true,
+    } as DocumentDiagnosticsSnapshot)
+    expect(statusEl().dataset['status']).toBe('YELLOW')
+    expect(statusEl().dataset['warningCount']).toBe('1')
+    expect(getComputedStyle(square()).backgroundColor).toBe('rgb(212, 154, 38)')
+    openHub(host)
+    expect(document.querySelectorAll('.inkchapter-doc-expand__diag')).toHaveLength(2)
+    const summary = document.querySelector('.inkchapter-doc-expand__summary')?.textContent ?? ''
+    expect(summary).toContain('1 项警告')
+    expect(summary).toContain('2 行')
   })
 
   it('freezes the severity matrix: error > warning > hint > green, unknown gray', () => {

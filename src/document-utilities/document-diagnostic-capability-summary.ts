@@ -34,6 +34,7 @@ import {
   type DocumentDiagnosticClosureAuthorityInput,
 } from './document-diagnostic-runtime-closure-authority'
 import { EMPTY_DOCUMENT_DIAGNOSTIC_STATIC_TEST_MANIFEST } from './document-diagnostic-static-test-manifest'
+import { computeDocumentDiagnosticCodeSetAudit } from './document-diagnostic-code-sets'
 
 // §6 — the Runtime Code Resolver lives in the registry module; re-exported here
 // so existing consumers keep a single import site.
@@ -63,6 +64,12 @@ export interface DocumentDiagnosticCapabilitySummary {
   partialFamilyCount: number
   unverifiedFamilyCount: number
   deferredClosureFamilyCount: number
+
+  // B1 §B1-01 — availability counts derived from the code-set authority.
+  defaultEnabledFamilyCount: number
+  defaultDisabledFamilyCount: number
+  runtimeReachableCodeCount: number
+  runtimeUnreachableCodeCount: number
 }
 
 export interface DocumentDiagnosticCapabilityMatrixRow {
@@ -105,6 +112,7 @@ export function resolveDocumentDiagnosticCapabilitySummary(
   input: DocumentDiagnosticClosureAuthorityInput = {},
 ): DocumentDiagnosticCapabilitySummary {
   const counts = countFamiliesAndCodes()
+  const codeSets = computeDocumentDiagnosticCodeSetAudit()
   let errorFamilyCount = 0
   let warningFamilyCount = 0
   let hintFamilyCount = 0
@@ -139,6 +147,10 @@ export function resolveDocumentDiagnosticCapabilitySummary(
     partialFamilyCount,
     unverifiedFamilyCount,
     deferredClosureFamilyCount,
+    defaultEnabledFamilyCount: collectFamilies().filter(meta => meta.defaultEnabled).length,
+    defaultDisabledFamilyCount: collectFamilies().filter(meta => !meta.defaultEnabled).length,
+    runtimeReachableCodeCount: codeSets.counts.runtimeReachableCodeCount,
+    runtimeUnreachableCodeCount: codeSets.producerUnreachableCodes.length,
   }
 }
 
@@ -243,6 +255,10 @@ export function formatDocumentDiagnosticCapabilityMatrixMarkdown(
   lines.push(`PARTIAL_FAMILY_COUNT=${summary.partialFamilyCount}`)
   lines.push(`UNVERIFIED_FAMILY_COUNT=${summary.unverifiedFamilyCount}`)
   lines.push(`DEFERRED_CLOSURE_FAMILY_COUNT=${summary.deferredClosureFamilyCount}`)
+  lines.push(`DEFAULT_ENABLED_FAMILY_COUNT=${summary.defaultEnabledFamilyCount}`)
+  lines.push(`DEFAULT_DISABLED_FAMILY_COUNT=${summary.defaultDisabledFamilyCount}`)
+  lines.push(`RUNTIME_REACHABLE_CODE_COUNT=${summary.runtimeReachableCodeCount}`)
+  lines.push(`RUNTIME_UNREACHABLE_CODE_COUNT=${summary.runtimeUnreachableCodeCount}`)
   lines.push('```')
   lines.push('')
   lines.push(`| ${MATRIX_COLUMNS.join(' | ')} |`)

@@ -320,9 +320,11 @@ describe('TRAE rebase §13.2–13.6 — generic code-diagnostic pipeline', () =>
       headings: [], figures: [], tables: [], codes, formulas: [], links: [],
       canonicalDuplicateIdentities: [], captionDuplicateNames: [],
     })
-    // Code A — empty + named + language.
+    // Code A — empty + named + language: CB009 owns the caption overlap, so the
+    // generic CODE_EMPTY_BLOCK is suppressed for this exact case (B1 §B1-05).
     const a = computeDocumentDiagnostics(input('```python\n```\n', [code('代码 1', 'python', 0)]))
-    expect(a.diagnostics.some(d => d.code === CODE_EMPTY_BLOCK_CODE)).toBe(true)
+    expect(a.diagnostics.some(d => d.code === 'CB009')).toBe(true)
+    expect(a.diagnostics.some(d => d.code === CODE_EMPTY_BLOCK_CODE)).toBe(false)
     expect(a.diagnostics.some(d => d.code === 'CODE_MISSING_NAME')).toBe(false)
     expect(a.diagnostics.some(d => d.code === 'CODE_MISSING_LANGUAGE')).toBe(false)
     // Code B — non-empty + missing name.

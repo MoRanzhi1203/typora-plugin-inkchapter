@@ -22952,23 +22952,18 @@ export class DocumentUtilityOverlayHost {
         targetCount: projection.targetCount,
       }
     })
-    // Counts derive from the rendered list itself: the overview ("N 项警告"),
-    // the filter counts and the square color share ONE source of truth.
-    const counts = { error: 0, warning: 0, hint: 0 }
-    for (const item of diagnostics) {
-      if (item.severity === 'error') counts.error++
-      else if (item.severity === 'warning') counts.warning++
-      else counts.hint++
-    }
+    // B1 §B1-03 — status/square counts are NORMALIZED DIAGNOSTIC EVENTS (the
+    // document-domain projection), never the expanded row count. A multi-target
+    // warning stays ONE warning; the list still renders N clickable rows.
     const facts = {
       hasDocument: documentPath != null,
       diagnosticsEnabled: true,
       checking: false,
       structuralVerified: this.snapshot?.structuralVerified !== false,
       hasProjection: projection.hasProjection && !noDoc,
-      errorCount: counts.error,
-      warningCount: counts.warning,
-      hintCount: counts.hint,
+      errorCount: noDoc ? 0 : projection.errorCount,
+      warningCount: noDoc ? 0 : projection.warningCount,
+      hintCount: noDoc ? 0 : projection.hintCount,
     }
     const view = buildDocumentStatusView(facts, locked)
     const image = this.opts.documentHub?.getImageSummary?.() ?? null

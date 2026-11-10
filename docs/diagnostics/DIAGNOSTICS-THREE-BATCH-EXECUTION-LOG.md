@@ -75,4 +75,18 @@
 
 ## 追加记录
 
+### 2026-11-10 — B1 诊断可靠性
+
+- 分支：`feature/diagnostics-b1-reliability`（从 `BASELINE_MAIN_SHA=4017d598134720396fe28ccae53488e9f95886ac` 创建）
+- 代码集合：92 家族 / 98 注册解析代码 / 103 展开代码 / 98 生产器代码 / 95 可达代码（CB008、CB010、STRICT_FIRST_H1_DOCUMENT_EMPTY 不可达）
+- 严重程度：注册表基准 12/62/29；可达 12/56/27；strict 可达 14/60/21
+- 定向测试：B1 相关 16 文件 / 328 tests PASS
+- 全量测试：329 文件 / 5805 tests PASS，129.25s
+- TypeScript：PASS
+- 构建：PASS，dist/main.js SHA256 `FD45A411B5B514161CAD673D975FE7EF7E6B728178381C9B64CCD493AFE1C4B4`
+- 隐私：PASS（SCANNED_LINES=0）；文档：PASS（DOC_BROKEN_LINK_COUNT=0）
+- GUI：`NEEDS_MANUAL`（自动测试无法代替真实 Typora 像素/点击验收；未伪造截图或 runtime closure）
+- B1 报告：`docs/diagnostics/DIAGNOSTICS-BATCH-1-REPORT.md`
+- 合并：待执行（本记录先于 merge commit；合并 SHA 见下一节）
+
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）

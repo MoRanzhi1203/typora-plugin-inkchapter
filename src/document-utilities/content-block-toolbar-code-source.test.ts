@@ -65,6 +65,15 @@ describe('CONTENT-TOOLBAR-CODE-SOURCE parse', () => {
     const md = '```\r\na\r\nb\r\n```\r\n'
     const [block] = parseFencedCodeBlocks(md)
     expect(block.text).toBe('a\nb')
+    // B1 §B1-04 — raw line endings survive for CB007, including the last line.
+    expect(block.rawText).toBe('a\r\nb\r\n')
+  })
+
+  it('keeps mixed CRLF/LF observable in rawText while text stays LF-normalized', () => {
+    const md = '```\r\na\nb\r\n```\r\n'
+    const [block] = parseFencedCodeBlocks(md)
+    expect(block.text).toBe('a\nb')
+    expect(block.rawText).toBe('a\nb\r\n')
   })
 
   it('keeps multiple fences in document order', () => {

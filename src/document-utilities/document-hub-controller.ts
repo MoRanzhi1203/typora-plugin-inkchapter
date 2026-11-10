@@ -200,7 +200,14 @@ export class DocumentHubController {
   }
 
   update(view: DocumentStatusView, model: DocumentHubModel): void {
-    this.model = model
+    // B1 §B1-03 — the passed view is the ONE severity authority for this frame.
+    // Bind it onto the model so a caller can never mix a stale model.status with
+    // a newer view (the previous row-count implementation hid that mismatch).
+    this.model = {
+      ...model,
+      status: view,
+      rowCount: model.rowCount ?? model.diagnostics.length,
+    }
     this.statusView = view
     if (!this.rootEl) this.mount()
     const el = this.statusEl!
@@ -395,10 +402,13 @@ export class DocumentHubController {
       return box
     }
 
+    // B1 §B1-03 — severity counts are NORMALIZED DIAGNOSTIC EVENTS from the ONE
+    // status authority. Multi-target rows are a view detail and never inflate
+    // the warning/error/hint counts.
     const counts = {
-      error: model.diagnostics.filter(item => item.severity === 'error').length,
-      warning: model.diagnostics.filter(item => item.severity === 'warning').length,
-      info: model.diagnostics.filter(item => item.severity === 'info' || item.severity === 'hint').length,
+      error: model.status.errorCount,
+      warning: model.status.warningCount,
+      info: model.status.hintCount,
     }
     box.appendChild(this.buildOverviewLine(model, counts))
 
@@ -442,9 +452,12 @@ export class DocumentHubController {
     if (counts.error > 0) parts.push(`${counts.error} 项错误`)
     if (counts.warning > 0) parts.push(`${counts.warning} 项警告`)
     if (counts.info > 0) parts.push(`${counts.info} 项提示`)
-    summary.textContent = parts.length > 0
-      ? parts.join(' · ')
-      : ((this.statusView?.code ?? model.status.code) === 'GRAY' ? '未检查' : '未发现问题')
+    const eventTotal = counts.error + counts.warning + counts.info
+    const isGray = (this.statusView?.code ?? model.status.code) === 'GRAY'
+    if (!isGray && model.rowCount !== eventTotal) parts.push(`${model.rowCount} 行`)
+    summary.textContent = isGray
+      ? '未检查'
+      : (parts.length > 0 ? parts.join(' · ') : '未发现问题')
     summary.setAttribute('aria-label', `检测结果：${summary.textContent}`)
     line.appendChild(summary)
 
@@ -491,7 +504,7 @@ export class DocumentHubController {
     popup.setAttribute('role', 'menu')
     popup.setAttribute('aria-label', '按严重级别筛选')
     const items = [
-      { id: 'all' as const, label: '全部', count: this.model?.diagnostics.length ?? 0 },
+      { id: 'all' as const, label: '全部', count: this.model?.rowCount ?? 0 },
       { id: 'error' as const, label: '错误', count: counts.error },
       { id: 'warning' as const, label: '警告', count: counts.warning },
       { id: 'info' as const, label: '提示', count: counts.info },

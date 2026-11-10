@@ -143,6 +143,14 @@ export interface StrictFirstH1ValidationResult {
  * - first block is H1 → PASS.
  * - anything else first → FAIL (STRICT_FIRST_H1_VIOLATION).
  */
+/**
+ * Legacy DOM-first first-H1 validator.
+ *
+ * @deprecated B1 §B1-04 — production diagnostics and the reactive runtime use
+ * `validateStrictFirstH1Topline()` (source-line authority). This function is
+ * retained for compatibility with its historical unit tests only; it is NOT
+ * imported by any production module. Do not add new production callers.
+ */
 export function validateStrictFirstH1(
   firstBlock: FirstSemanticBlock | null,
   mode: 'strict' | 'loose',
