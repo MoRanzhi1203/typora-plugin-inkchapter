@@ -109,6 +109,7 @@ import {
   B2_FORMULA_SOURCE_LENGTH_LIMIT,
   B2_FORMULA_SOURCE_LINE_LIMIT,
 } from './document-diagnostics-b2-authority'
+import type { ResolvedDiagnosticProfile } from './document-diagnostic-profile-v1'
 
 /** 0-based source line text (CR stripped) — the source-range `rawText` anchor. */
 function lineTextAt(markdown: string | null, line: number): string {
@@ -534,6 +535,11 @@ export interface DocumentDiagnosticsInput {
    * render-failure rules stay PENDING (never a false overflow/failure).
    */
   formulaRenderFacts?: readonly FormulaRenderFact[]
+  /**
+   * B3 §B3-01 — the resolved diagnostic profile. It supplies opt-in formula
+   * source limits and the content-width cap; absent = general defaults.
+   */
+  diagnosticProfile?: ResolvedDiagnosticProfile
   links: readonly DiagnosticLinkFact[]
   canonicalDuplicateIdentities: readonly string[]
   /**
@@ -1846,7 +1852,7 @@ function emitB2SourceDiagnostics(
     }))
   }
 
-  const limits = input.formulaSourceRules
+  const limits = input.formulaSourceRules ?? input.diagnosticProfile?.formulaSourceRules
   if (limits != null) {
     const lengthLimit = limits.lengthLimit ?? B2_FORMULA_SOURCE_LENGTH_LIMIT
     const lineLimit = limits.lineLimit ?? B2_FORMULA_SOURCE_LINE_LIMIT
@@ -1925,7 +1931,10 @@ function emitB2SourceDiagnostics(
     }
     if (fact.status !== 'MEASURED') continue
     if (!Number.isFinite(fact.naturalWidth) || !Number.isFinite(fact.availableWidth)) continue
-    const available = fact.availableWidth as number
+    const available = Math.min(
+      fact.availableWidth as number,
+      input.diagnosticProfile?.contentWidthPx ?? Number.POSITIVE_INFINITY,
+    )
     const natural = fact.naturalWidth as number
     if (available <= 0 || natural <= available) continue
     const ratio = natural / available
