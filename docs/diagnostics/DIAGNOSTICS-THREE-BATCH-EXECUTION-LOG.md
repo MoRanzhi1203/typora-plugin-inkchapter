@@ -181,7 +181,7 @@
 - 分支：`feature/diagnostics-image-evidence-runtime`（从 `76e6420` 创建）
 - 图片：`image-evidence-runtime.ts` 文档隔离 5 tests；main 在 edit/active-leaf/mount 预热；诊断输入 `imageEvidenceByDestination`；B2 字节优先 2 tests；`rewriteInsertedReference` 失效旧/新路径
 - Heading：`document-heading-dom-anchor-v1.ts` 只读 Typora 实际 DOM id，重复/断开 UNKNOWN；6 tests；未接跨文件规则
-- GUI：`GUI_ACCEPTANCE_DEVTOOLS.js` 只读脚本 + `GUI_ACCEPTANCE_PROCEDURE.md`；旧实例 3AFA，集成构建 17E64A2 已复制
+- GUI：`GUI_ACCEPTANCE_DEVTOOLS.js` 只读脚本 + `GUI_ACCEPTANCE_PROCEDURE.md`；runtime-load 已更新为 17E64A2（03:14:50，initializationCount=1）；真实收起态证据 dpr=1.25、YELLOW、warning=10、0 DOM 行、tabs/panel 0×0
 - 构建修复：`node:fs` 别名被插件动态 import 转换导致 esbuild 失败；改为 `fs/promises` 的 `open` 后构建 PASS
 - 全量测试：336 文件 / 5878 tests PASS，189.21s
 - 构建：PASS，`dist/main.js` SHA256 `17E64A21388DDE062A0F0E529AD508DB76BE759F6FD36610F27AC6238B9F5762`

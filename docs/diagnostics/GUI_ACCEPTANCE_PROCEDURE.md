@@ -1,8 +1,9 @@
 # GUI 验收脚本与步骤（真实 Typora）
 
-> 本轮 Typora 旧实例运行的是旧 build `3AFA056A…`，集成后的新 build `17E64A2…` 已复制到
-> `test/vault/.typora/plugins/dist/main.js`。请**人工启动 Typora**（不是本会话的
-> `Start-Process`），打开测试文档后按下列步骤采证。
+> 当前 Typora 已真实加载新 build `17E64A2…`（`inkchapter-runtime-load.json` 03:14:50，
+> `initializationCount=1`），DevTools 窗口已打开。用户已提供收起态证据：
+> dpr 1.25、YELLOW、10 warnings、0 DOM 行、tabs/panel 0×0。请用**新脚本**复采 A–E，
+> 重点验证三态判定与多目标。
 >
 > 没有远程调试端口 **不等于** GUI 不可测试：Typora 自带 DevTools（`Shift+F12` 或
 > `视图 → 开发者工具`），脚本为只读，不点击、不写入。
