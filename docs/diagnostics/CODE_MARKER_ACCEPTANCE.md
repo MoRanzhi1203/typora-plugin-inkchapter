@@ -294,3 +294,64 @@ CODE_MISSING_LANGUAGE block:code:2
 - 代码 marker 套件 **7/7**；document-space 套件 **29/29**；全量 **339 文件 / 5914 tests PASS**。
 - BUILD = DEPLOY：`dist/main.js` `BEDD82C0C71E918C279499CC9383F0F45B3EEA77432112E7922DDA72C7016833`；
   `style.css` 未改（`EBEDF8A9…`）。
+
+## 11. 第三轮修复：标记位于代码块“底层”并被遮挡（2026-11-11）
+
+### 11.1 用户真实反馈
+
+“标记是在代码块的底层，不是在下方，是被代码块遮挡了。”
+所有代码块诊断（缺少名称/缺少语言/空块/其他）都受影响；题注在代码块上方。
+因此第 10 节“下方题注”并不是本轮的真实主因，真正问题是 **z-order 遮挡**。
+
+### 11.2 真实根因
+
+- 代码块：`#write pre[data-inkchapter-langbar='true'] { position: relative; }`
+  （`src/style.scss` 语言栏需要定位父级），且代码块自身有不透明背景
+  `background-color: rgb(248, 248, 248)`。
+- 定位文档层：`ensureLocateDocumentLayer()` 把
+  `.inkchapter-locate-document-layer` 作为 `#write` 的 **第一个子节点** 插入，
+  内联样式只有 `position:absolute; z-index:auto`。
+- 同为“定位兄弟节点”且 z-index 都是 auto 时，绘制顺序 = DOM 顺序；
+  代码块在文档层之后，因此代码块背景覆盖了整个标记。
+  之前能看到的部分只是标记超出代码块的 ±2px 边缘（或并集到题注的部分），
+  所以看起来像“标记跑到下方/底层”。
+
+### 11.3 修复
+
+`ensureLocateDocumentLayer()` 的定位层增加：
+
+```ts
+layer.style.cssText =
+  'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147482000;'
+```
+
+- `2147482000` 高于编辑器正文/代码块（z-index auto），
+  低于固定工具面板的 `2147483000`，因此标记在代码块之上、面板之下。
+- 不改变任何 Markdown、题注、语言栏、复制/折叠、诊断计数。
+
+### 11.4 真实 Typora 证据（build `180793AA…`）
+
+```
+STACKCHK {
+  layerZ: "2147482000",
+  prePos: "relative",
+  preZ: "auto",
+  preBg: "rgb(248, 248, 248)",
+  frameBg: "color(srgb 0.658824 0.47451 0.196078 / 0.12)",
+  frameRect: [359, 428],
+  preRect:   [361, 426],
+  sameParent: true,
+  layerFirst: true
+}
+```
+
+- 修复前：`layerZ=auto` 且 `layerFirst=true`，同父的 `pre`（relative + 不透明底）
+  后绘制 ⇒ 标记被覆盖。
+- 修复后：`layerZ=2147482000` ⇒ 标记绘制在代码块之上；
+  几何仍严格贴合代码块（359…428 vs 361…426，±2px gap）。
+
+### 11.5 测试与构建
+
+- 新增：定位层 z-index 必须高于 `position:relative` 的代码块（防回归）。
+- 代码 marker 套件 **8/8**；全量 **339 文件 / 5915 tests PASS**。
+- BUILD = DEPLOY：`dist/main.js` `180793AAFBB32C79D682210738873F91BA68DB46563EBEFF12E27F87EB395171`。

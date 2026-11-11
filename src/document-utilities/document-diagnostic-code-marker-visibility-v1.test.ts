@@ -222,4 +222,19 @@ describe('P0 — code diagnostic marker stays visible and on its OWN block', () 
       uaSpy.mockRestore()
     }
   })
+
+  it('document-space marker layer paints ABOVE a positioned code block (never hidden behind it)', () => {
+    const internals = host as unknown as { ensureLocateDocumentLayer(): HTMLElement | null }
+    const layer = internals.ensureLocateDocumentLayer()
+    expect(layer, 'locate document layer').not.toBeNull()
+    // A language bar makes `#write pre.md-fences` position:relative, so both the
+    // layer and the block are positioned siblings; without a z-index the later
+    // block paints above the earlier layer and hides the marker.
+    const pre = pres[0]
+    pre.style.position = 'relative'
+    const layerZ = Number(layer!.style.zIndex)
+    const blockZ = Number(pre.style.zIndex || '0')
+    expect(layerZ).toBeGreaterThan(blockZ)
+    expect(layerZ).toBeGreaterThan(1000000)
+  })
 })

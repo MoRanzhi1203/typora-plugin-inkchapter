@@ -5304,7 +5304,15 @@ export class DocumentUtilityOverlayHost {
     const layer = document.createElement('div')
     layer.className = LOCATE_DOCUMENT_LAYER_CLASS
     layer.setAttribute('data-inkchapter-locate-layer', 'true')
-    layer.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;'
+    // ── P0 — DOCUMENT-LAYER STACKING (marker was painting BEHIND the block).
+    // `#write pre[data-inkchapter-langbar='true']` is `position: relative`, so the
+    // code block is a POSITIONED sibling with z-index:auto. This layer is inserted
+    // as the FIRST child of `#write` and also had z-index:auto — painting order is
+    // DOM order for positioned siblings, so the code block's own background painted
+    // AFTER (above) the marker and hid it. A high z-index keeps every locate carrier
+    // above editor content while staying BELOW the fixed utility panels
+    // (`z-index: 2147483000`).
+    layer.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147482000;'
     // ── P0 CARET ISOLATION ────────────────────────────────────────────────────
     // This layer lives INSIDE the contenteditable `#write` and carries VISIBLE
     // TEXT (heading reason chip, `N 空行` label, EOF endpoint label,
