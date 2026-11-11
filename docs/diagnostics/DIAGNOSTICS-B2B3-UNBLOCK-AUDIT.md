@@ -185,15 +185,18 @@ const TABLE_DELIMITER_RE = /^\s*\|?[\s:|-]+\|?\s*$/
 
 ## 5. 真实 Typora GUI 审计
 
-- 运行实例：Typora 1.6.7，主进程 PID 39608，窗口标题 `Document-Diagnostics-Code-Integrity-Test.md - Typora`。
-- 当前构建：`17E64A2…`（集成图片证据运行时后）；已复制到 test vault。
-- 只读采证：`GUI_ACCEPTANCE_DEVTOOLS.js`（Console 粘贴，无点击/写入），步骤见 `GUI_ACCEPTANCE_PROCEDURE.md`。
-- 启动命令只有文档路径，**没有 `--remote-debugging-port`**；监听端口查询无结果，无法通过 CDP 连接。
-- 渲染进程带 `--user-data-dir=C:\Users\MSIPC\AppData\Roaming\Typora`；测试 vault 配置指向 `test/vault/.typora/plugins`，但当前窗口未渲染墨章工具条。
-- 已尝试隔离 profile 启动第二实例，Typora 单实例行为未产生新窗口；不反复尝试。
-- 本轮为验证新构建，先复制 `3578B8A…`，随后集成图片证据运行时并重建为 `17E64A2…`，再次复制到 test vault；关闭旧 Typora 后 `Start-Process`/`cmd start` 均立即退出（exit 0/1/9），无法在本会话重新启动 GUI。当前 Typora 已关闭，需人工重新打开。
-- 旧实例的 `inkchapter-runtime-load.json` 证明它运行的是旧构建 `3AFA056A…`，不是当前 `17E64A2…`；工具条未渲染的根因仍需新实例/DevTools 复核。
-- 结论：GUI 证据只能人工采证；不得把 Vitest/jsdom 写成真实 GUI 通过。
+- 当前实例：Typora 1.6.7，DevTools 窗口已打开；`inkchapter-runtime-load.json`
+  `loadedAt=2026-11-11T03:14:50.940Z`、`mainJsSha256=17E64A2…`、`initializationCount=1`。
+- 这证明 **新 build 已真实加载**；此前 `3AFA056A…` 只是旧实例历史，不是当前状态。
+- 真实采证（用户提供）：`devicePixelRatio=1.25`、`layoutExpanded=false`、`status=YELLOW`、
+  `warningCount=10`、方块 `rgb(212,154,38)` 15×15、tabs/panel 0×0、
+  旧脚本 `tabWidthsEqual=true`、旧脚本 `diagnostics.total=0`、
+  `#write width=537.6/max-width=860`、`bodyRect.height=0`。
+- 这些值暴露的是**旧脚本判定错误**，不是 UI 必然错误；新脚本已修正。
+- 无 `--remote-debugging-port` 不等于不可测试：DevTools 已打开，只读脚本可直接粘贴。
+- 当前 GUI_VERIFIED 仅覆盖**收起态 + 加载态**；展开/锁定/多目标/主题/150% DPI
+  仍需按新脚本复采。
+- 仍不得把 jsdom 测试写成完整 GUI 通过。
 
 ## 6. 本轮实施清单
 
@@ -205,8 +208,8 @@ const TABLE_DELIMITER_RE = /^\s*\|?[\s:|-]+\|?\s*$/
 | 结构化引用 parser | 已实现（未启用规则） | 5 tests；拒绝显示编号 |
 | 图片异步证据 Provider + Runtime | 已接入源码（未 GUI 验收） | 7 + 5 + 2 tests；文档隔离/失效/字节优先 |
 | 图片字节级/重复内容规则 | PARTIAL（仅格式） | 字节证据优先；重复内容未做 |
-| GUI 验收脚本 | 已提供 | `GUI_ACCEPTANCE_DEVTOOLS.js` + `GUI_ACCEPTANCE_PROCEDURE.md`（只读 DevTools） |
-| GUI 实际采证 | BLOCKED / NEEDS_MANUAL | 旧 build 3AFA；集成 build 17E64A2 已复制；本会话无法重启 Typora |
+| GUI 验收脚本 | 已修正 + 自测 | 三态/零宽/多目标/命中；`GUI_ACCEPTANCE_DEVTOOLS.js` + 步骤文档 |
+| GUI 实际采证 | PARTIAL：加载 + 收起态已验，其余 NEEDS_MANUAL | runtime-load=17E64A2；dpr 1.25、YELLOW、10 warnings、0 DOM 行；展开/锁定/多目标待复采 |
 
 ## 7. 需要人工决定
 

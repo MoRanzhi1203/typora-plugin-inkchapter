@@ -145,7 +145,7 @@ BLOCKED / NEEDS_MANUAL：
 | 结构化引用 | parser MODULE_PASS / 规则未启用 | `inkchapter-ref:` 规范 + `document-object-reference-v1.ts` 5 tests；拒绝显示编号 | captionId 跨文件持久化 + Typora 显示/导出人工实测 |
 | 图片证据 | MODULE_PASS + INTEGRATION_PASS / RUNTIME_VERIFIED 未做 | Provider 7 tests + Runtime 5 tests + 诊断输入/字节优先 2 tests；docKey 隔离、失效、异步预热、同步快照；无上传下载 | 真实 Typora 预热时序/UI 刷新采证；重复内容规则未做 |
 | 表格对齐 | PASS（规则） | `TABLE_ALIGNMENT_INVALID` 3 tests；独立于列数/块结构 | 无 |
-| GUI | 脚本就绪 / GUI_VERIFIED 未做 | `GUI_ACCEPTANCE_DEVTOOLS.js` + `GUI_ACCEPTANCE_PROCEDURE.md`；旧实例运行 3AFA，新 build 3578 已复制 | 人工启动 Typora 后执行只读脚本 A–E |
+| GUI | RUNTIME_LOAD PASS + 收起态证据 PARTIAL / 完整 GUI_VERIFIED 未做 | runtime-load=17E64A2（03:14:50）；真实验证 dpr 1.25、YELLOW、10 warnings、0 DOM rows、tabs/panel 0×0；新脚本三态+自测 11 | 展开/锁定/多目标/主题/150% DPI 需按新脚本复采 |
 
 > 说明：结构化引用与图片 Provider 是**模块级实现**，尚未产出对应诊断规则；不得写成规则已上线或 GUI 已通过。
 
