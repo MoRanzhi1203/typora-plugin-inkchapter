@@ -73,7 +73,7 @@
 | 项 | 状态 | 证据 |
 |---|---|---|
 | 新增三类标记事实/视觉/交互测试 | PASS | `document-diagnostic-blank-marker-v1.test.ts`（11） |
-| 面板/排序/修复交互测试 | PASS | hub controller（41）、model order（7）、panel（7）、controller（11） |
+| 面板/排序/修复交互测试 | PASS | hub controller（40）、model order（7）、panel（7）、controller（11） |
 | TypeScript | PASS | `tsc --noEmit`（exit 0） |
 | 全量 Vitest | PASS | `344 test files / 5974 tests` 全部通过 |
 | build | PASS | `pnpm build`（verify:archive + tsc + esbuild prod） |
