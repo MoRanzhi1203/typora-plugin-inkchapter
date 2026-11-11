@@ -238,11 +238,11 @@ describe('ROOT_BLANK_LAYOUT_REDERIVE / ROOT_BLANK_SOURCE_AUTHORITY — 契约', 
   })
 })
 
-describe('ROOT_CODE_COMPOUND_TARGET — 代码块复合载体必须覆盖「名称行 ∪ 代码主体」', () => {
-  it('载体范围取 frame ∩ LIVE 题注的并集（消除 68.44/42.64 两值漂移）', () => {
+describe('ROOT_CODE_COMPOUND_TARGET — 复合载体（题注 ∪ 主体）仅用于 TABLE；代码诊断固定代码块本体', () => {
+  it('复合 TABLE 载体范围取 frame ∩ LIVE 题注的并集（代码 BLOCK_BODY 不走该并集）', () => {
     const idx = HOST_SRC.indexOf('const vpFrame = this.measureLocateRect(frameEl)')
     expect(idx).toBeGreaterThan(0)
-    const body = HOST_SRC.slice(idx, idx + 4200)
+    const body = HOST_SRC.slice(idx, idx + 6000)
     // 必须把 LIVE 题注并进范围，而不是只信 frame.getFrameElement()（会退化成 body-only 42.64）
     expect(body).toContain('const captionElForCarrier = this.locatePlacementCtx?.primaryEl ?? null')
     expect(body).toContain('Math.min(vpFrame.top, captionVpForCarrier.top)')

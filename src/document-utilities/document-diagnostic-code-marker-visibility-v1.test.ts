@@ -192,4 +192,34 @@ describe('P0 — code diagnostic marker stays visible and on its OWN block', () 
     expect(Math.abs(g.top - 100), 'marker must sit on block:code:0').toBeLessThanOrEqual(2)
     expect(g.top + g.height, 'marker must not reach block:code:1').toBeLessThanOrEqual(100 + 240 + 2)
   })
+
+  it('CODE_MISSING_NAME with a caption BELOW the block paints the BLOCK, never the caption row', () => {
+    // Production path: the caption-host lookup only runs outside the headless test
+    // runtime, so force a real-layout user agent for this case.
+    const uaSpy = vi.spyOn(Navigator.prototype, 'userAgent', 'get')
+      .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+    try {
+      host?.dispose()
+      const pre = pres[0]
+      const caption = document.createElement('p')
+      caption.textContent = '代码 1 下方的题注'
+      stubRect(caption, { left: 60, top: 350, right: 760, bottom: 370 })
+      write.appendChild(caption)
+      host = new DocumentUtilityOverlayHost({
+        ctx: fakeCtx(),
+        providers: { ...fakeProviders(), getObjectCaptionHost: (el) => (el === pre ? caption : null) },
+      })
+      host.mount()
+      const diag = codeDiag('CODE_MISSING_NAME', 0)
+      const frame = commit(diag, pre)
+      const g = frameGeometry(frame)
+      expect(frame.dataset.paintKind).toBe('block-body')
+      // Block top is 100 (frame gap 2) — NOT the caption top (350).
+      expect(Math.abs(g.top - 98), 'marker must start on the code block').toBeLessThanOrEqual(2)
+      expect(g.height, 'marker must cover the code block').toBeGreaterThanOrEqual(200)
+      expect(g.top, 'marker must not sit on the caption below').toBeLessThan(300)
+    } finally {
+      uaSpy.mockRestore()
+    }
+  })
 })

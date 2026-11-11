@@ -244,3 +244,53 @@ BLOCK_BODY 之后残留 `caption-only`（透明）状态。
 3. 确认标记覆盖**该代码块本体**，不越过下一个代码块或空段落；
 4. 在 DevTools Console 粘贴 `CODE_MARKER_ACCEPTANCE_DEVTOOLS.js`，保存 JSON + 截图；
 5. 若 `data-code-target-binding=MATCH` 且 `verdict=PASS`，再合并分支；否则附 JSON 返回。
+
+## 10. 第二轮修复：标记落在代码块“下方”（2026-11-11）
+
+### 10.1 根因
+
+`CODE_MISSING_NAME` 在检测到“真实拥有的题注槽”时使用 `CAPTION_ONLY`：
+`preciseRect = captionHostRect`，载体就是**题注行**。代码题注可配置在代码块
+**下方**（`code.position=below`）或由手写题注位于块后，于是载体的可视矩形整个
+落在代码块下面 —— 这正是“标记块位于代码块下方”的确定性来源。
+另外 `commitDocumentSpaceCarrier` 的 `anchor` 取 `result.element`（可能是题注/
+相邻节点），body 载体没有强制绑定到 canonical `pre.md-fences`。
+
+### 10.2 修复
+
+- `CODE_MISSING_NAME` 不再进入 `CAPTION_ONLY`：三种代码规则统一 `BLOCK_BODY`，
+  载体 = 诊断代码块自身（±2px breathing gap）。题注仍作为
+  `CODE_CAPTION_OWNER_MATCH` 证据计数，但不再被涂色。
+- `commitDocumentSpaceCarrier` 的 body 载体显式使用 frame 的 canonical
+  `pre.md-fences` 作为 secondary / semanticAnchor，避免题注或相邻节点成为
+  持久载体的几何来源。
+- `data-paint-kind` 固定为 `block-body`；不再产生 `caption-only`。
+- 真实运行时的 `semanticTargetRect` 与 `primaryMarkerRect` 必须完全一致
+  （GEO 审计可直接核对）。
+
+### 10.3 真实 Typora 证据（build `BEDD82C0…`）
+
+`inkchapter-runtime-load.json`：`mainJsSha256=BEDD82C0…`、`loadSource=vault`、
+`initializationCount=1`。DevTools 运行时审计：
+
+```
+CODE_MISSING_NAME block:code:0
+  semanticTargetRect={"left":416.4,"top":359.4375,"right":1380.4,"bottom":428.075,"width":964,"height":68.6375}
+  primaryMarkerRect ={"left":416.4,"top":359.4375,"width":964,"height":68.6375}
+  semanticDecision=PASS  visualDecision=PASS
+
+CODE_MISSING_LANGUAGE block:code:2
+  semanticTargetRect={"left":416.4,"top":359.5875,"right":1380.4,"bottom":428.225,"width":964,"height":68.6375}
+  primaryMarkerRect ={"left":416.4,"top":359.5875,"width":964,"height":68.6375}
+  semanticDecision=PASS  visualDecision=PASS
+```
+
+同屏代码块实测为 `top=362, height=65`（block:code:2），标记为 `359.6…428.2`
+（上下各 2px gap）⇒ 标记严格贴合被诊断代码块，不在题注行/下一代码块。
+
+### 10.4 测试与构建
+
+- 新增：`CODE_MISSING_NAME` + 下方题注 ⇒ 载体仍覆盖代码块（非题注行）。
+- 代码 marker 套件 **7/7**；document-space 套件 **29/29**；全量 **339 文件 / 5914 tests PASS**。
+- BUILD = DEPLOY：`dist/main.js` `BEDD82C0C71E918C279499CC9383F0F45B3EEA77432112E7922DDA72C7016833`；
+  `style.css` 未改（`EBEDF8A9…`）。

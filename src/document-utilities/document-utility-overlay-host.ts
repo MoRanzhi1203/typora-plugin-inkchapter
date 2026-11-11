@@ -5519,6 +5519,8 @@ export class DocumentUtilityOverlayHost {
 
     let primaryLocal: DocumentSpaceRect | null = null
     let carrierNodes = 0
+    /** P0 — the code block's OWN canonical element for a body-only code carrier. */
+    let bodyAnchorEl: HTMLElement | null = null
     if (frameEl) {
       const vpFrame = this.measureLocateRect(frameEl)
       // ROOT_CODE_COMPOUND_TARGET §1/§2/§3 —— a compound CODE target's carrier must
@@ -5562,6 +5564,13 @@ export class DocumentUtilityOverlayHost {
       // look like it "landed under the code block", and the top-bar-only workaround
       // that tried to avoid it removed the marker from the visible editor.
       const isBodyOnlyPaint = this.currentCodePaintKind === 'BLOCK_BODY'
+      // ── P0 — the body carrier is derived from the LIVE canonical `pre.md-fences`
+      // (the frame's committed anchor, corrected to `block:code:N`), never from a
+      // possibly stale viewport-frame box or the locator's caption node. A stale /
+      // caption-derived rect is the other way the marker could be painted below
+      // the diagnosed block.
+      const bodyAnchorElForPaint = isBodyOnlyPaint ? (frame.getAnchorElement() ?? anchor) : null
+      bodyAnchorEl = bodyAnchorElForPaint
       const vp = isCaptionOnlyPaint && captionVpForCarrier
         ? captionVpForCarrier
         : isBodyOnlyPaint && vpFrame
@@ -5620,7 +5629,7 @@ export class DocumentUtilityOverlayHost {
         // ── TRAE P0 §六 — the REAL paint-acceptance evidence for a CODE target,
         // measured from live DOM geometry (never a hard-coded true).
         if (diag.code === 'CODE_MISSING_NAME' || diag.code === 'CODE_MISSING_LANGUAGE' || diag.code === 'CODE_EMPTY_BLOCK') {
-          this.measureCodePaintAcceptance(diag, anchor, vp, isCaptionOnlyPaint, captionElForCarrier)
+          this.measureCodePaintAcceptance(diag, bodyAnchorElForPaint ?? anchor, vp, isCaptionOnlyPaint, captionElForCarrier)
         }
       }
       frame.releaseViewportCarrier()
@@ -5711,12 +5720,16 @@ export class DocumentUtilityOverlayHost {
       if (local) inlineLocal.push(local)
     }
     const ctx = this.locatePlacementCtx
-    const secondaryVp = this.measureLocateRect(ctx?.secondaryEl ?? anchor)
+    // ── P0 — a body-only code carrier's committed owner is the canonical block,
+    // not the locator's caption node. This keeps the post-commit reconcile and the
+    // closure identity check anchored to the diagnosed `pre.md-fences`.
+    const secondaryElForCommit = bodyAnchorEl ?? ctx?.secondaryEl ?? anchor ?? null
+    const secondaryVp = this.measureLocateRect(secondaryElForCommit)
     const secondaryLocal = viewportRectToDocumentLocalRect({ viewportRect: secondaryVp, contentHostRect: hostRect })
     // The SECONDARY/PIMARY elements are kept past the transaction so a later layout
     // change can RE-PROJECT their geometry (never keep the commit-time rect frozen)
     // and verify the compound caption is still covered by the re-derived carrier.
-    this.locateCommittedSecondaryEl = ctx?.secondaryEl ?? anchor ?? null
+    this.locateCommittedSecondaryEl = secondaryElForCommit
     this.locateCommittedPrimaryEl = ctx?.primaryEl ?? null
     this.locateCommittedCodePaintKind = this.currentCodePaintKind
     this.locateCommittedVisual = {
@@ -5726,9 +5739,9 @@ export class DocumentUtilityOverlayHost {
       diagnosticId: diag.id,
       severity: String(diag.severity ?? 'info'),
       presentationKind: frame.getVisualPresentation() ?? null,
-      semanticAnchorIdentity: DocumentUtilityOverlayHost.anchorIdentityOf(anchor),
+      semanticAnchorIdentity: DocumentUtilityOverlayHost.anchorIdentityOf(bodyAnchorEl ?? anchor),
       primaryAnchorIdentity: DocumentUtilityOverlayHost.anchorIdentityOf(ctx?.primaryEl ?? null),
-      secondaryAnchorIdentity: DocumentUtilityOverlayHost.anchorIdentityOf(ctx?.secondaryEl ?? null),
+      secondaryAnchorIdentity: DocumentUtilityOverlayHost.anchorIdentityOf(secondaryElForCommit),
       occurrenceIndex: typeof meta.occurrenceIndex === 'number' ? meta.occurrenceIndex : null,
       primaryLocal,
       secondaryLocal,
@@ -18640,26 +18653,16 @@ export class DocumentUtilityOverlayHost {
     this.currentCodeCaptionRect = null
     this.currentCodeObjectRect = objectRectForPaint
     if (code === 'CODE_MISSING_NAME') {
-      const owned = captionHostEl != null && this.captionHostOwnedByAnchor(anchor, captionHostEl)
-      const slot = resolveNameSlotPresentation(captionHostRect, objectRectForPaint)
-      this.currentCodeCaptionOwned = owned
-      if (owned && captionHostRect && slot.decision === 'resolved') {
-        // CAPTION_ONLY — the paint rect IS the caption row. `preciseRect` makes the
-        // frame's semantic box exactly the caption (gap 0, no body union); the
-        // existing caption cue fills that same row (a single visible fill).
-        this.currentCodePaintKind = 'CAPTION_ONLY'
-        this.currentCodeCaptionRect = captionHostRect
-        preciseRect = captionHostRect
-      } else {
-        // No REAL owned caption slot: the marker MUST still cover the diagnosed
-        // code block's OWN body. The language bar is EVIDENCE only (`currentCodeTopbarRect`
-        // feeds the closure audit) — it is never the sole paint target: a 30px top
-        // bar can be scrolled out of the visible editor, which used to fail the
-        // one-click visual gate and ROLL BACK the marker entirely.
-        captionHostRect = null
-        this.currentCodePaintKind = 'BLOCK_BODY'
-        this.currentCodeTopbarRect = this.measureCodeTopbarRect(anchor)
-      }
+      // P0 — the code diagnostic marker ALWAYS belongs to the diagnosed code
+      // block, never to its caption row. Typora may place a code caption BELOW
+      // the block (`code.position=below`); painting the caption (CAPTION_ONLY)
+      // is exactly what made the marker look like it sat "under the code block".
+      // The caption element is still recorded as evidence (ownership counter),
+      // but the paint rect is the block body.
+      this.currentCodeCaptionOwned = captionHostEl != null && this.captionHostOwnedByAnchor(anchor, captionHostEl)
+      captionHostRect = null
+      this.currentCodePaintKind = 'BLOCK_BODY'
+      this.currentCodeTopbarRect = this.measureCodeTopbarRect(anchor)
     } else if (code === 'CODE_MISSING_LANGUAGE' || code === 'CODE_EMPTY_BLOCK') {
       // Their semantic target is the code block's OWN body. A real language bar is
       // recorded as evidence (topbar) but never replaces the visible block carrier.
@@ -18722,13 +18725,9 @@ export class DocumentUtilityOverlayHost {
     // small slot geometry (never the whole Code/Table body). If the caption
     // slot cannot be resolved → explicit FALLBACK (data-name-primary absent).
     const isNameRule = code === 'TABLE_MISSING_NAME' || code === 'CODE_MISSING_NAME'
-    // §A/§2 — for a CAPTION_ONLY code name the semantic box IS the caption, so the
-    // name-slot ratio must be judged against the OBJECT (code block) rect, never
-    // against that caption box (which would collapse to `sameRect` → fallback).
-    // Every other rule keeps the original `frame.getSemanticRect()` context.
-    const anchorRect = this.currentCodePaintKind === 'CAPTION_ONLY' && objectRectForPaint
-      ? objectRectForPaint
-      : frame.getSemanticRect()
+    // P0 — a code marker is always the block body now (no CAPTION_ONLY), so the
+    // name-slot ratio is judged against the real block semantic box.
+    const anchorRect = frame.getSemanticRect()
     const slotResolution = isNameRule
       ? resolveNameSlotPresentation(captionHostRect, anchorRect)
       : { expected: false, decision: 'fallback' as const, primaryRect: null, areaRatio: null }
@@ -18750,11 +18749,10 @@ export class DocumentUtilityOverlayHost {
         frameEl.dataset.nameSlotDecision = 'n/a'
       }
       frameEl.dataset.fallbackLevel = String(this.presentationFallbackLevel ?? 2)
-      // §A/§2 — CAPTION_ONLY marks the frame as a caption-only paint container so
-      // the CSS suppresses the redundant full-object context wash (the caption cue
-      // remains the single visible fill). Any other rule never carries the mark.
-      if (this.currentCodePaintKind === 'CAPTION_ONLY') frameEl.dataset.paintKind = 'caption-only'
-      else if (this.currentCodePaintKind === 'BLOCK_BODY') frameEl.dataset.paintKind = 'block-body'
+      // P0 — a code diagnostic marker is the block body fill. The caption row is
+      // never the marker: a below-block caption used to receive the fill and read
+      // as "the marker is under the code block".
+      if (this.currentCodePaintKind === 'BLOCK_BODY') frameEl.dataset.paintKind = 'block-body'
       else frameEl.removeAttribute('data-paint-kind')
       if (code) {
         frameEl.dataset.diagnosticId = diagId ?? ''

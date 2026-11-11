@@ -764,9 +764,9 @@ describe('ROOT_COMPOUND_CAPTION_COVERAGE — 复合题注高亮在布局变化�
     ;(host as unknown as { applyGeometry(r: Set<string>): void }).applyGeometry(new Set([reason]))
   }
 
-  it('CODE_MISSING_NAME：载体只覆盖代码标题行（CAPTION_ONLY），不覆盖代码主体；拖拽后仍覆盖标题行', async () => {
+  it('CODE_MISSING_NAME：载体覆盖代码块本体（BLOCK_BODY），不落在题注行；拖拽后仍跟随代码块', async () => {
     // Force the REAL-layout branch so the frame controller resolves the caption host
-    // and the committed carrier actually targets the code TITLE ROW (as in Typora).
+    // and the committed carrier really paints the diagnosed CODE BLOCK.
     const ua = vi.spyOn(window.navigator, 'userAgent', 'get')
       .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120 RegularRuntime')
     try {
@@ -776,21 +776,27 @@ describe('ROOT_COMPOUND_CAPTION_COVERAGE — 复合题注高亮在布局变化�
       await oneClick(host, 'C')
       expect(carrierOf()).not.toBeNull()
       const committed = geom()
-      // TRAE P0 §A/§2 — the paint target is the code TITLE ROW ONLY: the carrier
-      // height is the caption height and it must NEVER span the code body.
-      const bodyH = w.target.getBoundingClientRect().height
+      // P0 — the paint target is the code BLOCK BODY: the carrier covers the block
+      // (plus the 2px breathing gap) and never collapses onto the caption row.
+      const body = w.target.getBoundingClientRect()
+      const bodyH = body.height
       const captionH = w.caption!.getBoundingClientRect().height
-      expect(committed.height).toBeLessThan(bodyH)
-      expect(Math.abs(committed.height - captionH)).toBeLessThanOrEqual(4)
+      // The document-space carrier's viewport box (style local + #write origin).
+      const committedRect = carrierOf()!.getBoundingClientRect()
+      expect(committed.height).toBeGreaterThanOrEqual(bodyH)
+      expect(committed.height).toBeLessThanOrEqual(bodyH + 6)
+      expect(Math.abs(committedRect.top - (body.top - 2))).toBeLessThanOrEqual(2)
+      expect(committed.height).toBeGreaterThan(captionH + 4)
       // §六 — the acceptance facts are MEASURED, not hard-coded.
       const acc = host.getCodePaintAcceptance()
-      expect(acc.CODE_MISSING_NAME_PAINT_KIND).toBe('CAPTION_ONLY')
+      expect(acc.CODE_MISSING_NAME_PAINT_KIND).toBe('BLOCK_BODY')
       expect(acc.CODE_CAPTION_OWNER_MATCH).toBe(true)
       expect(acc.CODE_BODY_UNEXPECTED_FILL_COUNT).toBe(0)
       expect(acc.CODE_SIBLING_INTERSECTION_COUNT).toBe(0)
-      expect(acc.CODE_CAPTION_RECT_DRIFT_MAX_PX).toBeLessThanOrEqual(1)
+      // Painted body vs the object rect differs only by the 2px breathing gap.
+      expect(acc.CODE_CAPTION_RECT_DRIFT_MAX_PX).toBeLessThanOrEqual(4)
 
-      // SIDEBAR DIVIDER DRAG — the caption and the body both move / re-wrap.
+      // SIDEBAR DIVIDER DRAG — the block re-wraps; the carrier must follow the BODY.
       w.setHostWidth(520)
       stubRect(w.target, () => {
         const top = 1060 - w.scrollTop()
@@ -804,32 +810,32 @@ describe('ROOT_COMPOUND_CAPTION_COVERAGE — 复合题注高亮在布局变化�
       await flushRaf()
 
       const after = geom()
-      // the caption-only carrier TRACKS the LIVE caption row (the row re-wraps to a
-      // new height on the drag) — it must NOT collapse onto the body and must NOT
-      // grow back over the body.
-      expect(Math.abs(after.height - w.caption!.getBoundingClientRect().height)).toBeLessThanOrEqual(2)
-      expect(after.height).toBeLessThan(bodyH)
+      const liveBody = w.target.getBoundingClientRect()
+      const afterRect = carrierOf()!.getBoundingClientRect()
+      // The carrier tracks the LIVE code block (not the caption row).
+      expect(after.height).toBeGreaterThanOrEqual(liveBody.height)
+      expect(after.height).toBeLessThanOrEqual(liveBody.height + 6)
+      expect(Math.abs(afterRect.top - (liveBody.top - 2))).toBeLessThanOrEqual(2)
       expect(host.getDocumentSpaceCounters().compoundCaptionUncoveredAfterReconcile).toBe(0)
-      // ── §3.3 — the caption PRIMARY child must be re-derived with the LIVE caption:
-      // a deep-cloned carrier kept the COMMIT-time cue width (the caption is re-wrapped
-      // narrower/wider), so the emphasis no longer covered the caption.
+      // P0 — the caption row is NOT the marker any more: no caption cue child.
       const cue = (): HTMLElement | null =>
         document.querySelector(`.${LOCATE_DOCUMENT_LAYER_CLASS} .inkchapter-diagnostic-locate-frame > .inkchapter-diagnostic-locate-marker[data-cue-type='caption-host']`) as HTMLElement | null
-      expect(cue()).not.toBeNull()
-      const liveCaption = w.caption!.getBoundingClientRect()
-      expect(Math.abs(parseFloat(cue()!.style.width) - liveCaption.width)).toBeLessThanOrEqual(2)
+      expect(cue()).toBeNull()
       expect(host.getDocumentSpaceCounters().compoundCaptionCueUncoveredAfterReconcile).toBe(0)
       const rec = readAudits(infoSpy!, LOCATE_DOCUMENT_SPACE_AUDIT_EVENT)
         .find(a => (a.reason ?? '').startsWith('LAYOUT_RECONCILE:'))
       expect(rec).toBeDefined()
-      expect(rec!.captionCoveredByCarrier).toBe('true')
-      expect(rec!.captionCuePresent).toBe('true')
+      // The body carrier deliberately does NOT cover the caption row; the reconcile
+      // still commits cleanly because the carrier is bound to the code block.
+      expect(rec!.captionCoveredByCarrier).toBe('false')
+      expect(rec!.captionCuePresent).toBe('false')
+      expect(rec!.decision).toBe('PASS')
     } finally {
       ua.mockRestore()
     }
   })
 
-  it('CODE_MISSING_NAME 与相邻代码块共存 ⇒ CAPTION_ONLY 涂色不越入兄弟块（CODE_SIBLING_INTERSECTION_COUNT=0）', async () => {
+  it('CODE_MISSING_NAME 与相邻代码块共存 ⇒ 代码块本体涂色不越入兄弟块（CODE_SIBLING_INTERSECTION_COUNT=0）', async () => {
     const ua = vi.spyOn(window.navigator, 'userAgent', 'get')
       .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120 RegularRuntime')
     try {
@@ -843,7 +849,7 @@ describe('ROOT_COMPOUND_CAPTION_COVERAGE — 复合题注高亮在布局变化�
       inject(host, diagOf('C', 'CODE_MISSING_NAME', CODE_LOC))
       await oneClick(host, 'C')
       const acc = host.getCodePaintAcceptance()
-      expect(acc.CODE_MISSING_NAME_PAINT_KIND).toBe('CAPTION_ONLY')
+      expect(acc.CODE_MISSING_NAME_PAINT_KIND).toBe('BLOCK_BODY')
       expect(acc.CODE_SIBLING_INTERSECTION_COUNT).toBe(0)
       expect(acc.CODE_BODY_UNEXPECTED_FILL_COUNT).toBe(0)
     } finally {
