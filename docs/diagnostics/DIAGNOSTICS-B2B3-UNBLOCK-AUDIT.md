@@ -214,3 +214,33 @@ const TABLE_DELIMITER_RE = /^\s*\|?[\s:|-]+\|?\s*$/
 2. 提供 Typora 目标文件的 heading DOM 权威（跨文件只有在目标文件也打开/可索引时才能 READY）。
 3. 人工启动 Typora，按 `GUI_ACCEPTANCE_PROCEDURE.md` 运行只读脚本，完成 A–E 采证。
 4. 若要重复图片内容规则，需批准内容哈希的同文档/跨文档重复语义（当前只做单图格式）。
+
+## 8. GUI 验收脚本修正（2026-11-11 真实证据）
+
+真实采证暴露了旧脚本的判定错误：
+
+- `layoutExpanded=false` 时三个 tab 的 DOMRect 宽高为 0，旧 `tabWidthsEqual` 却返回 true；
+- 收起时 `diagnostics.total=0`，但状态方块是 `warningCount=10`；旧脚本把 0 DOM 行误当成 0 项诊断；
+- `#write width=537.6 / max-width=860`、`bodyRect.height=0`、`#write.y<0` 都是正常布局事实，
+  不能据此修改原生布局；
+- 旧脚本没有展开过渡结束判定，也没有收起透明层命中检查。
+
+新脚本（`GUI_ACCEPTANCE_DEVTOOLS.js`）已修改为：
+
+- `toolbar.tabWidth.verdict` 三态：收起 `NOT_APPLICABLE`；展开但标签隐藏/零宽 `FAIL`；
+  未等过渡结束 `NOT_APPLICABLE`；只有展开、可见、稳定后才比较宽度差 ≤1px。
+- `toolbar.geometry` 三态；输出 `row-vs-panel`、`layout-vs-row`、`layout-vs-panel`
+  的 `left/right/width` 实际差值，容差 1px。
+- `diagnostics.instanceCounts`（状态事件）、`projectedRowCount`（展开时展示行）、
+  `domRowCount`（当前 DOM 行）分开；收起时 `projectedRowCount=null`，并标注
+  `COLLAPSED_DOES_NOT_MEAN_ZERO_DIAGNOSTICS`。
+- `diagnostics.multiTarget` 按 `data-diagnostic-id` 分组，专门验收
+  “1 warning 事件、2 个目标、2 条展示行”。
+- `collapsedHitTest`：收起时在 `#write` 三个点做只读 `elementsFromPoint`；命中插件根即 FAIL。
+- `content.maxWidthComparison` 恒为 `NOT_APPLICABLE`（上限不等于实际宽度），
+  `writeYNegative`/`bodyRectHeightZero` 只记录，不触发 UI 修改。
+- 脚本保持只读：无 click/scroll/DOM 写入/插件 API 调用；唯一异步是等待
+  `requestAnimationFrame` 稳定，不修改样式。
+- 自测：`src/document-utilities/gui-acceptance-probe-v1.test.ts` 11 tests，覆盖收起、
+  展开、隐藏/零宽标签、列宽 >1px、筛选视图、多目标、收起透明层命中、
+  `max-width`/`bodyRect`/负 y。

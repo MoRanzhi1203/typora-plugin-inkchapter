@@ -187,4 +187,17 @@
 - 构建：PASS，`dist/main.js` SHA256 `17E64A21388DDE062A0F0E529AD508DB76BE759F6FD36610F27AC6238B9F5762`
 - 合并：`git merge --no-ff feature/diagnostics-image-evidence-runtime` → `ea8205e8f2d42c7d075a59713b008c72358ca581`
 
+### 2026-11-11 — GUI 验收脚本修正（真实 1.25 DPI 采证）
+
+- 真实证据：`devicePixelRatio=1.25`、`layoutExpanded=false`、`YELLOW`、`warningCount=10`、
+  方块 `rgb(212,154,38)` 15×15、tabs/panel 0×0、`tabWidthsEqual` 误报 true、
+  `diagnostics.total=0`、`#write 537.6 / max-width 860`、`bodyRect.height=0`
+- 修正：`tabWidthsEqual` 仅在展开+可见+稳定 PASS 时为 true；几何/标签三态；
+  列宽差值输出；实例/投影/DOM 行分离；多目标 1 事件 2 行；收起透明层命中；
+  `max-width`/bodyRect/负 y 只记录不改布局
+- 自测：`gui-acceptance-probe-v1.test.ts` 11 tests（收起、展开、隐藏/零宽、列差、筛选、多目标、命中、max-width/bodyRect）
+- 全量测试：337 文件 / 5889 tests PASS，219.94s
+- 构建未变（测试/文档修改）：`17E64A2…`
+- 合并：待执行
+
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）
