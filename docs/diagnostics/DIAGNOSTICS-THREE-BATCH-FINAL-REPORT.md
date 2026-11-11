@@ -118,8 +118,8 @@ BLOCKED / NEEDS_MANUAL：
 | GIT-0 合并后 | 327 文件 / 5783 tests PASS | 同上 |
 | B1 | 329 文件 / 5805 tests PASS | `FD45A411B5B514161CAD673D975FE7EF7E6B728178381C9B64CCD493AFE1C4B4` |
 | B2 | 330 文件 / 5819 tests PASS | `BE23061EAFAA0A5717F28C0FFA7D0102EA04BBD61D09287B60E250C653D6078B` |
-| B2b / B3b / B2c / B2d / 2026-11-11 专项 | 337 文件 / 5889 tests PASS | `17E64A21388DDE062A0F0E529AD508DB76BE759F6FD36610F27AC6238B9F5762` |
-| B3 | 337 文件 / 5889 tests PASS | 同上 |
+| B2b / B3b / B2c / B2d / 2026-11-11 专项 | 338 文件 / 5906 tests PASS | `17E64A21388DDE062A0F0E529AD508DB76BE759F6FD36610F27AC6238B9F5762` |
+| B3 | 338 文件 / 5906 tests PASS | 同上 |
 
 每批次 typecheck PASS；privacy PASS（SCANNED_LINES=0）；docs PASS（DOC_BROKEN_LINK_COUNT=0）。构建产物 `dist/` 被 `.gitignore` 忽略，未提交。
 
@@ -149,7 +149,21 @@ BLOCKED / NEEDS_MANUAL：
 
 > 说明：结构化引用与图片 Provider 是**模块级实现**，尚未产出对应诊断规则；不得写成规则已上线或 GUI 已通过。
 
-## 8. 最终结论
+## 8. 诊断修复 V1（2026-11-11）
+
+- 新增 `document-diagnostic-fix-v1.ts`：FixRegistry、FixPlanner、预检、冲突、差异 hunk、
+  过期快照/hash 校验、修复后重新诊断契约。
+- 空行：`EXCESSIVE_INTERNAL_BLANK_LINES` / `DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE`
+  生成最小源补丁；保留 1 个空行/EOL，拒绝首部 gap、fenced code、越界、非空行、CRLF 失真。
+- 代码语言/图名：`CODE_MISSING_LANGUAGE` / `FIGURE_MISSING_NAME` 为 `REQUIRES_INPUT`，
+  必须显式输入；代码/表名 `MANUAL`，只返回 `CAPTION_NAME_SERVICE_REQUIRED`。
+- 真实应用：**BLOCKED**。Typora 公开类型只有整篇 `reloadContent` 与 DOM selection，
+  没有可验证的 range edit transaction；`applySupported=false`，不写磁盘/DOM、不整篇 reload。
+- UI：**BLOCKED**（没有 apply 事务时不新增会误导用户的修复按钮）。
+- 测试：`document-diagnostic-fix-v1.test.ts` 17 tests；全量见 §4/执行日志。
+- 矩阵：`docs/diagnostics/DIAGNOSTIC_FIX_CAPABILITY_MATRIX.md`
+
+## 9. 最终结论
 
 **当前墨章文档诊断：101 个规则家族、112 个展开具体代码、107 个注册解析代码、108 个生产器代码、103 个真正可达代码；注册基准 13 错误 / 70 警告 / 29 提示；可达基准 13 / 63 / 27。**
 

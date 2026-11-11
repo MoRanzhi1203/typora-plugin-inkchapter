@@ -200,4 +200,14 @@
 - 构建未变（测试/文档修改）：`17E64A2…`
 - 合并：`git merge --no-ff feature/diagnostics-gui-acceptance-probe` → `2695698bf14c6a7886d76b193dfbb7b3330b9349`
 
+### 2026-11-11 — 诊断修复规划 V1（planner only；apply BLOCKED）
+
+- 分支：`feature/diagnostics-fix-planner`（从 `26714a3` 创建）
+- 新增：`document-diagnostic-fix-v1.ts`（Registry / Planner / 预检 / 冲突 / 差异 hunk / 修复后重诊断契约 / 不可用事务适配器）
+- 修复器：`EXCESSIVE_INTERNAL_BLANK_LINES`、`DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE`（AUTO 计划）、`CODE_MISSING_LANGUAGE` / `FIGURE_MISSING_NAME`（REQUIRES_INPUT）、`CODE_MISSING_NAME` / `TABLE_MISSING_NAME`（MANUAL）
+- 安全：锁定/旧文档/旧诊断/旧源/越界/批量重叠全部阻断；`applySupported=false`，不写磁盘/DOM、不整篇 reload
+- 测试：`document-diagnostic-fix-v1.test.ts` 17 tests；全量 338 文件 / 5906 tests PASS，179.03s
+- 构建：未变（模块未进入 main 入口），SHA `17E64A2…`
+- 合并：待执行
+
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）
