@@ -224,6 +224,6 @@
 - 测试：代码块 marker 11 tests；定向 92 tests；全量 338 文件 / 5907 tests PASS，164.00s
 - 构建：PASS，`dist/main.js` SHA256 `3733016B5506E2453FE1F8480F9E7AC6F91A23A165174205BC2022614FBE7913`
 - 已复制到 test vault；当前 Typora 未运行，runtime-load 仍为旧 `17E64A2…`，GUI NEEDS_MANUAL
-- 合并：待执行
+- 合并：`git merge --no-ff feature/diagnostics-code-marker-anchor` → `17ef7b325e6594ef600234fb1f6b014052748079`
 
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）
