@@ -198,6 +198,6 @@
 - 自测：`gui-acceptance-probe-v1.test.ts` 11 tests（收起、展开、隐藏/零宽、列差、筛选、多目标、命中、max-width/bodyRect）
 - 全量测试：337 文件 / 5889 tests PASS，219.94s
 - 构建未变（测试/文档修改）：`17E64A2…`
-- 合并：待执行
+- 合并：`git merge --no-ff feature/diagnostics-gui-acceptance-probe` → `2695698bf14c6a7886d76b193dfbb7b3330b9349`
 
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）

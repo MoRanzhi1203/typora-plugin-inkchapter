@@ -22,7 +22,8 @@
 | B2d 合并 | `main` | `1d0a359` | TABLE_ALIGNMENT_INVALID + 跨文件 anchor 三态接口/审计 |
 | 2026-11-11 专项合并 | `main` | `442a759` | 图片异步证据 Provider + `inkchapter-ref:` parser（均模块级，未启用规则） |
 | 2026-11-11 运行时集成 | `main` | `ea8205e` | 图片证据运行时/诊断消费、DOM heading authority、GUI 只读脚本 |
-| 最终 main | `main` | `ea8205e`（本报告提交后更新为最新 docs commit） | **未推送**；远端保护/可用性未验证，本地保留全部提交 |
+| 2026-11-11 GUI 脚本修正 | `main` | `2695698` | 三态几何/标签、零宽保护、多目标、收起命中、脚本自测 |
+| 最终 main | `main` | `2695698`（本报告提交后更新为最新 docs commit） | **未推送**；远端保护/可用性未验证，本地保留全部提交 |
 | 远端 | `origin` | `origin/main` 仍为 `6341c06` | **未推送**；远端可用性/保护规则未验证，本地保留全部提交 |
 
 未执行 `reset --hard` / `clean -fd` / `push --force`；未删除分支、stash、worktree；既有 stash 与 `runtime/ab/A|B` worktree 未触碰。
