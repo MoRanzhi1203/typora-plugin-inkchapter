@@ -526,19 +526,24 @@ describe('V5.2 images / lock tabs unchanged', () => {
 describe('V5.2 Fluent Compact visual contract', () => {
   it('defines scoped Fluent tokens for light and dark themes', () => {
     const rootBody = ruleBodies('.inkchapter-doc-toolbar-ui')
-    expect(rootBody).toContain('--ink-doc-surface: #fafafb')
-    expect(rootBody).toContain('--ink-doc-hairline: #e2e5ea')
-    expect(rootBody).toContain('--ink-doc-text: #28313f')
-    expect(rootBody).toContain('--ink-doc-secondary: #677384')
-    expect(rootBody).toContain('--ink-doc-selection: #e9eff6')
+    // U1 — pure-white surface, black/gray hierarchy, light neutral selection.
+    expect(rootBody).toContain('--ink-doc-surface: #ffffff')
+    expect(rootBody).toContain('--ink-doc-hairline: #dee2e7')
+    expect(rootBody).toContain('--ink-doc-divider: #eef0f2')
+    expect(rootBody).toContain('--ink-doc-text: #24272d')
+    expect(rootBody).toContain('--ink-doc-secondary: #626a75')
+    expect(rootBody).toContain('--ink-doc-action: #454b55')
+    expect(rootBody).toContain('--ink-doc-loc: #737b86')
+    expect(rootBody).toContain('--ink-doc-selection: #f1f2f4')
+    expect(rootBody).toContain('--ink-doc-hover: #f7f8fa')
     expect(rootBody).toContain('--ink-doc-warning: #d49a26')
     expect(rootBody).toContain('--ink-doc-error: #d24d57')
     expect(rootBody).toContain('--ink-doc-success: #2f986d')
     expect(rootBody).toContain('--ink-doc-hint: #66869f')
     expect(rootBody).toContain('--ink-doc-radius: 6px')
     // Dark theme overrides the same scoped surface token, not a second panel.
-    expect(SCSS).toContain('--ink-doc-surface: #252526')
-    expect(SCSS).toContain('--ink-doc-text: #e6e6e6')
+    expect(SCSS).toContain('--ink-doc-surface: #1f2021')
+    expect(SCSS).toContain('--ink-doc-text: #e9eaec')
   })
 
   it('header is 36px tall; square is 15px inside a 32px hit region with a separate lock outline', () => {
@@ -624,7 +629,7 @@ describe('F3 — row-level fix entries', () => {
     const a = {
       recheck: vi.fn(), toggleLock: vi.fn(), uploadAll: vi.fn(), downloadAll: vi.fn(),
       dualLink: vi.fn(), openImageSettings: vi.fn(), locateDiagnostic: vi.fn(),
-      fixDiagnostic: vi.fn(), fixSameRule: vi.fn(), fixAllAuto: vi.fn(),
+      fixDiagnostic: vi.fn(), fixAllAuto: vi.fn(),
     }
     const controller = new DocumentHubController({ mountEl, actions: a, doubleClickWindowMs: 260 })
     controller.mount()
@@ -659,13 +664,13 @@ describe('F3 — row-level fix entries', () => {
     expect(controller.isOpen()).toBe(true)
   })
 
-  it('offers 同类修复 only when the rule really has more than one instance', () => {
-    const { controller, actions: a } = mountFixed()
-    const same = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__diag-fix.is-same-rule'))
-    expect(same.length).toBe(2)
-    same[0].click()
-    expect(a.fixSameRule).toHaveBeenCalledWith('EXCESSIVE_INTERNAL_BLANK_LINES')
-    expect(a.locateDiagnostic).not.toHaveBeenCalled()
+  it('keeps exactly ONE action per row (same-rule lives inside the preview)', () => {
+    const { controller } = mountFixed()
+    const rows = Array.from(panel(controller).querySelectorAll<HTMLElement>('.inkchapter-doc-expand__diag'))
+    for (const row of rows) {
+      expect(row.querySelectorAll('.inkchapter-doc-expand__diag-fix').length).toBeLessThanOrEqual(1)
+    }
+    expect(panel(controller).querySelectorAll('.inkchapter-doc-expand__diag-fix.is-same-rule')).toHaveLength(0)
   })
 
   it('the auto-fix row reports the REAL planned count and disables while locked', () => {
@@ -692,7 +697,7 @@ describe('S1 — view sort menu', () => {
   function mountSortable() {
     const mountEl = document.createElement('div')
     document.body.appendChild(mountEl)
-    const a = { ...actions(), fixDiagnostic: vi.fn(), fixSameRule: vi.fn(), fixAllAuto: vi.fn() }
+    const a = { ...actions(), fixDiagnostic: vi.fn(), fixAllAuto: vi.fn() }
     const controller = new DocumentHubController({ mountEl, actions: a, doubleClickWindowMs: 260 })
     controller.mount()
     controller.update(buildDocumentStatusView(FACTS, false), buildDocumentHubModel({
@@ -719,7 +724,7 @@ describe('S1 — view sort menu', () => {
     const sortButton = panel(controller).querySelector<HTMLButtonElement>('.inkchapter-doc-expand__sort-button')!
     sortButton.click()
     const options = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__filter-option'))
-    expect(options.map(o => o.dataset['sort'])).toEqual(['document', 'severity', 'rule'])
+    expect(options.map(o => o.dataset['sort'])).toEqual(['document', 'document-desc', 'severity', 'rule'])
   })
 
   it('severity / rule sorts are VIEW-ONLY (counts and filter results unchanged)', () => {

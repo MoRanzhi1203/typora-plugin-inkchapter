@@ -42,6 +42,8 @@ export interface FixPanelPreviewState {
   undoHint?: string | null
   busy?: boolean
   error?: string | null
+  /** Same-rule batch entry (only when the rule really has >1 instance). */
+  sameRule?: { count: number } | null
 }
 
 export type FixPanelState = FixPanelInputState | FixPanelPreviewState
@@ -50,6 +52,8 @@ export interface FixPanelHandlers {
   onInput?(value: string): void
   onConfirm(value: string): void
   onCancel(): void
+  /** Switch the SAME prepared rule to a same-rule batch preview. */
+  onSameRule?(): void
 }
 
 const MAX_LINES_PER_HUNK = 8
@@ -190,6 +194,22 @@ export function buildFixPanel(state: FixPanelState, handlers: FixPanelHandlers):
 
   const actions = document.createElement('div')
   actions.className = `${FIX_PANEL_CLASS}__actions`
+  if (state.sameRule != null && state.sameRule.count > 1 && typeof handlers.onSameRule === 'function') {
+    const sameRule = document.createElement('button')
+    sameRule.type = 'button'
+    sameRule.className = 'inkchapter-doc-expand__button is-link'
+    sameRule.textContent = `同类修复（${state.sameRule.count} 项）`
+    sameRule.title = `把同一规则的 ${state.sameRule.count} 项一起计划并预览`
+    sameRule.disabled = state.busy === true
+    sameRule.addEventListener('click', () => {
+      if (sameRule.disabled) return
+      handlers.onSameRule?.()
+    })
+    actions.appendChild(sameRule)
+    const spacer = document.createElement('span')
+    spacer.className = `${FIX_PANEL_CLASS}__spacer`
+    actions.appendChild(spacer)
+  }
   const cancel = document.createElement('button')
   cancel.type = 'button'
   cancel.className = 'inkchapter-doc-expand__button is-ghost'

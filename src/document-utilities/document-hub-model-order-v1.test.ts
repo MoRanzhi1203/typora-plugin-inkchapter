@@ -39,6 +39,10 @@ describe('document hub ordering V1', () => {
     expect(sortDiagnosticItems(documentOrder, 'document').map(i => i.id)).toEqual(['a', 'b', 'c', 'd'])
   })
 
+  it('reverse-document is the exact reverse of the source order (view only)', () => {
+    expect(sortDiagnosticItems(documentOrder, 'document-desc').map(i => i.id)).toEqual(['d', 'c', 'b', 'a'])
+  })
+
   it('severity sort is stable inside the same severity (document order preserved)', () => {
     expect(sortDiagnosticItems(documentOrder, 'severity').map(i => i.id)).toEqual(['b', 'a', 'd', 'c'])
   })

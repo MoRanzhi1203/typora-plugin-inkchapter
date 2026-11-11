@@ -160,7 +160,7 @@ describe('Blank-Space Warning Presentation Policy — CSS band', () => {
     // The per-row fragments keep the shared marker class for OWNERSHIP, but the
     // scoped override must suppress the per-row 18% fill (stacked band).
     const fragmentOverride = STYLE_SCSS.match(
-      /\.inkchapter-block-gap-fragments \.inkchapter-blank-space-warning \{[^}]*\}/,
+      /\.inkchapter-block-gap-fragments \.inkchapter-blank-space-warning,[\s\S]*?\{[^}]*\}/,
     )?.[0] ?? ''
     expect(fragmentOverride).toContain('background: transparent')
     expect(fragmentOverride).toContain('border-left: 0')
@@ -173,9 +173,10 @@ describe('Blank-Space Warning Presentation Policy — CSS band', () => {
     const chipBlock = STYLE_SCSS.match(/\.inkchapter-blank-run-count \{[^}]*\}/)?.[0] ?? ''
     expect(chipBlock).not.toBe('')
     expect(chipBlock).toContain('pointer-events: none')
-    // 光标安全 — the label is RIGHT-aligned, never over the left caret column
-    expect(chipBlock).toContain('right: 6px')
-    expect(chipBlock).not.toContain('left:')
+    // M1 — the label now sits LEFT of the rail (8px gap), never at the right end.
+    expect(chipBlock).toContain('left: 10px')
+    expect(chipBlock).toContain('right: auto')
+    expect(chipBlock).not.toContain('right: 6px')
   })
 
   it('the bright FILL_ONLY regression is gone from the blank-space carriers', () => {

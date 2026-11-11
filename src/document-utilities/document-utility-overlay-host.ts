@@ -17,6 +17,12 @@ import { DocumentHubController } from './document-hub-controller'
 import { buildDocumentHubModel, type DocumentHubImageSummary } from './document-hub-model'
 import { DiagnosticFixController } from './document-diagnostic-fix-controller'
 import { describeFixCapability, planAllAutoFixesV2, selectNonConflictingPlans } from './document-diagnostic-fix-v2'
+import {
+  blankLineMarkerText,
+  formatBlankMarkerText,
+  resolveInternalExcessCount,
+  END_EXCESS_BLANK_MARKER_RULE,
+} from './document-diagnostic-blank-marker-v1'
 import type { FixPanelHandlers, FixPanelState } from './document-diagnostic-fix-panel'
 import { buildDocumentStatusView } from './document-status-indicator'
 import { DocumentDiagnosticLocator, prefersReducedMotion, DIAGNOSTIC_HIGHLIGHT_CLASS } from './document-diagnostic-locator'
@@ -488,7 +494,6 @@ import {
   BLANK_REGION_STYLE_UNIFIED_ATTR,
   DOCUMENT_END_TRAILING_CHIP_POS_ATTR,
   DOCUMENT_END_TRAILING_CHIP_POSITION,
-  formatDocumentEndTrailingBlankChipText,
   type DocumentEndExcessCoverageV513R4Counters,
   type DocumentEndRealGeometryV513R5Counters,
   type DocumentEndTextColumnV513R3Counters,
@@ -5427,6 +5432,7 @@ export class DocumentUtilityOverlayHost {
       this.locateDocEndCarrier = null
     }
     this.lastDocEndVisual = null
+    this.lastDocEndLabelExtraCount = null
     this.lastDocEndClosureFacts = null
     // TRAE §13 — the served document-end rule retires WITH its carrier (a later
     // closure must never be scoped to a rule that owns no carrier any more).
@@ -10227,6 +10233,8 @@ export class DocumentUtilityOverlayHost {
   } | null = null
   /** The committed synthetic EOF carrier (lifecycle-bound to locateDocCarrier). */
   private locateDocEndCarrier: HTMLElement | null = null
+  /** The diagnostic's own end-excess count for the committed EOF carrier label. */
+  private lastDocEndLabelExtraCount: number | null = null
   /** Last synthetic EOF measurement (audit + gate input). */
   private lastDocEndVisual: {
     rectViewport: RectLike | null
@@ -14524,28 +14532,64 @@ export class DocumentUtilityOverlayHost {
     return els
   }
 
-  /** 差分渲染 — 复用/更新唯一数量标签（右对齐，纯 overlay 文本）。 */
-  private upsertBlockGapCountChip(parent: HTMLElement, count: number): void {
+  /**
+   * 差分渲染 — the ONE blank-marker label (left side, overlay text only).
+   * The text is the NORMALIZED diagnostic count (`多余 N 空行`), never a DOM
+   * row/height derivation.
+   */
+  private upsertBlockGapCountChip(parent: HTMLElement, text: string | null, diagnosticId?: string | null): void {
     const chips = Array.from(parent.querySelectorAll<HTMLElement>(`.${BLANK_RUN_COUNT_CHIP_CLASS}`))
     const current = chips[0] ?? null
     // 去叠加 — 历史提交可能留下多个数量标签，只保留一个。
     for (let i = 1; i < chips.length; i++) {
       try { chips[i].remove() } catch { /* noop */ }
     }
-    if (count <= 0) {
+    if (text == null || text === '') {
       if (current != null) current.remove()
       return
     }
-    const text = `${count} 空行`
     if (current != null) {
       if (current.textContent !== text) current.textContent = text
+      this.bindBlankMarkerChip(current, diagnosticId)
       return
     }
     const chip = document.createElement('span')
     chip.className = BLANK_RUN_COUNT_CHIP_CLASS
     chip.setAttribute('aria-hidden', 'true')
     chip.textContent = text
+    this.bindBlankMarkerChip(chip, diagnosticId)
     parent.appendChild(chip)
+  }
+
+  /** M1 — ONLY the label is interactive: click/Esc/Enter locate its diagnostic. */
+  private bindBlankMarkerChip(chip: HTMLElement, diagnosticId?: string | null): void {
+    if (!diagnosticId) {
+      chip.style.pointerEvents = 'none'
+      chip.removeAttribute('role')
+      chip.removeAttribute('tabindex')
+      return
+    }
+    chip.dataset['diagnosticId'] = diagnosticId
+    chip.setAttribute('role', 'button')
+    chip.setAttribute('tabindex', '0')
+    chip.removeAttribute('aria-hidden')
+    chip.setAttribute('aria-label', `${chip.textContent ?? '空行诊断'}（点击定位）`)
+    chip.style.pointerEvents = 'auto'
+    chip.style.cursor = 'pointer'
+    if (chip.dataset['inkBlankChipBound'] === '1') return
+    chip.dataset['inkBlankChipBound'] = '1'
+    chip.addEventListener('click', (event) => {
+      event.stopPropagation()
+      const id = chip.dataset['diagnosticId']
+      if (id) this.locateDiagnostic(id)
+    })
+    chip.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
+      event.stopPropagation()
+      const id = chip.dataset['diagnosticId']
+      if (id) this.locateDiagnostic(id)
+    })
   }
 
   /**
@@ -15148,14 +15192,13 @@ export class DocumentUtilityOverlayHost {
       if (container.style.cssText !== nextCss) container.style.cssText = nextCss
       const allowance = INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines
       const fragEls = this.reconcileBlankRowFragmentEls(container, fragmentGeometry.fragments, allowance, severity)
-      // ONE count label — the VISIBLE blank line BAND count (§3/§4): the number of
-      // distinct blank line bands the user actually sees AND the number the
-      // publication decision was made on. The SOURCE blank count is a DIFFERENT,
-      // non-decision fact (kept only for source parsing / position mapping / debug)
-      // and is NEVER stated as the displayed count. The rendered row/node count is a
-      // GEOMETRY fact.
-      const labelBlankCount = visibleBlankLineCount
-      this.upsertBlockGapCountChip(container, labelBlankCount)
+      // ONE left label — the NORMALIZED excess count from the diagnostic itself
+      // (`actualBlankLines − passMaxBlankLines`). Never a DOM row/height count.
+      const markerText = blankLineMarkerText(diag?.code ?? '', meta)
+        ?? (actualBlankLines != null
+          ? formatBlankMarkerText('INTERNAL_EXCESS', Math.max(1, actualBlankLines - allowance))
+          : null)
+      this.upsertBlockGapCountChip(container, markerText, diagId ?? diag?.id ?? null)
       // 去叠加 — 无论复用还是新建，都把同一区间上一轮泄漏的孤儿载体
       // （旧 revision / 失同步的重复 carrier）清出 DOM，保证「一个区间一个载体」。
       this.retireStrayBlockGapCarriers(container)
@@ -15202,7 +15245,8 @@ export class DocumentUtilityOverlayHost {
         const publishedBlankCount = typeof meta.publishedBlankLineCount === 'number'
           ? meta.publishedBlankLineCount
           : visibleBlankLineCount
-        const activeLabelBlankCount = labelBlankCount
+        // The visible label now states the DIAGNOSTIC's excess count.
+        const activeLabelBlankCount = resolveInternalExcessCount(meta) ?? visibleBlankLineCount
         const paintedFragmentCount = fragEls.length
         const staleFactDiff = this.staleActiveVisualFactDiff(diag, live)
         const staleActiveVisualCount = staleFactDiff !== '' ? 1 : 0
@@ -17451,7 +17495,7 @@ export class DocumentUtilityOverlayHost {
         diag.severity,
         existingFragments,
       )
-      this.upsertBlockGapCountChip(container, visible)
+      this.upsertBlockGapCountChip(container, blankLineMarkerText(diag.code, diag.metadata), diag.id)
       if (existing == null) layer.appendChild(container)
       kept.push(container)
       paintedMemberCount++
@@ -18346,7 +18390,7 @@ export class DocumentUtilityOverlayHost {
         member.diag.severity,
         existingFragments,
       )
-      this.upsertBlockGapCountChip(container, visual.visible)
+      this.upsertBlockGapCountChip(container, blankLineMarkerText(member.diag.code, member.diag.metadata), member.diag.id)
       container.setAttribute('data-gap-member', member.diag.id)
       container.setAttribute('data-gap-identity', member.identity)
       container.setAttribute('data-severity', member.diag.severity)
@@ -22959,7 +23003,6 @@ export class DocumentUtilityOverlayHost {
         openImageSettings: () => { this.opts.documentHub?.openImageSettings() },
         locateDiagnostic: (diagnosticId) => this.locateDiagnostic(diagnosticId),
         fixDiagnostic: (diagnosticId) => this.diagnosticFixController?.startDiagnostic(diagnosticId),
-        fixSameRule: (ruleId) => this.diagnosticFixController?.startRule(ruleId),
         fixAllAuto: () => this.diagnosticFixController?.startAllAuto(),
       },
       getHint: () => this.opts.documentHub?.getHint?.() ?? null,
@@ -28017,6 +28060,9 @@ export class DocumentUtilityOverlayHost {
       this.lastDocEndBlankEditingMode ?? 'unknown',
       root ? `${root.tagName}#${root.id}` : '',
       String(excess),
+      // The LABEL states the diagnostic's own count: a changed normalized count
+      // must rebuild the chip even when the measured rows are unchanged.
+      String(input.extraTrailingBlankLineCount),
     ].join('|')
     const existingFragments = input.el.querySelectorAll(`.${RENDERED_BLANK_ROW_FRAGMENT_CLASS}`).length
     let cleaned = 0
@@ -28055,7 +28101,10 @@ export class DocumentUtilityOverlayHost {
       chip.className = BLANK_RUN_COUNT_CHIP_CLASS
       chip.setAttribute(DOCUMENT_END_TRAILING_CHIP_POS_ATTR, DOCUMENT_END_TRAILING_CHIP_POSITION)
       chip.setAttribute('aria-hidden', 'true')
-      chip.textContent = formatDocumentEndTrailingBlankChipText(excess)
+      // The label states the DIAGNOSTIC's own excess count (never a DOM row count).
+      const labelCount = input.extraTrailingBlankLineCount > 0 ? input.extraTrailingBlankLineCount : excess
+      chip.textContent = formatBlankMarkerText('END_EXCESS', Math.max(1, labelCount))
+      this.bindBlankMarkerChip(chip, input.diagnosticId)
       input.el.appendChild(chip)
       this.lastEofFragmentSetSignature = signature
       rebuilt = true
@@ -28368,6 +28417,9 @@ export class DocumentUtilityOverlayHost {
       // CURRENT real rows through the ONE shared repaint helper (also used by the
       // layout re-derive), so an edit that changes the count can never leave a
       // stale fragment set behind.
+      // Cache the DIAGNOSTIC's extra count for later re-derives (a layout-only
+      // re-measure may have no snapshot to read).
+      this.lastDocEndLabelExtraCount = extraTrailingBlankLineCount
       this.paintDocEndExcessRows({
         el, severity, tail, localRect, hostRect,
         extraTrailingBlankLineCount,
@@ -28391,7 +28443,10 @@ export class DocumentUtilityOverlayHost {
       const label = document.createElement('span')
       label.className = EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS
       label.setAttribute('aria-hidden', 'true')
-      label.textContent = EOF_NEWLINE_MARKER_ENDPOINT_LABEL
+      // `缺少 N 空行` from the normalized diagnostic fact (1 missing terminal
+      // newline); never a guessed number.
+      label.textContent = blankLineMarkerText(diag.code, diag.metadata) ?? EOF_NEWLINE_MARKER_ENDPOINT_LABEL
+      this.bindBlankMarkerChip(label, diag.id)
       el.appendChild(label)
     }
     el.style.cssText = `position:absolute;display:block;left:${Math.round(localRect.left)}px;top:${Math.round(localRect.top)}px;width:${Math.round(localRect.width)}px;height:${Math.round(localRect.height)}px;pointer-events:none;`
@@ -28806,13 +28861,22 @@ export class DocumentUtilityOverlayHost {
     // changed the blank-line count left the old fragment set in place (the
     // `0/10/10/10/0` defect). The same shared repaint authority is used here.
     if (isExcessRule) {
+      // The LABEL must state the live DIAGNOSTIC's extra count (metadata), not a
+      // re-derived geometry excess. Geometry keeps using the measured rows.
+      const liveExcess = this.liveDiagnosticFor(this.lastLocatedDiagnosticId)
+        ?? this.snapshot?.diagnostics.find(d => d.code === END_EXCESS_BLANK_MARKER_RULE)
+        ?? null
+      const liveMeta = liveExcess?.metadata
+      const metaExtra = typeof liveMeta?.['extraTrailingBlankLineCount'] === 'number'
+        ? Number(liveMeta['extraTrailingBlankLineCount'])
+        : this.lastDocEndLabelExtraCount
       this.paintDocEndExcessRows({
         el,
         severity: this.lastDocEndClosureFacts?.severity ?? 'warning',
         tail,
         localRect: local,
         hostRect,
-        extraTrailingBlankLineCount,
+        extraTrailingBlankLineCount: metaExtra != null && metaExtra > 0 ? metaExtra : extraTrailingBlankLineCount,
         diagnosticId: this.lastDocEndPaintedDiagnosticId ?? this.lastLocatedDiagnosticId,
         targetIdentity: this.lastLocatedDiagnosticId,
       })

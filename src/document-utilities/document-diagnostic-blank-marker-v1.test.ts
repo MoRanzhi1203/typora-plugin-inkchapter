@@ -1,0 +1,124 @@
+import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import {
+  blankLineMarkerText,
+  formatBlankMarkerText,
+  resolveBlankLineMarkerFact,
+  resolveEndExcessCount,
+  resolveEndMissingCount,
+  resolveInternalExcessCount,
+} from './document-diagnostic-blank-marker-v1'
+
+// Comments contain braces; strip them so the rule scanner sees selectors only.
+const STYLE = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+const HOST = readFileSync(resolve(process.cwd(), 'src/document-utilities/document-utility-overlay-host.ts'), 'utf8')
+
+/** Extract ONE rule body by exact selector member (handles selector lists). */
+function ruleBlock(selector: string): string {
+  const re = /([^{}]+)\{([^{}]*)\}/g
+  let match: RegExpExecArray | null
+  while ((match = re.exec(STYLE)) !== null) {
+    const selectors = match[1].split(',').map(part => part.trim())
+    if (selectors.includes(selector)) return `${selector} {${match[2]}}`
+  }
+  return ''
+}
+
+describe('blank marker facts — counts come from the diagnostic', () => {
+  it('INTERNAL excess = actualBlankLines − passMaxBlankLines', () => {
+    expect(resolveInternalExcessCount({ actualBlankLines: 4, passMaxBlankLines: 1 })).toBe(3)
+    expect(resolveInternalExcessCount({ actualBlankLines: 2, passMaxBlankLines: 1 })).toBe(1)
+    expect(resolveInternalExcessCount({ actualBlankLines: 1, passMaxBlankLines: 1 })).toBeNull()
+    expect(resolveInternalExcessCount({})).toBeNull()
+  })
+
+  it('END excess = extraTrailingBlankLineCount', () => {
+    expect(resolveEndExcessCount({ extraTrailingBlankLineCount: 5 })).toBe(5)
+    expect(resolveEndExcessCount({ extraTrailingBlankLineCount: 0 })).toBeNull()
+  })
+
+  it('END missing = 1 when the terminal newline is absent', () => {
+    expect(resolveEndMissingCount({ terminalNewlineCount: 0 })).toBe(1)
+    expect(resolveEndMissingCount({ terminalNewlineCount: 1 })).toBeNull()
+    expect(resolveEndMissingCount({})).toBeNull()
+  })
+
+  it('states the normalized text and the line style per kind', () => {
+    expect(resolveBlankLineMarkerFact('EXCESSIVE_INTERNAL_BLANK_LINES', { actualBlankLines: 4, passMaxBlankLines: 1 }))
+      .toEqual({ kind: 'INTERNAL_EXCESS', count: 3, text: '多余 3 空行', lineStyle: 'solid' })
+    expect(blankLineMarkerText('DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE', { extraTrailingBlankLineCount: 2 }))
+      .toBe('多余 2 空行')
+    expect(blankLineMarkerText('DOCUMENT_TERMINAL_NEWLINE_MISSING', { terminalNewlineCount: 0 }))
+      .toBe('缺少 1 空行')
+    expect(blankLineMarkerText('HEADING_LEVEL_GAP', {})).toBeNull()
+    expect(formatBlankMarkerText('END_MISSING', 1)).toBe('缺少 1 空行')
+  })
+})
+
+describe('blank marker visual contract — three left markers, no filled band / right count', () => {
+  it('INTERNAL + END excess share ONE 2px solid left rail, never a fill', () => {
+    const internal = ruleBlock('.inkchapter-block-gap-fragments')
+    expect(internal).toContain('border-left: 2px solid var(--ink-blank-space-warning-accent)')
+    expect(internal).toContain('background: transparent')
+    const end = ruleBlock(
+      ".inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true'][data-ink-blank-region='amber-range']",
+    )
+    expect(end).toContain('border-left: 2px solid var(--ink-blank-space-warning-accent)')
+    expect(end).toContain('background: transparent')
+    expect(end).not.toContain('var(--ink-blank-space-warning-bg)')
+  })
+
+  it('per-row fragments never paint their own amber surface (no width-wide band)', () => {
+    const override = ruleBlock('.inkchapter-block-gap-fragments .inkchapter-blank-space-warning')
+    expect(override).toContain('background: transparent')
+    const eofOverride = ruleBlock(
+      ".inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true'] .inkchapter-blank-space-warning",
+    )
+    expect(eofOverride).toContain('background: transparent')
+  })
+
+  it('END missing is a 16–20px DASHED left stroke with the label to its right', () => {
+    const line = ruleBlock('.inkchapter-eof-endpoint-line')
+    const height = Number.parseFloat(line.match(/height:\s*(\d+(?:\.\d+)?)px/)?.[1] ?? '0')
+    expect(height).toBeGreaterThanOrEqual(16)
+    expect(height).toBeLessThanOrEqual(20)
+    expect(line).toContain('border-left: 2px dashed var(--ink-blank-space-warning-accent)')
+    expect(line).toContain('background: none')
+    const label = ruleBlock('.inkchapter-eof-endpoint-label')
+    expect(label).toContain('left: 10px')
+  })
+
+  it('the single count label is a 20px LEFT chip (never at the right edge)', () => {
+    const chip = ruleBlock('.inkchapter-blank-run-count')
+    expect(chip).toContain('left: 10px')
+    expect(chip).toContain('right: auto')
+    expect(chip).toContain('height: 20px')
+    expect(chip).not.toContain('right: 6px')
+    const legacy = ruleBlock(".inkchapter-blank-run-count[data-ink-chip-pos='top-right']")
+    expect(legacy).toContain('left: 10px')
+    expect(legacy).not.toContain('right: 6px')
+  })
+})
+
+describe('blank marker host wiring', () => {
+  it('the label text is derived from the normalized diagnostic fact', () => {
+    expect(HOST).toContain('blankLineMarkerText(diag?.code ?? \'\', meta)')
+    expect(HOST).toContain('blankLineMarkerText(diag.code, diag.metadata)')
+    expect(HOST).toContain('formatBlankMarkerText(\'END_EXCESS\'')
+  })
+
+  it('no blank marker derives its number from a DOM row count', () => {
+    expect(HOST).not.toContain('`${count} 空行`')
+    expect(HOST).not.toContain('labelBlankCount')
+  })
+
+  it('ONLY the label is interactive and locates its own diagnostic', () => {
+    expect(HOST).toContain('this.bindBlankMarkerChip(chip, input.diagnosticId)')
+    expect(HOST).toContain('this.bindBlankMarkerChip(label, diag.id)')
+    expect(HOST).toContain("chip.dataset['diagnosticId'] = diagnosticId")
+    expect(HOST).toContain('this.locateDiagnostic(id)')
+    // The overlay/carrier never becomes clickable as a whole.
+    expect(HOST).toContain("el.style.cssText = `position:absolute;display:block;left:")
+  })
+})

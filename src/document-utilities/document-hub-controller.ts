@@ -40,10 +40,8 @@ export interface DocumentHubActions {
   dualLink(): void
   openImageSettings(): void
   locateDiagnostic?(diagnosticId: string): void
-  /** 行内「修复/处理」：打开真实修复预览。 */
+  /** 行内「修复/处理」：打开真实修复预览（同类修复在预览内切换）。 */
   fixDiagnostic?(diagnosticId: string): void
-  /** 「同类修复」：同一规则的全部实例。 */
-  fixSameRule?(ruleId: string): void
   /** 「一键修复可处理项」：仅 AUTO_SAFE 计划。 */
   fixAllAuto?(): void
 }
@@ -842,30 +840,6 @@ export class DocumentHubController {
       })
       fixButton.addEventListener('keydown', (event) => event.stopPropagation())
       action.appendChild(fixButton)
-
-      // 同类修复 — only when this rule really has more than one instance in the
-      // current snapshot (never a dead button). The batch is planned and
-      // conflict-checked by the SAME controller.
-      const sameRuleCount = item.ruleId
-        ? (this.model?.diagnostics.filter(other => other.ruleId === item.ruleId).length ?? 0)
-        : 0
-      if (sameRuleCount > 1 && typeof this.options.actions.fixSameRule === 'function') {
-        const sameButton = document.createElement('button')
-        sameButton.type = 'button'
-        sameButton.className = 'inkchapter-doc-expand__diag-fix is-same-rule'
-        sameButton.textContent = '同类'
-        sameButton.title = `同类修复（共 ${sameRuleCount} 项）`
-        sameButton.setAttribute('aria-label', `同类修复：${item.title}（共 ${sameRuleCount} 项）`)
-        sameButton.disabled = locked || busy
-        sameButton.addEventListener('click', (event) => {
-          event.stopPropagation()
-          if (sameButton.disabled) return
-          this.selectedDiagnosticId = item.id
-          this.options.actions.fixSameRule?.(item.ruleId!)
-        })
-        sameButton.addEventListener('keydown', (event) => event.stopPropagation())
-        action.appendChild(sameButton)
-      }
     }
 
     row.append(dot, body, loc, action)

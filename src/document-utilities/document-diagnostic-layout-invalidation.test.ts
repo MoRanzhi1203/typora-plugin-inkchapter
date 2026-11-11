@@ -216,12 +216,15 @@ describe('ROOT_BLANK_LAYOUT_REDERIVE / ROOT_BLANK_SOURCE_AUTHORITY — 契约', 
     expect(body).toContain('this.commitBlockGapVisual(')
   })
 
-  it('§4 — Active 数量标签必须取 VISIBLE 行带数（不得用源码数或渲染节点数）', () => {
-    const idx = HOST_SRC.indexOf('ONE count label')
+  it('§4 — Active 数量标签取规范化诊断超额数（不得用源码总数或渲染节点数）', () => {
+    // M1 — the label now states `actualBlankLines − passMaxBlankLines` from the
+    // diagnostic metadata, never the raw source total nor the DOM row count.
+    const idx = HOST_SRC.indexOf('ONE left label')
     expect(idx).toBeGreaterThan(0)
-    const body = HOST_SRC.slice(idx, idx + 700)
-    expect(body).toContain('const labelBlankCount = visibleBlankLineCount')
-    expect(body).not.toContain('labelBlankCount = actualBlankLines')
+    const body = HOST_SRC.slice(idx, idx + 900)
+    expect(body).toContain("blankLineMarkerText(diag?.code ?? '', meta)")
+    expect(HOST_SRC).toContain('const activeLabelBlankCount = resolveInternalExcessCount(meta)')
+    expect(HOST_SRC).not.toContain('const labelBlankCount = visibleBlankLineCount')
   })
 
   it('§2.2 — 源码计数缺失时绝不回退渲染行数（UNRESOLVED_SOURCE + 一次有界重解析）', () => {

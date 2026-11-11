@@ -72,56 +72,61 @@ describe('端点标记 — 文末缺空行端点（短横线 + 缺少 1 空行�
     expect(EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS).toBe('inkchapter-eof-endpoint-label')
     expect(EOF_NEWLINE_MARKER_ENDPOINT_FORM).toBe('endpoint')
     expect(EOF_ENDPOINT_LINE_CLASS).toBe('inkchapter-eof-endpoint-line')
-    expect(EOF_ENDPOINT_LINE_MIN_PX).toBe(40)
-    expect(EOF_ENDPOINT_LINE_MAX_PX).toBe(60)
+    expect(EOF_ENDPOINT_LINE_MIN_PX).toBe(16)
+    expect(EOF_ENDPOINT_LINE_MAX_PX).toBe(20)
   })
 
   it('the overlay host paints the endpoint LINE + label + form on the newline-missing chip', () => {
     const src = readFileSync(resolve(process.cwd(), 'src/document-utilities/document-utility-overlay-host.ts'), 'utf8')
     expect(src).toContain('EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS')
-    expect(src).toContain('label.textContent = EOF_NEWLINE_MARKER_ENDPOINT_LABEL')
+    expect(src).toContain('blankLineMarkerText(diag.code, diag.metadata)')
+    expect(src).toContain('EOF_NEWLINE_MARKER_ENDPOINT_LABEL')
     expect(src).toContain('EOF_ENDPOINT_LINE_CLASS')
     expect(src).toContain("setAttribute('data-ink-eof-form', EOF_NEWLINE_MARKER_ENDPOINT_FORM)")
     expect(src).toContain('el.appendChild(line)')
     expect(src).toContain('el.appendChild(label)')
   })
 
-  it('the endpoint form drops the band fill AND the rail; the short line is 40–60px', () => {
+  it('the endpoint form is a 16–20px DASHED stroke with a LEFT label (no band fill)', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
     const formBlock = css.match(/\[data-ink-eof-marker='true'\]\[data-ink-eof-form='endpoint'\] \{[^}]*\}/)?.[0] ?? ''
     expect(formBlock).not.toBe('')
     expect(formBlock).toContain('background: none')
-    // the endpoint is a SHORT LINE, never a vertical rail
     expect(formBlock).toContain('border-left: 0')
     const lineBlock = css.match(/\.inkchapter-eof-endpoint-line \{[^}]*\}/)?.[0] ?? ''
     expect(lineBlock).not.toBe('')
-    const width = Number.parseFloat(lineBlock.match(/width:\s*(\d+(?:\.\d+)?)px/)?.[1] ?? '0')
-    expect(width).toBeGreaterThanOrEqual(EOF_ENDPOINT_LINE_MIN_PX)
-    expect(width).toBeLessThanOrEqual(EOF_ENDPOINT_LINE_MAX_PX)
-    expect(lineBlock).toContain('var(--ink-blank-space-warning-accent)')
+    const height = Number.parseFloat(lineBlock.match(/height:\s*(\d+(?:\.\d+)?)px/)?.[1] ?? '0')
+    expect(height).toBeGreaterThanOrEqual(EOF_ENDPOINT_LINE_MIN_PX)
+    expect(height).toBeLessThanOrEqual(EOF_ENDPOINT_LINE_MAX_PX)
+    // The stroke is a DASHED left border, not a horizontal bar.
+    expect(lineBlock).toContain('border-left: 2px dashed var(--ink-blank-space-warning-accent)')
+    expect(lineBlock).toContain('background: none')
     const labelBlock = css.match(/\.inkchapter-eof-endpoint-label \{[^}]*\}/)?.[0] ?? ''
     expect(labelBlock).not.toBe('')
     expect(labelBlock).toContain('pointer-events: none')
+    expect(labelBlock).toContain('left: 10px')
     expect(labelBlock).toContain('var(--ink-blank-space-warning-accent)')
   })
 })
 
 // ── 统一样式 — the doc-end excess band matches the internal amber region ──────
 describe('统一样式 — 文末多余空行复用内部琥珀色空行区域', () => {
-  it('the excess carrier drops the left accent (identical amber range region)', () => {
+  it('the excess carrier paints ONE left rail and NEVER a filled region', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
     const region = css.match(/\[data-ink-eof-marker='true'\]\[data-ink-blank-region='amber-range'\] \{[^}]*\}/)?.[0] ?? ''
     expect(region).not.toBe('')
-    expect(region).toContain('border-left: 0')
-    expect(region).toContain('background: var(--ink-blank-space-warning-bg)')
+    expect(region).toContain('border-left: 2px solid var(--ink-blank-space-warning-accent)')
+    expect(region).toContain('background: transparent')
+    expect(region).not.toContain('background: var(--ink-blank-space-warning-bg)')
   })
 
-  it('the doc-end excess chip is pinned top-right and states `多余 N 空行`', () => {
+  it('the doc-end count is a LEFT label (legacy position attribute stays, visual left)', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
     const chip = css.match(/\.inkchapter-blank-run-count\[data-ink-chip-pos='top-right'\] \{[^}]*\}/)?.[0] ?? ''
     expect(chip).not.toBe('')
-    expect(chip).toContain('top: 4px')
-    expect(chip).toContain('transform: none')
+    expect(chip).toContain('left: 10px')
+    expect(chip).toContain('right: auto')
+    expect(chip).not.toContain('right: 6px')
   })
 
   it('the chip text uses the Markdown trailing count (数据来源分离)', () => {
@@ -938,11 +943,11 @@ describe('三方 DOM 一致性 — 文末多余空行（Passive / Active / Drawe
     // 统一样式 — the SAME amber blank-area region as the internal blank line
     expect(carrier.getAttribute('data-ink-blank-region')).toBe('amber-range')
     expect(carrier.getAttribute('data-ink-marker-kind')).toBe(EOF_MARKER_KIND_DOCUMENT_END_WARNING)
-    // 右上角「多余 N 空行」— N is the VISIBLE excess blank rows (item 3): the world
-    // supplies 6 REAL trailing blank rows → 6 − 1 legal = 5 visible excess rows.
+    // 左侧「多余 N 空行」— N is the DIAGNOSTIC's normalized extra count (3),
+    // never a DOM row count and never a second threshold subtraction.
     const chip = carrier.querySelector<HTMLElement>('[data-ink-chip-pos="top-right"]')
     expect(chip).not.toBeNull()
-    expect(chip!.textContent).toBe('多余 5 空行')
+    expect(chip!.textContent).toBe('多余 3 空行')
     // the last block itself is never polluted
     expect(world.last.querySelector('[data-ink-eof-marker="true"]')).toBeNull()
   })
@@ -975,8 +980,8 @@ describe('三方 DOM 一致性 — 文末多余空行（Passive / Active / Drawe
     internals.lastLocatedDiagnosticId = String(diag.id)
     expect(internals.commitSyntheticEofVisual(fakeTx(), diag, 2, true)).toBe(true)
     const chip = excessCarrier()!.querySelector<HTMLElement>('[data-ink-chip-pos="top-right"]')
-    // item 3 — the chip states the VISIBLE excess rows (6 real − 1 legal = 5).
-    expect(chip!.textContent).toBe('多余 5 空行')
+    // The chip states the DIAGNOSTIC's normalized extra count (2).
+    expect(chip!.textContent).toBe('多余 2 空行')
     // Active — a re-locate must never duplicate the marker nor leave a residue, and
     // the Drawer row set is unchanged (ONE lifecycle / one identity).
     internals.locateDiagnostic(String(diag.id))
@@ -984,7 +989,7 @@ describe('三方 DOM 一致性 — 文末多余空行（Passive / Active / Drawe
     expect(drawerRows().length).toBe(rows.length)
     const after = excessCarrier()
     if (after != null) {
-      expect(after.querySelector<HTMLElement>('[data-ink-chip-pos="top-right"]')!.textContent).toBe('多余 5 空行')
+      expect(after.querySelector<HTMLElement>('[data-ink-chip-pos="top-right"]')!.textContent).toBe('多余 2 空行')
     }
   })
 

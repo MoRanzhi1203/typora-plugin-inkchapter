@@ -32,10 +32,11 @@ export interface DocumentHubImageSummary {
 }
 
 /** 检测面板的视图排序模式（只影响呈现，不改变诊断身份/计数）。 */
-export type DiagnosticSortMode = 'document' | 'severity' | 'rule'
+export type DiagnosticSortMode = 'document' | 'document-desc' | 'severity' | 'rule'
 
 export const DIAGNOSTIC_SORT_MODES: readonly { id: DiagnosticSortMode; label: string }[] = [
   { id: 'document', label: '文档顺序' },
+  { id: 'document-desc', label: '文档倒序' },
   { id: 'severity', label: '严重程度' },
   { id: 'rule', label: '规则类型' },
 ]
@@ -164,6 +165,9 @@ export function sortDiagnosticItems(
   mode: DiagnosticSortMode,
 ): DocumentHubDiagnosticItem[] {
   if (mode === 'document') return [...items]
+  // Reverse-document is the same stable view, reversed AFTER the source-order
+  // list is established (never a different comparator).
+  if (mode === 'document-desc') return [...items].reverse()
   const decorated = items.map((item, index) => ({ item, index }))
   decorated.sort((a, b) => {
     if (mode === 'severity') {

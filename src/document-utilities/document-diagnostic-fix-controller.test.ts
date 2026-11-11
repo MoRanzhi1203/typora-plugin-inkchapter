@@ -260,6 +260,28 @@ describe('fix controller — interactive input fixes', () => {
     expect(h.notify).toHaveBeenLastCalledWith('已修复 1 项', 'info')
   })
 
+  it('switches a single preview to the same-rule batch and applies it in ONE write', () => {
+    const d1 = diag('EXCESSIVE_INTERNAL_BLANK_LINES', blankMeta, blankLocation, 'b1')
+    const d2 = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: 6, lastBlankLine: 8, actualBlankLines: 3, passMaxBlankLines: 1,
+    }, { kind: 'source-range', startLine: 8, startColumn: 0 }, 'b2')
+    const h = createHarness({
+      markdown: '# A\n\n\n\n\nB\n\n\n\nC\n',
+      diagnostics: [d1, d2],
+      onRecheck: (state) => { state.snapshot = snapshot([]) },
+    })
+    h.controller.startDiagnostic('b1')
+    expect((h.ui.state as FixPanelPreviewState).sameRule).toEqual({ count: 2 })
+    h.ui.handlers?.onSameRule?.()
+    const preview = h.ui.state as FixPanelPreviewState
+    expect(preview.title).toBe('同类修复')
+    expect(preview.summary).toContain('将修改源码 2 处')
+    expect(h.state.writes).toEqual([])
+    confirmPreview(h)
+    expect(h.state.writes).toEqual(['# A\n\nB\n\nC\n'])
+    expect(h.notify).toHaveBeenLastCalledWith('已修复 2 项（Ctrl+Z 可撤销）', 'info')
+  })
+
   it('ignores a double submit while the caption write is in flight', async () => {
     const d = diag('TABLE_MISSING_NAME', {}, undefined, 't1', 'block:table:0')
     const h = createHarness({

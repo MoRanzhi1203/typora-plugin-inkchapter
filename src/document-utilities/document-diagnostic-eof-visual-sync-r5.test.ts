@@ -132,7 +132,8 @@ describe('EOF-R5 — 被动提交后标签/着色集合实时同步（无需再�
     // then grow back to 2 → the PASSIVE path must re-create the warning.
     setVisible(w.write, 2)
     ;(host as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag(2), 2, true)
-    expect(chipText()).toBe('多余 1 空行')
+    // The label states the diagnostic's normalized extra count (2).
+    expect(chipText()).toBe('多余 2 空行')
     expect(frags()).toBe(1)
     setVisible(w.write, 1)
     commit(host, 1)                                  // retract: no label / no fill
@@ -140,30 +141,30 @@ describe('EOF-R5 — 被动提交后标签/着色集合实时同步（无需再�
     expect(frags()).toBe(0)
     setVisible(w.write, 2)
     commit(host, 2)                                  // 1 -> 2 : warning must come back
-    expect(chipText()).toBe('多余 1 空行')
+    expect(chipText()).toBe('多余 2 空行')
     expect(frags()).toBe(1)
   })
 
-  it('EOF-03: 2 -> 3 可见空行 → 标签 1 -> 2，增加 1 行目标', () => {
+  it('EOF-03: 2 -> 3 可见空行 → 标签 2 -> 3（诊断计数），增加 1 行目标', () => {
     const w = makeWorld(); host = w.h
     setVisible(w.write, 2)
     ;(host as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag(2), 2, true)
-    expect(chipText()).toBe('多余 1 空行')
+    expect(chipText()).toBe('多余 2 空行')
     setVisible(w.write, 3)
     commit(host, 3)
-    expect(chipText()).toBe('多余 2 空行')
+    expect(chipText()).toBe('多余 3 空行')
     expect(frags()).toBe(2)
   })
 
-  it('EOF-04: 3 -> 2 可见空行 → 标签 2 -> 1，移除旧目标', () => {
+  it('EOF-04: 3 -> 2 可见空行 → 标签 3 -> 2（诊断计数），移除旧目标', () => {
     const w = makeWorld(); host = w.h
     setVisible(w.write, 3)
     ;(host as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag(3), 3, true)
-    expect(chipText()).toBe('多余 2 空行')
+    expect(chipText()).toBe('多余 3 空行')
     expect(frags()).toBe(2)
     setVisible(w.write, 2)
     commit(host, 2)
-    expect(chipText()).toBe('多余 1 空行')
+    expect(chipText()).toBe('多余 2 空行')
     expect(frags()).toBe(1)
   })
 
@@ -177,7 +178,7 @@ describe('EOF-R5 — 被动提交后标签/着色集合实时同步（无需再�
     setVisible(w.write, 2)                 // 3 -> 2 : one row less
     commit(host, 2)
     const height2 = Number.parseFloat(el.style.height)
-    expect(chipText()).toBe('多余 1 空行')
+    expect(chipText()).toBe('多余 2 空行')
     expect(frags()).toBe(1)
     // the BAND itself must shrink (the reported “数值变、色块不变” defect)
     expect(height2).toBeLessThan(height3)
@@ -192,7 +193,7 @@ describe('EOF-R5 — 被动提交后标签/着色集合实时同步（无需再�
     const w = makeWorld(); host = w.h
     setVisible(w.write, 2)
     ;(host as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag(2), 2, true)
-    expect(chipText()).toBe('多余 1 空行')
+    expect(chipText()).toBe('多余 2 空行')
     setVisible(w.write, 1)
     commit(host, 1)
     expect(chipText()).toBeNull()
@@ -227,10 +228,10 @@ describe('EOF-R5 — 被动提交后标签/着色集合实时同步（无需再�
     const w = makeWorld(); host = w.h
     setVisible(w.write, 3)
     ;(host as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag(3), 3, true)
-    expect(chipText()).toBe('多余 2 空行')
+    expect(chipText()).toBe('多余 3 空行')
     setVisible(w.write, 2)           // edit while the diagnostic stays ACTIVE
     commit(host, 2)
-    expect(chipText()).toBe('多余 1 空行')
+    expect(chipText()).toBe('多余 2 空行')
     expect(frags()).toBe(1)
     expect(carrier()).not.toBeNull()
   })
@@ -268,7 +269,7 @@ describe('EOF-R5 — 被动提交后标签/着色集合实时同步（无需再�
     stubRect(w.write, () => ({ left: 0, top: 0, right: 0, bottom: 0 }))
     ;(host as unknown as Internals).rederiveSyntheticEofVisualOnLayoutChange(2)
     expect(frags()).toBe(2)
-    expect(chipText()).toBe('多余 2 空行')
+    expect(chipText()).toBe('多余 3 空行')
   })
 
   it('EOF-08: 快速连续变化 → 最终状态最新（latest-wins，无旧值回写）', () => {
@@ -276,7 +277,7 @@ describe('EOF-R5 — 被动提交后标签/着色集合实时同步（无需再�
     setVisible(w.write, 2)
     ;(host as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag(2), 2, true)
     for (const n of [3, 2, 4, 3, 5]) { setVisible(w.write, n); commit(host, n) }
-    expect(chipText()).toBe('多余 4 空行')
+    expect(chipText()).toBe('多余 5 空行')
     expect(frags()).toBe(4)
   })
 
@@ -315,10 +316,11 @@ describe('EOF-R5 — 被动提交后标签/着色集合实时同步（无需再�
       w.write.appendChild(b)
     }
     ;(host as unknown as Internals).commitSyntheticEofVisual(fakeTx(), diag(2), 2, true)
-    expect(chipText()).toBe('多余 1 空行')
+    expect(chipText()).toBe('多余 2 空行')
     expect(frags()).toBe(1)
     commit(host, 2)                  // passive re-commit: the internal blank never counts
-    expect(chipText()).toBe('多余 1 空行')
+    expect(chipText()).toBe('多余 2 空行')
     expect(frags()).toBe(1)
   })
 })
+

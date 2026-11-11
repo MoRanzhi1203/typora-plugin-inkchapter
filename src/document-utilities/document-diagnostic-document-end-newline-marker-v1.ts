@@ -103,21 +103,21 @@ export const EOF_NEWLINE_MARKER_RIGHT_EDGE_AUTHORITY = 'DOCUMENT_CONTENT'
 export const EOF_NEWLINE_MARKER_ARIA_LABEL = '文档末尾缺少换行符'
 /**
  * TRAE — the EOF ENDPOINT indicator. The missing-final-newline marker is an
- * explicit ENDPOINT: a SHORT HORIZONTAL line (40–60px) + a `缺少 1 空行` label,
- * NEVER a filled warning band. It deliberately shares the amber warning TOKEN
- * family with the blank-space region but keeps its OWN endpoint form.
+ * explicit ENDPOINT: a SHORT DASHED vertical stroke (16–20px) + a
+ * `缺少 N 空行` label, NEVER a filled warning band. It deliberately shares the
+ * amber warning TOKEN family with the blank-space region but keeps its OWN form.
  */
 export const EOF_NEWLINE_MARKER_ENDPOINT_LABEL = '缺少 1 空行'
 /** The endpoint label child's class (styled in style.scss; pointer-events:none). */
 export const EOF_NEWLINE_MARKER_ENDPOINT_LABEL_CLASS = 'inkchapter-eof-endpoint-label'
 /** The endpoint FORM attribute; style.scss drops the band fill for this form. */
 export const EOF_NEWLINE_MARKER_ENDPOINT_FORM = 'endpoint'
-/** The short horizontal endpoint line child (40–60px), styled in style.scss. */
+/** The short DASHED endpoint stroke child (16–20px), styled in style.scss. */
 export const EOF_ENDPOINT_LINE_CLASS = 'inkchapter-eof-endpoint-line'
-/** 设计要求 — the endpoint line length is bounded to a SHORT stroke. */
-export const EOF_ENDPOINT_LINE_MIN_PX = 40
-export const EOF_ENDPOINT_LINE_MAX_PX = 60
-/** Clamp the endpoint line to the legal 40–60px band. */
+/** 设计要求 — the endpoint stroke length is bounded to a SHORT dashed mark. */
+export const EOF_ENDPOINT_LINE_MIN_PX = 16
+export const EOF_ENDPOINT_LINE_MAX_PX = 20
+/** Clamp the endpoint stroke to the legal 16–20px band. */
 export function clampEofEndpointLineLength(px: number): number {
   if (!Number.isFinite(px)) return EOF_ENDPOINT_LINE_MIN_PX
   return Math.max(EOF_ENDPOINT_LINE_MIN_PX, Math.min(EOF_ENDPOINT_LINE_MAX_PX, Math.round(px)))

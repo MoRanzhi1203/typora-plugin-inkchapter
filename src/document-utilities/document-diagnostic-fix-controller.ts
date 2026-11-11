@@ -365,6 +365,7 @@ export class DiagnosticFixController {
         : '题注名称保存在墨章题注服务中；Markdown 正文不变。',
       busy,
       error,
+      sameRule: prepared.request.kind === 'one' ? { count: this.sameRuleCount() } : null,
     }
     const generation = this.generation
     this.ui.renderFixPanel(state, {
@@ -373,7 +374,32 @@ export class DiagnosticFixController {
         void this.confirmAndApply(accepted, captionNames)
       },
       onCancel: () => this.cancel(),
+      onSameRule: () => {
+        if (generation !== this.generation || this.busy) return
+        this.switchToSameRule()
+      },
     })
+  }
+
+  /** How many diagnostics of the CURRENT rule exist in the live snapshot. */
+  private sameRuleCount(): number {
+    const code = this.currentCode()
+    if (code === '') return 0
+    const snapshot = this.env.getSnapshot()
+    return snapshot?.diagnostics.filter(d => d.code === code).length ?? 0
+  }
+
+  /**
+   * 同类修复 — switch the prepared request from ONE diagnostic to its whole rule,
+   * then re-plan/re-preview. Only rules with >1 instance ever expose the entry.
+   */
+  private switchToSameRule(): void {
+    const prepared = this.prepared
+    if (!prepared || prepared.request.kind !== 'one') return
+    const code = this.currentCode()
+    if (code === '' || this.sameRuleCount() < 2) return
+    this.prepared = { ...prepared, request: { kind: 'rule', code } }
+    this.planAndPreview()
   }
 
   // ── apply phase ──────────────────────────────────────────────────────────

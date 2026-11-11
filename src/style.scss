@@ -3561,7 +3561,8 @@ body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
 /* The per-row fragments inherit the shared marker class for OWNERSHIP/audit,
    but they must not paint an 18% fill per row (that stacked into the same
    full-gap yellow band). */
-.inkchapter-block-gap-fragments .inkchapter-blank-space-warning {
+.inkchapter-block-gap-fragments .inkchapter-blank-space-warning,
+.inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true'] .inkchapter-blank-space-warning {
   background: transparent;
   border-left: 0;
   border-radius: 0;
@@ -3574,46 +3575,49 @@ body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
   outline: none;
   pointer-events: none;
 }
-/* the ONE count label — the DIAGNOSTIC's own visible blank-row count (the visual
-   layer never re-derives an "excess" number). 光标安全：右对齐，避免落在左侧
-   光标/选区列上。Pure overlay text. */
+/* M1 — the ONE left-side label for INTERNAL / END excess. It sits 8px right of
+   the 2px rail, is 20px tall with a very light amber surface, and never lands at
+   the right edge (no width-wide count cell). */
 .inkchapter-blank-run-count {
   position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  padding: 0 4px;
-  font-size: 10px;
-  line-height: 1;
+  left: 10px;
+  right: auto;
+  top: 4px;
+  transform: none;
+  box-sizing: border-box;
+  height: 20px;
+  line-height: 20px;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 10.5px;
+  font-weight: 600;
   white-space: nowrap;
-  color: var(--ink-blank-space-warning-accent);
+  color: color-mix(in srgb, var(--ink-blank-space-warning-accent) 62%, var(--text-color, #24272d));
+  background: color-mix(in srgb, var(--ink-blank-space-warning-accent) 12%, var(--bg-color, #fff));
   pointer-events: none;
   user-select: none;
 }
 
-/* 统一样式 — the document-end trailing-blank marker uses the SAME amber blank-area
-   REGION style as the internal `EXCESSIVE_INTERNAL_BLANK_LINES` block gap: a plain
-   amber range background with NO left accent rail and NO border. Only the geometry
-   (which zone) differs; the surface is identical. */
+/* END_EXCESS — same LEFT rail as the internal gap; the whole trailing region is
+   NEVER filled. The legacy `amber-range` attribute stays for identity/audit. */
 .inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true'][data-ink-blank-region='amber-range'] {
   border: 0;
-  border-left: 0;
-  border-radius: var(--ink-blank-space-warning-radius);
-  background: var(--ink-blank-space-warning-bg);
+  border-left: 2px solid var(--ink-blank-space-warning-accent);
+  border-radius: 0 3px 3px 0;
+  background: transparent;
 }
 
-/* 右上角「多余 N 空行」— the doc-end excess chip is pinned to the TOP-RIGHT (never
-   the caret/selection column). Pure overlay text. */
+/* The chip's legacy position token stays in the DOM, but the visual is ALWAYS the
+   left label (no right-aligned count). */
 .inkchapter-blank-run-count[data-ink-chip-pos='top-right'] {
-  right: 6px;
+  left: 10px;
+  right: auto;
   top: 4px;
   transform: none;
 }
 
-/* 端点标记 — the missing-final-newline marker is an ENDPOINT, not a filled band:
-   drop the surface fill AND the vertical rail; keep a SHORT horizontal line
-   (40–60px) plus the `缺少 1 空行` label. Its own form — only the warning accent
-   token is shared. */
+/* END_MISSING — a 16–20px SHORT DASHED line at the EOF insertion point, plus the
+   `缺少 N 空行` label. Never a filled band, never a fake paragraph. */
 .inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true'][data-ink-eof-form='endpoint'] {
   background: none;
   border: 0;
@@ -3624,25 +3628,29 @@ body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
   position: absolute;
   left: 0;
   top: 50%;
-  width: 48px;
-  height: 2px;
-  margin-top: -1px;
-  border-radius: 1px;
-  background: var(--ink-blank-space-warning-accent);
+  width: 0;
+  height: 18px;
+  margin-top: -9px;
+  border-left: 2px dashed var(--ink-blank-space-warning-accent);
+  background: none;
   pointer-events: none;
   user-select: none;
 }
-/* the `缺少 1 空行` endpoint label (sits to the RIGHT of the short line). */
 .inkchapter-eof-endpoint-label {
   position: absolute;
-  left: 52px;
+  left: 10px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 10px;
-  line-height: 1;
+  box-sizing: border-box;
+  height: 20px;
+  line-height: 20px;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 10.5px;
+  font-weight: 600;
   white-space: nowrap;
-  font-weight: 700;
-  color: var(--ink-blank-space-warning-accent);
+  color: color-mix(in srgb, var(--ink-blank-space-warning-accent) 62%, var(--text-color, #24272d));
+  background: color-mix(in srgb, var(--ink-blank-space-warning-accent) 12%, var(--bg-color, #fff));
   pointer-events: none;
   user-select: none;
 }
@@ -5293,13 +5301,17 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 
 /* ── 局部设计 tokens（只作用于工具栏根，不污染 #write / 全局） ─────── */
 .inkchapter-doc-toolbar-ui {
-  --ink-doc-surface: #fafafb;
+  /* U1 — pure-white inspector surface with a clear black/white/gray hierarchy. */
+  --ink-doc-surface: #ffffff;
   --ink-doc-surface-strong: #ffffff;
-  --ink-doc-hairline: #e2e5ea;
-  --ink-doc-text: #28313f;
-  --ink-doc-secondary: #677384;
-  --ink-doc-selection: #e9eff6;
-  --ink-doc-hover: #f1f3f6;
+  --ink-doc-hairline: #dee2e7;
+  --ink-doc-divider: #eef0f2;
+  --ink-doc-text: #24272d;
+  --ink-doc-secondary: #626a75;
+  --ink-doc-action: #454b55;
+  --ink-doc-loc: #737b86;
+  --ink-doc-selection: #f1f2f4;
+  --ink-doc-hover: #f7f8fa;
   --ink-doc-warning: #d49a26;
   --ink-doc-error: #d24d57;
   --ink-doc-success: #2f986d;
@@ -5317,12 +5329,15 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 
 @media (prefers-color-scheme: dark) {
   .inkchapter-doc-toolbar-ui {
-    --ink-doc-surface: #252526;
-    --ink-doc-surface-strong: #2f2f30;
-    --ink-doc-hairline: #3a3a3a;
-    --ink-doc-text: #e6e6e6;
-    --ink-doc-secondary: #a0a0a0;
-    --ink-doc-selection: #333333;
+    --ink-doc-surface: #1f2021;
+    --ink-doc-surface-strong: #262728;
+    --ink-doc-hairline: #383a3d;
+    --ink-doc-divider: #2d2f31;
+    --ink-doc-text: #e9eaec;
+    --ink-doc-secondary: #a6aab0;
+    --ink-doc-action: #d2d5d9;
+    --ink-doc-loc: #9aa0a7;
+    --ink-doc-selection: #343638;
     --ink-doc-hover: rgba(255, 255, 255, 0.06);
     /* Separate dark mapping (contrast-tuned, not the light hex literals). */
     --ink-doc-error: #e06b72;
@@ -5576,7 +5591,7 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   border-radius: var(--ink-doc-radius-sm);
   border: 1px solid var(--ink-doc-hairline);
   background: transparent;
-  color: var(--ink-doc-text);
+  color: var(--ink-doc-action);
   font-size: 11.5px;
   line-height: 1.4;
   cursor: pointer;
@@ -5676,7 +5691,7 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 .inkchapter-doc-expand__list {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 0;
   max-height: min(380px, calc(var(--inkchapter-toolbar-panel-max, 600px) - 64px));
   min-height: 0;
   overflow-y: auto;
@@ -5696,7 +5711,7 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 .inkchapter-doc-expand__diag {
   appearance: none;
   display: grid;
-  /* 6px severity dot · title/detail · 40px line number · 44px fix action */
+  /* 6px severity dot · title/detail · 40px line number · 44px ONE primary action */
   grid-template-columns: 6px minmax(0, 1fr) 40px 44px;
   column-gap: 6px;
   align-items: start;
@@ -5704,44 +5719,48 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   box-sizing: border-box;
   text-align: left;
   border: 0;
-  border-radius: var(--ink-doc-radius-sm);
+  border-bottom: 1px solid var(--ink-doc-divider);
+  border-radius: 0;
   background: transparent;
   color: inherit;
-  padding: 6px 6px 6px 8px;
+  padding: 7px 6px 7px 8px;
   cursor: pointer;
   font-size: 12.5px;
   line-height: 1.4;
 }
 
+.inkchapter-doc-expand__diag:last-child { border-bottom-color: transparent; }
 .inkchapter-doc-expand__diag:hover { background: var(--ink-doc-hover); }
 .inkchapter-doc-expand__diag:focus-visible { outline: 2px solid var(--text-accent, #4a8cff); outline-offset: -2px; }
 .inkchapter-doc-expand__diag.is-selected { background: var(--ink-doc-selection); }
 
-/* Row-level fix entry: always reachable (touch), low-emphasis until hover. */
+/* ONE row-level action (no stacked 修复/同类 competition). Always reachable. */
 .inkchapter-doc-expand__diag-action {
   display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  align-items: flex-end;
-  gap: 1px;
+  justify-content: flex-end;
+  align-items: flex-start;
   min-width: 0;
 }
 
 .inkchapter-doc-expand__diag-fix {
   appearance: none;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 3px;
   background: transparent;
-  color: var(--ink-doc-secondary);
-  padding: 0 3px;
+  color: var(--ink-doc-action);
+  padding: 0 4px;
   min-height: 18px;
   font-size: 11px;
   line-height: 18px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
-.inkchapter-doc-expand__diag-fix:hover:not(:disabled) { color: var(--ink-doc-text); background: var(--ink-doc-hover); }
+.inkchapter-doc-expand__diag-fix:hover:not(:disabled) {
+  color: var(--ink-doc-text);
+  border-color: var(--ink-doc-hairline);
+  background: var(--ink-doc-surface);
+}
 .inkchapter-doc-expand__diag-fix:focus-visible { outline: 2px solid var(--text-accent, #4a8cff); outline-offset: 0; }
 .inkchapter-doc-expand__diag-fix:disabled { opacity: 0.42; cursor: not-allowed; }
 
@@ -5786,7 +5805,7 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 
 .inkchapter-doc-expand__diag-title {
   color: var(--ink-doc-text);
-  font-weight: 500;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5804,7 +5823,7 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 }
 
 .inkchapter-doc-expand__diag-loc {
-  color: var(--ink-doc-secondary);
+  color: var(--ink-doc-loc);
   font-size: 11px;
   line-height: 1.45;
   text-align: right;
@@ -5949,9 +5968,11 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 
 .inkchapter-doc-expand__fix__actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 6px;
 }
+.inkchapter-doc-expand__fix__spacer { flex: 1 1 auto; }
 
 @media (prefers-reduced-motion: reduce) {
   .inkchapter-doc-expand__diag-fix { transition: none; }

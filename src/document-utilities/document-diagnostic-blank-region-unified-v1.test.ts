@@ -591,7 +591,7 @@ describe('TRAE §B2/B3 — 文末片段集合随真实行数重建（不冻结/�
     }
   }
 
-  it('§B2 — 行数减少后片段集合被重建（5→2），标签同步', () => {
+  it('§B2 — 行数减少后片段集合被重建（5→2），标签保持诊断计数', () => {
     const w = makeWorld()
     host = w.h
     setVisible(w.write, 6) // 6 real rows → 5 excess
@@ -603,7 +603,9 @@ describe('TRAE §B2/B3 — 文末片段集合随真实行数重建（不冻结/�
     setVisible(w.write, 3) // → 2 excess
     t.rederiveSyntheticEofVisualOnLayoutChange()
     expect(fragCount()).toBe(2)
-    expect(chipText()).toBe('多余 2 空行')
+    // The label states the DIAGNOSTIC's normalized extra count (6); the fragment
+    // rows follow the real rendered rows (2). Geometry and text stay separate.
+    expect(chipText()).toBe('多余 6 空行')
     expect(host.getEofFragmentSetEvidence().fragmentSetMismatchCount).toBe(0)
   })
 
@@ -622,7 +624,9 @@ describe('TRAE §B2/B3 — 文末片段集合随真实行数重建（不冻结/�
       t.rederiveSyntheticEofVisualOnLayoutChange()
       const expected = Math.max(0, n - 1)
       expect(fragCount(), `visible=${n}`).toBe(expected)
-      if (expected > 0) expect(chipText()).toBe(`多余 ${expected} 空行`)
+      // The label never re-derives the count from the rows: it states the
+      // diagnostic's own extra count (10) for the whole sequence.
+      if (expected > 0) expect(chipText()).toBe('多余 10 空行')
     }
     expect(host.getEofFragmentSetEvidence().fragmentSetMismatchCount).toBe(0)
   })

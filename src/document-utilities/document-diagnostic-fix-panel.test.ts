@@ -90,6 +90,18 @@ describe('fix panel — preview phase', () => {
     expect(onCancel).toHaveBeenCalledTimes(1)
   })
 
+  it('offers a same-rule batch entry only when the rule has more than one instance', () => {
+    const onSameRule = vi.fn()
+    const single = mount(preview, { onConfirm: vi.fn(), onCancel: vi.fn(), onSameRule })
+    expect(Array.from(single.querySelectorAll('button'))
+      .some(b => (b.textContent ?? '').startsWith('同类修复（'))).toBe(false)
+    const many = mount({ ...preview, sameRule: { count: 3 } }, { onConfirm: vi.fn(), onCancel: vi.fn(), onSameRule })
+    const button = Array.from(many.querySelectorAll('button')).find(b => b.textContent === '同类修复（3 项）')!
+    expect(button).not.toBeUndefined()
+    button.click()
+    expect(onSameRule).toHaveBeenCalledTimes(1)
+  })
+
   it('disables both actions while the write is in flight and explains metadata-only repairs', () => {
     const el = mount({ ...preview, busy: true, hunks: [] }, { onConfirm: vi.fn(), onCancel: vi.fn() })
     for (const button of Array.from(el.querySelectorAll<HTMLButtonElement>('button'))) {
