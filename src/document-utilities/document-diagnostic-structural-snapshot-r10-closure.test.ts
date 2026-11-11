@@ -97,9 +97,11 @@ describe('R10-C — 每个诊断事务恰好一次结构化读取', () => {
     const input = collectDiagnosticsInput(ctx, emptyStructural())
 
     expect(structuralReads).toBe(1)
-    // The stale mirror is never consulted when the structural read succeeded.
-    expect(mirrorReads).toBe(0)
+    // ROOT_EOF_TEXT_SOURCE — the mirror is read EXACTLY once, only for the
+    // text-level EOF fact; it never replaces the structural source for structure.
+    expect(mirrorReads).toBe(1)
     expect(input.markdown).toBe(structuralDoc)
+    expect(input.eofMarkdown).toBe(gapDoc(1))
     expect(input.structuralVerified).toBe(true)
   })
 

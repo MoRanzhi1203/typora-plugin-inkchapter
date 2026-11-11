@@ -17,10 +17,10 @@
 
 | 项 | 状态 | 证据 |
 |---|---|---|
-| 内部多余空行：2px 左侧实线，无整块填充 | PASS | `.inkchapter-block-gap-fragments`（transparent + border-left） |
-| 文末多余空行：2px 左侧实线，不再整片米黄 | PASS | `[data-ink-eof-marker][data-ink-blank-region='amber-range']` |
-| 文末缺少空行：16–20px 短虚线 | PASS | `.inkchapter-eof-endpoint-line`（18px，2px dashed） |
-| 计数不再在最右端 | PASS | `.inkchapter-blank-run-count` / legacy `top-right` 选择器都渲染在 `left: 10px` |
+| 内部多余空行：2px 左侧实线，无整块填充 | BLOCKED（运行期不可达） | CSS/标签契约 PASS；但真实 GUI 中 WYSIWYG `renderedBlankRowCount=1 ⇒ publish=false`，source 模式 publish=true 却 `LOCATE_FAILED:SCROLL_TARGET_DID_NOT_ENTER_VIEWPORT`。见「运行期证据」 |
+| 文末多余空行：2px 左侧实线，不再整片米黄 | PASS（真实 GUI） | 点击后 carrier `background=rgba(0,0,0,0)`、`border-left:1.6px solid rgb(168,121,50)`、标签 `多余 3 空行` |
+| 文末缺少空行：16–20px 短虚线 | PASS（真实 GUI） | carrier `form=endpoint`、`.inkchapter-eof-endpoint-line` `height:18px`、`border-left:1.6px dashed rgb(168,121,50)`、标签 `缺少 1 空行` |
+| 计数不再在最右端 | PASS（真实 GUI） | `data-ink-eof-marker` carrier 内 chip `text=多余 3 空行`、`left:10px`、`right:auto`、`height:20px` |
 | 文案来自真实诊断 | PASS | `document-diagnostic-blank-marker-v1.ts`；host 使用 `blankLineMarkerText(diag…, metadata)` |
 | 标签位于线的右侧 6–10px、20px 高、极淡琥珀底 | PASS | `left: 10px; height: 20px; color-mix(accent 12%, bg)` |
 | 不生成 Markdown 段落 / 不改行高 | PASS | 纯 overlay，`pointer-events` 仅标签可点 |
@@ -75,31 +75,64 @@
 | 新增三类标记事实/视觉/交互测试 | PASS | `document-diagnostic-blank-marker-v1.test.ts`（11） |
 | 面板/排序/修复交互测试 | PASS | hub controller（40）、model order（7）、panel（7）、controller（11） |
 | TypeScript | PASS | `tsc --noEmit`（exit 0） |
-| 全量 Vitest | PASS | `344 test files / 5974 tests` 全部通过 |
+| 全量 Vitest | PASS | `344 test files / 5983 tests` 全部通过 |
 | build | PASS | `pnpm build`（verify:archive + tsc + esbuild prod） |
 | 隐私 / docs | PASS | `PRIVACY_GATE=PASS`；`docs:verify RESULT=PASS` |
-| 运行时 bundle | PASS | Typora 重新启动后回执 `mainJsSha256=389CEFE8E5D91DC4DFE14C9AB51BF6BAC501560F275251A1A2C28D7E094364CC`、`loadSource=vault` |
-| 真实 Typora GUI 视觉/交互（白底、三类 marker、修复 diff、撤销） | NEEDS_MANUAL | Trae 无法读取真实像素/`getBoundingClientRect`；见下节步骤 |
+| 运行时 bundle | PASS | 部署 SHA 见下；`loadSource=vault` |
+| 真实 Typora GUI 视觉/交互（白底、文末两类 marker、修复 diff、撤销） | NEEDS_MANUAL | 白底/文末 marker 已取得运行期 computed style；修复 diff 与 Ctrl+Z 仍需人工按键 |
+| 内部空行 marker | BLOCKED | 见「运行期证据」：发布策略与 Typora WYSIWYG 折叠冲突 |
+
+## 运行期证据（真实 Typora 1.6.7 / Electron 24，2026-11-12）
+
+采证方式：临时只读 observer 追加到 test-vault 的 `dist/main.js`（不改源码、不改用户文档），通过 `reqnode('fs')` 落盘 DOM/computed style；采证后已恢复 pristine bundle。fixtures 位于 `test/vault/__gui-*.md`（gitignored），证据 JSON 位于 `runtime/gui-acceptance/`（gitignored）。
+
+| 事实 | 数值 |
+|---|---|
+| 面板 surface | `.inkchapter-doc-expand__layout` `background=rgb(255,255,255)`、`border=0.8px solid rgb(222,226,231)` |
+| 顶部/内容同宽 | header 358×36 与 panel 358×133：width/left/right 误差均为 0（≤1 CSS px） |
+| 行 | `grid-template-columns: 6px minmax(0,1fr) 40px 44px`、`column-gap:6px`、标题 `rgb(36,39,45)` |
+| 文末多余空行 | carrier `bg=rgba(0,0,0,0)`、`border-left=1.6px solid rgb(168,121,50)`（2px @0.8 渲染缩放）、chip `多余 3 空行` `left:10px` `height:20px` |
+| 文末缺少空行 | carrier `form=endpoint`、endpoint line `2×18px`、`border-left=1.6px dashed rgb(168,121,50)`、label `缺少 1 空行` |
+| 干净文档 | 修复前：面板恒报 `文档末尾缺少换行符`；修复后：`rows=0` |
+
+### 已修复的两个真实缺陷（本轮 GUI 验收发现）
+
+1. `ROOT_EOF_TEXT_SOURCE` — 结构化序列化是块级：WYSIWYG 丢末尾换行、source 模式多一个换行，EOF 判定因此对**所有干净文档**误报「缺少换行符」。修复：`DocumentDiagnosticsInput.eofMarkdown` 由 `authority.getMarkdown()` 提供，EOF 策略只读文本镜像；结构/空行规则仍读结构化快照。回归：`document-diagnostic-trailing-blank-fixtures.test.ts` 新增 4 条。
+2. `M1 EOF surface gate` — unified 展示改为「无填充 + 左线」后，旧 `FILL_ONLY` 门禁要求 `fillCount>=1`，点击后 `fillCount=0 → LOCATE_FAILED → 标记被回滚`（标记永远不出现）。修复：`resolveEofMarkerSurfacePainted`（fill / 插件自有边框 / endpoint 任一即算已绘制，全无则仍 FAIL）。回归：`document-diagnostic-blank-marker-v1.test.ts` 新增 5 条。
+
+### 内部空行 marker 阻塞事实
+
+- WYSIWYG：`DOCUMENT-DIAGNOSTIC-RENDERED-BLANK-ROW-DOM-PROBE renderedBlankRowCount=1` → `DOCUMENT-INTERNAL-BLANK-LINE-DECISION-AUDIT publish=false reason=VISIBLE_WITHIN_ALLOWANCE_RENDERED_VISIBLE_BANDS`（4 个源码空行被 Typora 折叠为 1 个可见带）。
+- source 模式：`publish=true reason=VISIBLE_EXCESSIVE_SOURCE_LINES_VISIBLE sourceBlankLineCount=4`，但块级目标不存在 → `LOCATE_FAILED:SCROLL_TARGET_DID_NOT_ENTER_VIEWPORT`，无 `.inkchapter-block-gap-fragments`。
+- 结论：现行「WYSIWYG 只按可见带发布」策略与「标记只在 WYSIWYG 可渲染」互相排斥，内部空行诊断在真实 GUI 中不可达。这是产品策略决策（改为按规范化源码计数发布，或为 source 模式提供行内标记），不应由实现方静默改规则。
+
+## 真实 GUI 采证（仍需人工）
+
+Typora 已启动并加载本轮 bundle。以下项目仍保留人工验收：
+
+1. 打开 `test/vault/__gui-blank-end-excess.md`，展开面板并点击该诊断行：
+   - 左侧 2px 实线 + `多余 3 空行` 标签（已由 computed style 证实），确认肉眼无整片黄色、标签不在右端。
+2. 打开 `test/vault/__gui-blank-end-missing.md` 点击诊断行：18px 短虚线 + `缺少 1 空行`。
+3. 行内「修复」→ 预览 → 确认 → 诊断重算 → `Ctrl+Z` 一次恢复；同规则 ≥2 项时在预览内点「同类修复（N 项）」→ 一次写回 → 一次撤销。
+4. 100/125/150% DPI、深色主题、窗口缩放、侧栏拖拽：面板左右边界与顶部严格同宽（≤1 CSS px）。
 
 ## 构建与部署
 
-- `dist/main.js`：`389CEFE8E5D91DC4DFE14C9AB51BF6BAC501560F275251A1A2C28D7E094364CC`
-- `dist/style.css`：`96A5EE1EA8CA1445C696222B71A0D4602B6601C6C344A743D9F9DD6F68DF65F5`
-- 测试 vault 部署文件 SHA 与上述一致。
-- 运行时回执：`2026-11-11T16:19:19.584Z`，`loadSource=vault`，`mainJsSha256` 与本地一致。
+- `dist/main.js`：`CA5E41EC3C22BD5CEF0E6210F55323D5684D0AD31A48558BD6E5C9111BC9E8A8`
+- `dist/style.css`：`96A5EE1EA8CA1445C696222B71A0D4602B6601C6C344A743D9F9DD6F68DF65F5`（本轮未改 CSS）
+- 测试 vault 部署文件 SHA 与上述一致（采证用的临时 observer 追加版已在采证后还原为 pristine）。
 
 ## 真实 GUI 采证（NEEDS_MANUAL）
 
-Typora 已启动并加载本轮 bundle（`loadSource=vault`，SHA 见下方构建记录）。Trae 侧无法读取真实像素/`getBoundingClientRect`，因此以下项目保留人工验收：
+Typora 已启动并加载本轮 bundle。以下项目保留人工验收：
 
-1. 打开 `test/vault/Document-Diagnostics-Code-Integrity-Test.md`，展开右上角面板：
+1. 打开 `test/vault/__gui-blank-end-excess.md`，展开右上角面板：
    - 背景应为纯白，行之间有细分隔线，选中/hover 为浅灰。
-2. 内部连续空行：左侧 2px 实线 + `多余 N 空行` 标签（N = `actualBlankLines − 1`），无整片黄色、无右侧数字。
-3. 文末多余空行：左侧 2px 实线 + `多余 N 空行`（N = `extraTrailingBlankLineCount`），文末区域不填充。
-4. 文末缺少空行（删除文件末尾换行）：16–20px 短虚线 + `缺少 1 空行`。
-5. 点击三个标签中的任意一个：应定位到对应诊断；标签之外的覆盖层不应拦截正文光标/选择。
-6. 行内「修复」→ 预览 → 确认 → 诊断重算消失 → `Ctrl+Z` 一次恢复；同规则 ≥2 项时在预览内点「同类修复（N 项）」→ 一次写回 → 一次撤销。
-7. 100/125/150% DPI、深色主题、窗口缩放、侧栏拖拽：面板左右边界与顶部严格同宽（≤1 CSS px）。
+2. 文末多余空行：左侧 2px 实线 + `多余 3 空行`（无整片黄色、无右侧数字）。
+3. 文末缺少空行：`test/vault/__gui-blank-end-missing.md`，18px 短虚线 + `缺少 1 空行`。
+4. 行内「修复」→ 预览 → 确认 → 诊断重算消失 → `Ctrl+Z` 一次恢复；同规则 ≥2 项时在预览内点「同类修复（N 项）」→ 一次写回 → 一次撤销。
+5. 100/125/150% DPI、深色主题、窗口缩放、侧栏拖拽：面板左右边界与顶部严格同宽（≤1 CSS px）。
+6. 内部连续空行：见上方 BLOCKED 事实；待策略决策后再验收。
 
 DevTools 只读采证（可选）：
 ```js
@@ -107,7 +140,7 @@ const panel = document.querySelector('.inkchapter-doc-toolbar-ui .inkchapter-doc
 const rows = [...document.querySelectorAll('.inkchapter-doc-expand__diag')]
 const chips = [...document.querySelectorAll('.inkchapter-blank-run-count')]
 console.log({
-  panelBg: panel && getComputedStyle(panel.parentElement).backgroundColor,
+  surfaceBg: getComputedStyle(document.querySelector('.inkchapter-doc-expand__layout')).backgroundColor,
   rowSeparator: rows[0] && getComputedStyle(rows[0]).borderBottomColor,
   chips: chips.map(c => ({ text: c.textContent, left: getComputedStyle(c).left, right: getComputedStyle(c).right })),
   markers: [...document.querySelectorAll('[data-ink-eof-marker="true"]')].map(m => ({

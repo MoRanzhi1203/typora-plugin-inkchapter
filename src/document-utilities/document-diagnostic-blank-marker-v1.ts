@@ -98,3 +98,22 @@ export function blankLineMarkerText(
 ): string | null {
   return resolveBlankLineMarkerFact(code, metadata)?.text ?? null
 }
+
+/**
+ * M1 — is the EOF marker SURFACE actually painted?
+ *
+ * The unified presentation is NO-FILL by design (left 2px rail / 18px dashed
+ * endpoint), while the legacy FILL_ONLY gate required `fillCount >= 1` and
+ * therefore rolled the marker back on every click. Any plugin-owned visible
+ * surface (background fill, the endpoint form, or the left rail border) proves
+ * the marker was really painted; a carrier with none of them must still FAIL.
+ */
+export function resolveEofMarkerSurfacePainted(input: {
+  fillCount: number
+  pluginOwnedBorderCount: number
+  endpointForm: boolean
+}): boolean {
+  return input.fillCount >= 1
+    || input.pluginOwnedBorderCount >= 1
+    || input.endpointForm === true
+}

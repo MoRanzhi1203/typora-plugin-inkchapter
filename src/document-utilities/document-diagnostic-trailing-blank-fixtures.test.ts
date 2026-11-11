@@ -82,3 +82,58 @@ describe('原设计要求 B — 尾部多余空行 0/1/2/3 fixture', () => {
     expect(computeEofNewlinePolicy('a\r\nb')).toMatchObject({ verdict: 'MISSING_TERMINAL_NEWLINE' })
   })
 })
+
+/**
+ * ROOT_EOF_TEXT_SOURCE — runtime evidence 2026-11-12 (real Typora 1.6.7 GUI).
+ *
+ * `UserOp.getMarkdownSourceFrom` is BLOCK-level: it drops the file's terminal
+ * line break in WYSIWYG (`# 干净文档\n\n正文。\n` → `# 干净文档\n\n正文。`) and adds
+ * one in source view. Because the EOF policy read that serialization, EVERY
+ * clean document was reported as `DOCUMENT_TERMINAL_NEWLINE_MISSING`, and the
+ * trailing-blank excess count was distorted. The EOF verdict must read the
+ * TEXT mirror (`eofMarkdown`), while structure/gap rules keep the snapshot.
+ */
+describe('ROOT_EOF_TEXT_SOURCE — EOF 事实读文本镜像，结构仍读结构化快照', () => {
+  const base = {
+    documentKey: 'doc', strictMode: true, vaultRoot: '/vault',
+    headings: [], figures: [], tables: [], codes: [], formulas: [], links: [],
+    canonicalDuplicateIdentities: [], captionDuplicateNames: [], h1Facts: null,
+  }
+  const codesOf = (input: Record<string, unknown>): string[] =>
+    computeDocumentDiagnostics(input as never).diagnostics.map(d => d.code)
+
+  it('干净文档（结构化快照丢末尾换行）不得报告缺少末尾换行', () => {
+    const codes = codesOf({
+      ...base,
+      markdown: '# 干净文档\n\n正文。',   // structural serializer (block-level)
+      eofMarkdown: '# 干净文档\n\n正文。\n', // real buffer text
+    })
+    expect(codes).not.toContain('DOCUMENT_TERMINAL_NEWLINE_MISSING')
+    expect(codes).not.toContain('DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE')
+  })
+
+  it('文末多余空行数量来自文本镜像（不是被结构化的块序列）', () => {
+    const diag = computeDocumentDiagnostics({
+      ...base,
+      markdown: '# T\n\n正文。',
+      eofMarkdown: '# T\n\n正文。\n\n\n',
+    } as never).diagnostics.find(d => d.code === 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE')
+    expect(diag).toBeTruthy()
+    expect((diag!.metadata as Record<string, unknown>).extraTrailingBlankLineCount).toBe(2)
+    expect((diag!.metadata as Record<string, unknown>).terminalNewlineCount).toBe(3)
+  })
+
+  it('真正缺少末尾换行（文本镜像也无换行）仍必须报告', () => {
+    const codes = codesOf({
+      ...base,
+      markdown: '# T\n\n正文。',
+      eofMarkdown: '# T\n\n正文。',
+    })
+    expect(codes).toContain('DOCUMENT_TERMINAL_NEWLINE_MISSING')
+  })
+
+  it('纯/legacy 调用方未提供 eofMarkdown 时保持 markdown 作为 EOF 源', () => {
+    const codes = codesOf({ ...base, markdown: '# T\n\n正文。' })
+    expect(codes).toContain('DOCUMENT_TERMINAL_NEWLINE_MISSING')
+  })
+})

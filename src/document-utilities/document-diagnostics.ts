@@ -478,6 +478,21 @@ export interface DocumentDiagnosticsInput {
   documentKey: string | null
   markdown: string | null
   /**
+   * ROOT_EOF_TEXT_SOURCE — the TEXT-LEVEL buffer source for the document-end
+   * (EOF) facts only.
+   *
+   * The structural serializer is BLOCK-level: it joins blocks and therefore
+   * drops the file's terminal line break in WYSIWYG (`# T\n\n正文。\n` →
+   * `# T\n\n正文。`) and adds one in source view. Reading the EOF policy from it
+   * reported `DOCUMENT_TERMINAL_NEWLINE_MISSING` for every CLEAN document
+   * (runtime evidence 2026-11-12). The terminal-newline / trailing-blank facts
+   * are text-level, so the authority supplies the editor mirror here while the
+   * structural snapshot remains the structure/gap authority.
+   *
+   * Absent (pure/legacy callers) keeps `markdown` as the EOF source.
+   */
+  eofMarkdown?: string | null
+  /**
    * V1 §21 — the source generation this compute runs against. The figure
    * locator records it on every `source-block` / `figure-occurrence` location
    * so a click can detect a STALE source revision instead of locating with an
@@ -2722,8 +2737,10 @@ export function computeDocumentDiagnostics(
     //    construction (one policy verdict). Both anchor at document-end
     //    (GO_BOTTOM) — an EOF diagnostic never pretends to own a regular DOM
     //    block, so it can never hit SOURCE_LINE_NOT_FOUND/STALE.
-    if (input.markdown != null) {
-      const policy = computeEofNewlinePolicy(input.markdown)
+    //    ROOT_EOF_TEXT_SOURCE — the verdict reads the TEXT mirror when supplied.
+    const eofSource = input.eofMarkdown ?? input.markdown
+    if (eofSource != null) {
+      const policy = computeEofNewlinePolicy(eofSource)
       if (policy.verdict === 'MISSING_TERMINAL_NEWLINE') {
         push(
           makeDiagnostic(input, 'document', 'DOCUMENT_TERMINAL_NEWLINE_MISSING',

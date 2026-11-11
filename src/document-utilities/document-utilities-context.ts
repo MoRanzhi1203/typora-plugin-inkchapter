@@ -292,6 +292,10 @@ export function collectDiagnosticsInput(
   return {
     documentKey: ctx.authority.getDocumentKey(),
     markdown: transactionMarkdown,
+    // ROOT_EOF_TEXT_SOURCE — EOF facts are TEXT-level: the block-level structural
+    // serializer drops (WYSIWYG) or adds (source view) a terminal line break, so
+    // the policy must read the editor mirror. Structure/gap rules keep `markdown`.
+    eofMarkdown: ctx.authority.getMarkdown(),
     ...(structuralVerified === undefined
       ? {}
       : { structuralVerified, structuralDegradedReason }),

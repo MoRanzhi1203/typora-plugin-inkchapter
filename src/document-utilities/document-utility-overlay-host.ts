@@ -21,6 +21,7 @@ import {
   blankLineMarkerText,
   formatBlankMarkerText,
   resolveInternalExcessCount,
+  resolveEofMarkerSurfacePainted,
   END_EXCESS_BLANK_MARKER_RULE,
 } from './document-diagnostic-blank-marker-v1'
 import type { FixPanelHandlers, FixPanelState } from './document-diagnostic-fix-panel'
@@ -28628,7 +28629,18 @@ export class DocumentUtilityOverlayHost {
     // carrier (R7 authority reused verbatim; the same 12 counters).
     this.commitActiveLocateFillOnlyGates(true, diag.id, layer)
     const fillFacts = this.measureActiveLocateFillOnlyFacts(layer)
-    if (fillFacts.fillCount < 1) c.fillCountZeroAfterLocate++
+    // ── M1 UNIFIED LEFT-RAIL PRESENTATION — the blank-line markers are NO-FILL by
+    // design (2px left rail for excess, 18px dashed endpoint for missing). The
+    // legacy FILL_ONLY gate required a painted background, so it rolled back the
+    // marker on EVERY click (runtime evidence 2026-11-12: fillCount=0 →
+    // LOCATE_FAILED → marker removed). The gate must accept ANY plugin-owned
+    // visible surface: background fill, the endpoint form, or the left rail.
+    const eofSurfacePainted = resolveEofMarkerSurfacePainted({
+      fillCount: fillFacts.fillCount,
+      pluginOwnedBorderCount: fillFacts.pluginOwnedBorderCount,
+      endpointForm: this.findEndpointFormCarrier(layer) != null,
+    })
+    if (!eofSurfacePainted) c.fillCountZeroAfterLocate++
     c.verticalLine += fillFacts.verticalLineCount
     c.horizontalLine += fillFacts.horizontalLineCount
     c.border += fillFacts.borderCount
@@ -28657,8 +28669,8 @@ export class DocumentUtilityOverlayHost {
     if (!visible) c.visualNotVisibleAfterScroll++
 
     const gateOk = headless
-      ? fillFacts.fillCount >= 1
-      : (visible && fillFacts.fillCount >= 1 && visibleHeightRatio >= EOF_VISIBLE_HEIGHT_RATIO_MIN)
+      ? eofSurfacePainted
+      : (visible && eofSurfacePainted && visibleHeightRatio >= EOF_VISIBLE_HEIGHT_RATIO_MIN)
     this.lastDocEndVisual = {
       rectViewport: geo.rect,
       rectLocal: localRect,

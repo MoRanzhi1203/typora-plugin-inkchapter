@@ -7,6 +7,7 @@ import {
   resolveBlankLineMarkerFact,
   resolveEndExcessCount,
   resolveEndMissingCount,
+  resolveEofMarkerSurfacePainted,
   resolveInternalExcessCount,
 } from './document-diagnostic-blank-marker-v1'
 
@@ -120,5 +121,37 @@ describe('blank marker host wiring', () => {
     expect(HOST).toContain('this.locateDiagnostic(id)')
     // The overlay/carrier never becomes clickable as a whole.
     expect(HOST).toContain("el.style.cssText = `position:absolute;display:block;left:")
+  })
+})
+
+/**
+ * M1 — the EOF marker surface gate must accept the NO-FILL presentation.
+ *
+ * Runtime evidence 2026-11-12 (Typora 1.6.7): the excess carrier painted its
+ * 2px left rail (`pluginOwnedBorderCount=1`) with `fillCount=0`, so the legacy
+ * `fillCount >= 1` gate rolled the marker back on EVERY click
+ * (`LOCATE_FAILED → marker removed`). The gate must accept the rail/endpoint
+ * surface while still failing a carrier with nothing painted.
+ */
+describe('EOF marker surface gate — left rail / endpoint are real paint', () => {
+  it('a 2px left rail with NO fill satisfies the gate', () => {
+    expect(resolveEofMarkerSurfacePainted({ fillCount: 0, pluginOwnedBorderCount: 1, endpointForm: false })).toBe(true)
+  })
+
+  it('the no-fill END_MISSING endpoint form satisfies the gate', () => {
+    expect(resolveEofMarkerSurfacePainted({ fillCount: 0, pluginOwnedBorderCount: 0, endpointForm: true })).toBe(true)
+  })
+
+  it('a legacy filled band still satisfies the gate', () => {
+    expect(resolveEofMarkerSurfacePainted({ fillCount: 1, pluginOwnedBorderCount: 0, endpointForm: false })).toBe(true)
+  })
+
+  it('a carrier with NO painted surface must still FAIL', () => {
+    expect(resolveEofMarkerSurfacePainted({ fillCount: 0, pluginOwnedBorderCount: 0, endpointForm: false })).toBe(false)
+  })
+
+  it('the host uses this ONE helper for the commit gate', () => {
+    expect(HOST).toContain('resolveEofMarkerSurfacePainted({')
+    expect(HOST).toContain('pluginOwnedBorderCount: fillFacts.pluginOwnedBorderCount')
   })
 })
