@@ -212,10 +212,41 @@ describe('TRAE rebase §13.2–13.6 — generic code-diagnostic pipeline', () =>
     // No CODE_EMPTY_BLOCK-specific carrier class ever appears.
     expect(document.querySelectorAll('.inkchapter-diagnostic-empty-surface').length).toBe(0)
     expect(document.querySelectorAll('[data-ink-empty-block]').length).toBe(0)
+    // CODE TARGET IDENTITY — the frame carries the DIAGNOSTIC's canonical identity
+    // and the LIVE owner identity; they must match (never a next/previous code block).
+    const frame = frames()[0]
+    expect(frame.dataset.codeTargetIdentity).toBe('block:code:0')
+    expect(frame.dataset.markerOwnerIdentity).toBe('block:code:0')
+    expect(frame.dataset.codeTargetBinding).toBe('MATCH')
+    expect(frame.dataset.diagnosticId).toBe(EMPTY.id)
   })
 
-  it('§13.2: CODE_MISSING_NAME uses the SAME code frame branch as CODE_EMPTY_BLOCK', () => {
-    // Severity is deliberately aligned here: this test proves the SHARED locate /
+  function stubRect(el: HTMLElement, r: { left: number; top: number; right: number; bottom: number }): void {
+    Object.defineProperty(el, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        ...r, x: r.left, y: r.top, width: r.right - r.left, height: r.bottom - r.top,
+      }),
+    })
+  }
+
+  it('§13.2b: a real language bar becomes the CODE_TOPBAR paint target (never the next block)', () => {
+    mount([EMPTY])
+    const pre = document.querySelector<HTMLElement>('pre.md-fences')!
+    const bar = document.createElement('div')
+    bar.className = 'inkchapter-content-toolbar--langbar'
+    pre.appendChild(bar)
+    stubRect(bar, { left: 60, top: 100, right: 700, bottom: 134 })
+    activate(EMPTY.id)
+    const frame = frames()[0]
+    expect(frame).toBeTruthy()
+    expect(frame.dataset.paintKind).toBe('code-topbar')
+    expect(frame.dataset.codeTargetIdentity).toBe('block:code:0')
+    expect(frame.dataset.markerOwnerIdentity).toBe('block:code:0')
+    expect(frame.dataset.codeTargetBinding).toBe('MATCH')
+  })
+
+  it('§13.2: CODE_MISSING_NAME uses the SAME code frame branch as CODE_EMPTY_BLOCK', () => {    // Severity is deliberately aligned here: this test proves the SHARED locate /
     // frame BRANCH, not the severity→geometry token mapping (covered by the
     // inline-presentation / rule-meta suites).
     const nameInfo: CodeDiag = { ...MISSING_NAME, severity: 'info' }

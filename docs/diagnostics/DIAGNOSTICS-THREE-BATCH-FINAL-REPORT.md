@@ -119,8 +119,8 @@ BLOCKED / NEEDS_MANUAL：
 | GIT-0 合并后 | 327 文件 / 5783 tests PASS | 同上 |
 | B1 | 329 文件 / 5805 tests PASS | `FD45A411B5B514161CAD673D975FE7EF7E6B728178381C9B64CCD493AFE1C4B4` |
 | B2 | 330 文件 / 5819 tests PASS | `BE23061EAFAA0A5717F28C0FFA7D0102EA04BBD61D09287B60E250C653D6078B` |
-| B2b / B3b / B2c / B2d / 2026-11-11 专项 | 338 文件 / 5906 tests PASS | `17E64A21388DDE062A0F0E529AD508DB76BE759F6FD36610F27AC6238B9F5762` |
-| B3 | 338 文件 / 5906 tests PASS | 同上 |
+| B2b / B3b / B2c / B2d / 2026-11-11 专项 | 338 文件 / 5907 tests PASS | `3733016B5506E2453FE1F8480F9E7AC6F91A23A165174205BC2022614FBE7913` |
+| B3 | 338 文件 / 5907 tests PASS | 同上 |
 
 每批次 typecheck PASS；privacy PASS（SCANNED_LINES=0）；docs PASS（DOC_BROKEN_LINK_COUNT=0）。构建产物 `dist/` 被 `.gitignore` 忽略，未提交。
 
@@ -163,6 +163,11 @@ BLOCKED / NEEDS_MANUAL：
 - UI：**BLOCKED**（没有 apply 事务时不新增会误导用户的修复按钮）。
 - 测试：`document-diagnostic-fix-v1.test.ts` 17 tests；全量见 §4/执行日志。
 - 矩阵：`docs/diagnostics/DIAGNOSTIC_FIX_CAPABILITY_MATRIX.md`
+- **代码块诊断标记锚定（2026-11-11）**：新增 `block:code:N` 身份校验
+  （`codeTargetBinding=MATCH` 才允许 visual PASS）、`CODE_TOPBAR` 真实语言栏锚点、
+  frame `data-code-target-identity`/`data-marker-owner-identity`/`data-code-target-binding`；
+  详见 `docs/diagnostics/CODE_MARKER_ACCEPTANCE.md` 与
+  `CODE_MARKER_ACCEPTANCE_DEVTOOLS.js`。GUI 仍未真实加载新构建，NEEDS_MANUAL。
 
 ## 9. 最终结论
 

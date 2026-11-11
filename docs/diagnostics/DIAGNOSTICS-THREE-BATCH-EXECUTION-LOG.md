@@ -210,4 +210,20 @@
 - 构建：未变（模块未进入 main 入口），SHA `17E64A2…`
 - 合并：`git merge --no-ff feature/diagnostics-fix-planner` → `9d9df454a17c33eac5ef20f2d83b70d5e55dc598`
 
+### 2026-11-11 — 代码块诊断标记锚定专项
+
+- 分支：`feature/diagnostics-code-marker-anchor`（从 `ffb15b9` 创建）
+- 根因：旧 code visual gate 只验证 carrier 覆盖 `secondary`（某个 `pre.md-fences`），
+  未校验该 `pre` 是否等于诊断的 `block:code:N`；`primary=null + secondary=true + overflow=0`
+  仍可 `visualDecision=PASS`。
+- 修改：production 身份等值 gate（`MATCH` 才 PASS；`MISMATCH/NOT_VERIFIED` 阻止 visual PASS）、
+  `CODE_TOPBAR` 真实语言栏锚点、frame `data-code-target-identity` /
+  `data-marker-owner-identity` / `data-code-target-binding`；无固定负 margin/top。
+- 证据脚本：`docs/diagnostics/CODE_MARKER_ACCEPTANCE_DEVTOOLS.js` +
+  `CODE_MARKER_ACCEPTANCE.md`。
+- 测试：代码块 marker 11 tests；定向 92 tests；全量 338 文件 / 5907 tests PASS，164.00s
+- 构建：PASS，`dist/main.js` SHA256 `3733016B5506E2453FE1F8480F9E7AC6F91A23A165174205BC2022614FBE7913`
+- 已复制到 test vault；当前 Typora 未运行，runtime-load 仍为旧 `17E64A2…`，GUI NEEDS_MANUAL
+- 合并：待执行
+
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）
