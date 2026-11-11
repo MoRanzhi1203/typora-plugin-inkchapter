@@ -61,11 +61,11 @@
 |---|---|---|---|
 | FINAL-01 | Git 总览与三次合并记录 | PASS | GIT-0 `3b20ea5`；B1 `19bf0dc`；B2 `8d5e475`；B3 `842074c` |
 | FINAL-02 | 最新规则家族 / 展开代码 / 级别分布重算 | PASS | 101 / 112 / 107；13-70-29；可达 103（13-63-27） |
-| FINAL-03 | 全量测试、构建 SHA、隐私审计 | PASS | 336×5878；`17E64A2…`；privacy/docs PASS |
+| FINAL-03 | 全量测试、构建 SHA、隐私审计 | PASS | 337×5889；`17E64A2…`；privacy/docs PASS |
 | FINAL-07 | 图片异步证据 Provider + Runtime | INTEGRATION_PASS（未 RUNTIME_VERIFIED） | 7+5 tests；main 预热/失效/文档隔离；诊断字节优先；真实 Typora 时序未采证 |
 | FINAL-08 | 结构化引用 parser（未启用规则） | MODULE_PASS | `document-object-reference-v1.ts` 5 tests；拒绝显示编号 |
 | FINAL-09 | 跨文件 DOM heading authority | MODULE_PASS（仅活动文档） | 6 tests；重复/断开 UNKNOWN；跨文件目标无权威 |
-| FINAL-10 | GUI 验收脚本与步骤 | PASS（脚本） | `GUI_ACCEPTANCE_DEVTOOLS.js` + 步骤文档；GUI_VERIFIED 未做 |
+| FINAL-10 | GUI 验收脚本与步骤 | PASS（脚本自测 11） | 三态、零宽/隐藏标签、多目标、命中、筛选；`GUI_ACCEPTANCE_DEVTOOLS.js` + 步骤文档；GUI_VERIFIED 未做 |
 | FINAL-11 | 真实 GUI 采证 | BLOCKED / NEEDS_MANUAL | 旧实例 3AFA；新 3578 已复制；Typora 关闭后本会话无法重启 |
 | FINAL-06 | B2/B3 阻塞解除专项审计（B2d） | PASS（可实施项） | 三态接口、表格对齐、引用方案、图片/GUI 审计；见 `DIAGNOSTICS-B2B3-UNBLOCK-AUDIT.md` |
 | FINAL-04 | GUI 证据 / NEEDS_MANUAL 清单 | NEEDS_MANUAL | 真实 Typora 截图/DOMRect 未获得；未伪造 |
