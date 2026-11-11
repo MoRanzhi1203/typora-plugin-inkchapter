@@ -26,7 +26,7 @@
 |---|---|---|
 | A 收起态 | 打开文档，等 1s，执行脚本 | `visibility.expanded=false`；`statusSemantics.dataset.status=YELLOW`；`warningCount=10`；`square.computed.background-color=rgb(212, 154, 38)`；`square` 15×15；`toolbar.tabWidth.verdict=NOT_APPLICABLE`（禁止 `tabWidthsEqual=true`）；`toolbar.geometry.overall.verdict=NOT_APPLICABLE`；`diagnostics.domRowCount=0` 但 `instanceCounts.warning=10`，`rowCoverage.reason=COLLAPSED_DOES_NOT_MEAN_ZERO_DIAGNOSTICS`；`collapsedHitTest.verdict=PASS` |
 | B 展开态 | 单击状态方块，等过渡结束，执行脚本 | `visibility.expanded=true`；`tabs/panel` 可见；`toolbar.tabWidth.verdict=PASS`，`delta<=1`；`geometry.overall.verdict=PASS`；`row-vs-panel` 的 left/right/width 差值均 ≤1；`diagnostics.projectedRowCount` 与 `domRowCount` 一致 |
-| C 多目标 | 打开含 multi-target 的 fixture，展开后执行 | `multiTarget.verdict=PASS`，`groups[].rowCount=2`，`instanceCounts.warning=1`，即“1 项警告、2 个目标、2 条展示行” |
+| C 多目标 | 打开 `test/vault/墨章插件测试/07-重复标题与特殊标题测试.md`（只读打开，不修改），展开后执行 | `multiTarget.verdict=PASS`，`groups[].rowCount=2`，`instanceCounts.warning=1`，即“1 项警告、2 个目标、2 条展示行” |
 | D 锁定态 | 双击状态方块，执行脚本 | `dataset.locked='1'`；`lockFrame` 四边宽度 >0、非透明；`content.lockedDocumentClass=true`；方块颜色仍为 YELLOW/RED（锁不覆盖严重度） |
 | E 主题 / DPI | 明/暗主题、100%/150% 缩放重复 A/B | 颜色仍为当前状态色；`dpi.devicePixelRatio=1.25` 时几何 CSS px 仍应稳定；差值容差 1px |
 
