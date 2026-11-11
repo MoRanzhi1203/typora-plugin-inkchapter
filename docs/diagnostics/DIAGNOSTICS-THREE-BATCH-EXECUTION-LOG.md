@@ -208,6 +208,6 @@
 - 安全：锁定/旧文档/旧诊断/旧源/越界/批量重叠全部阻断；`applySupported=false`，不写磁盘/DOM、不整篇 reload
 - 测试：`document-diagnostic-fix-v1.test.ts` 17 tests；全量 338 文件 / 5906 tests PASS，179.03s
 - 构建：未变（模块未进入 main 入口），SHA `17E64A2…`
-- 合并：待执行
+- 合并：`git merge --no-ff feature/diagnostics-fix-planner` → `9d9df454a17c33eac5ef20f2d83b70d5e55dc598`
 
 （后续批次在此追加；每批次包含分支、HEAD、任务、测试、构建 SHA、合并 SHA、阻塞/待人工验收。）
