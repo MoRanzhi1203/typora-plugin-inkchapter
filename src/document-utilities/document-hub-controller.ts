@@ -14,9 +14,19 @@
  * 重合。检测标签直接渲染真实诊断列表；顶部只保留真实计数概要、筛选 popup 与
  * 重新检测图标。无摘要/详情/返回页，无第二个抽屉。
  */
-import type { DocumentHubDiagnosticItem, DocumentHubModel } from './document-hub-model'
-import { explainBatchActionDisabled } from './document-hub-model'
+import type {
+  DiagnosticSortMode,
+  DocumentHubDiagnosticItem,
+  DocumentHubModel,
+} from './document-hub-model'
+import {
+  DIAGNOSTIC_SORT_MODES,
+  explainBatchActionDisabled,
+  filterDiagnosticItems,
+  sortDiagnosticItems,
+} from './document-hub-model'
 import type { DocumentStatusView } from './document-status-indicator'
+import { buildFixPanel, type FixPanelHandlers, type FixPanelState } from './document-diagnostic-fix-panel'
 
 export type DocumentToolbarTab = 'diagnostics' | 'images' | 'lock'
 export type DocumentToolbarMode = 'collapsed' | 'expanded'
@@ -30,6 +40,12 @@ export interface DocumentHubActions {
   dualLink(): void
   openImageSettings(): void
   locateDiagnostic?(diagnosticId: string): void
+  /** 行内「修复/处理」：打开真实修复预览。 */
+  fixDiagnostic?(diagnosticId: string): void
+  /** 「同类修复」：同一规则的全部实例。 */
+  fixSameRule?(ruleId: string): void
+  /** 「一键修复可处理项」：仅 AUTO_SAFE 计划。 */
+  fixAllAuto?(): void
 }
 
 export interface DocumentHubControllerOptions {
@@ -37,6 +53,12 @@ export interface DocumentHubControllerOptions {
   actions: DocumentHubActions
   getHint?: () => string | null
   doubleClickWindowMs?: number
+  /**
+   * Called when the panel opens, so the host can refresh the model for
+   * panel-only facts (e.g. the real AUTO_SAFE plan count) without taxing every
+   * diagnostics publish while the panel is closed.
+   */
+  onOpen?: () => void
 }
 
 const ROOT_CLASS = 'inkchapter-doc-toolbar-ui'
@@ -82,7 +104,11 @@ export class DocumentHubController {
   private mode: DocumentToolbarMode = 'collapsed'
   private tab: DocumentToolbarTab = 'diagnostics'
   private severityFilter: DiagnosticSeverityFilter = 'all'
-  private filterPopupOpen = false
+  private sortMode: DiagnosticSortMode = 'document'
+  private openPopup: 'filter' | 'sort' | null = null
+  private selectedDiagnosticId: string | null = null
+  private fixPanelState: FixPanelState | null = null
+  private fixPanelHandlers: FixPanelHandlers | null = null
   private pendingClickTimer: ReturnType<typeof setTimeout> | null = null
   private onDocMouseDown: ((event: MouseEvent) => void) | null = null
   private onKeyDown: ((event: KeyboardEvent) => void) | null = null
@@ -167,10 +193,11 @@ export class DocumentHubController {
       const target = event.target as Node | null
       if (!target) return
       if (this.layoutEl?.contains(target)) {
-        if (this.filterPopupOpen
+        if (this.openPopup != null
           && !this.filterPopupEl?.contains(target)
-          && !(this.panelEl?.querySelector('.inkchapter-doc-expand__filter-button')?.contains(target))) {
-          this.setFilterPopupOpen(false)
+          && !(this.panelEl?.querySelector('.inkchapter-doc-expand__filter-button')?.contains(target))
+          && !(this.panelEl?.querySelector('.inkchapter-doc-expand__sort-button')?.contains(target))) {
+          this.closePopup()
         }
         return
       }
@@ -178,10 +205,17 @@ export class DocumentHubController {
     }
     this.onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
-      if (this.filterPopupOpen) {
+      // A pending fix preview is the innermost layer: Esc cancels it first and
+      // NEVER collapses the whole panel (no half-applied repair).
+      if (this.fixPanelState != null) {
+        event.preventDefault()
+        this.cancelFixPanel()
+        return
+      }
+      if (this.openPopup != null) {
         if (this.filterPopupEl?.contains(event.target as Node)) return
         event.preventDefault()
-        this.setFilterPopupOpen(false)
+        this.closePopup()
         this.severityFilterFocusRestore()
         return
       }
@@ -210,6 +244,12 @@ export class DocumentHubController {
     }
     this.statusView = view
     if (!this.rootEl) this.mount()
+    // Selection follows the DIAGNOSTIC ID, never an array index: a row that
+    // disappeared from the new snapshot can never keep a stale "selected" state.
+    if (this.selectedDiagnosticId != null
+      && !this.model.diagnostics.some(item => item.id === this.selectedDiagnosticId)) {
+      this.selectedDiagnosticId = null
+    }
     const el = this.statusEl!
     el.dataset['status'] = view.code
     el.dataset['errorCount'] = String(view.errorCount)
@@ -241,8 +281,20 @@ export class DocumentHubController {
     return this.severityFilter
   }
 
+  getSortMode(): DiagnosticSortMode {
+    return this.sortMode
+  }
+
+  getSelectedDiagnosticId(): string | null {
+    return this.selectedDiagnosticId
+  }
+
   isFilterPopupOpen(): boolean {
-    return this.filterPopupOpen
+    return this.openPopup === 'filter'
+  }
+
+  isSortPopupOpen(): boolean {
+    return this.openPopup === 'sort'
   }
 
   private handleStatusClick(): void {
@@ -269,7 +321,7 @@ export class DocumentHubController {
     this.mode = 'expanded'
     this.tab = 'diagnostics'
     this.severityFilter = 'all'
-    this.filterPopupOpen = false
+    this.closePopup()
     this.rootEl!.dataset['expanded'] = 'true'
     this.tabsEl!.hidden = false
     this.positionRoot()
@@ -278,12 +330,16 @@ export class DocumentHubController {
     this.waitForOpenFrame()
     this.statusEl?.setAttribute('aria-expanded', 'true')
     this.updateTabFocusability()
+    // Panel-only facts (auto-fix plan count) are refreshed on open; the host
+    // skips that planning work while the panel is closed.
+    try { this.options.onOpen?.() } catch { /* presentation-only */ }
   }
 
   close(): void {
     if (this.mode !== 'expanded') return
     this.mode = 'collapsed'
-    this.filterPopupOpen = false
+    this.closePopup()
+    if (this.fixPanelState != null) this.cancelFixPanel()
     this.rootEl?.classList.remove('is-open')
     this.rootEl?.setAttribute('data-expanded', 'false')
     if (this.tabsEl) this.tabsEl.hidden = true
@@ -300,7 +356,8 @@ export class DocumentHubController {
       return
     }
     this.tab = tab
-    this.filterPopupOpen = false
+    this.closePopup()
+    if (this.fixPanelState != null) this.cancelFixPanel()
     if (tab === 'diagnostics') this.severityFilter = 'all'
     this.renderTabs()
     this.renderPanel()
@@ -381,6 +438,12 @@ export class DocumentHubController {
     panel.hidden = false
     panel.setAttribute('aria-labelledby', `${ROOT_CLASS}__tab-${this.tab}`)
     if (this.tab === 'diagnostics') {
+      // The fix interaction lives INSIDE the 检测 page (no fourth tab, no
+      // floating dialog over the document).
+      if (this.fixPanelState != null && this.fixPanelHandlers != null) {
+        panel.appendChild(buildFixPanel(this.fixPanelState, this.fixPanelHandlers))
+        return
+      }
       panel.appendChild(this.buildDiagnosticsList(model))
       return
     }
@@ -411,14 +474,18 @@ export class DocumentHubController {
       info: model.status.hintCount,
     }
     box.appendChild(this.buildOverviewLine(model, counts))
+    box.appendChild(this.buildFixAllLine(model))
 
-    const filtered = this.severityFilter === 'all'
-      ? model.diagnostics
-      : model.diagnostics.filter(item => item.severity === this.severityFilter
-        || (this.severityFilter === 'info' && item.severity === 'hint'))
+    // Filter first, then the VIEW-ONLY sort. Neither step mutates the item
+    // identity, the multi-target grouping or the authoritative counts.
+    const filtered = sortDiagnosticItems(
+      filterDiagnosticItems(model.diagnostics, this.severityFilter),
+      this.sortMode,
+    )
 
     const list = document.createElement('div')
     list.className = 'inkchapter-doc-expand__list'
+    list.setAttribute('role', 'list')
     if (filtered.length === 0) {
       // A zero-diagnostic document is already explained by the overview
       // ("未检查" / "未发现问题"); do not repeat it inside the list. Only a
@@ -432,12 +499,48 @@ export class DocumentHubController {
       }
     }
     box.appendChild(list)
-    if (this.filterPopupOpen) {
+    if (this.openPopup === 'filter') {
       const popup = this.buildFilterPopup(counts)
+      this.filterPopupEl = popup
+      box.appendChild(popup)
+    } else if (this.openPopup === 'sort') {
+      const popup = this.buildSortPopup()
       this.filterPopupEl = popup
       box.appendChild(popup)
     }
     return box
+  }
+
+  /**
+   * 第二行（仅当存在可安全自动修复能力时）：`N 项可自动修复` + 一键修复。
+   * `autoFixableCount` is computed from REAL plans by the host, never typed in.
+   */
+  private buildFixAllLine(model: DocumentHubModel): HTMLElement {
+    const line = this.buildLine('inkchapter-doc-expand__fixall')
+    if (model.autoFixableCount <= 0) {
+      if (model.diagnostics.length === 0) {
+        line.hidden = true
+        return line
+      }
+      const note = document.createElement('span')
+      note.className = 'inkchapter-doc-expand__meta'
+      note.textContent = '当前没有可安全自动修复项'
+      line.appendChild(note)
+      return line
+    }
+    const text = document.createElement('span')
+    text.className = 'inkchapter-doc-expand__summary is-fixall-count'
+    text.textContent = `${model.autoFixableCount} 项可自动修复`
+    line.appendChild(text)
+    line.appendChild(this.buildButton(
+      '一键修复可处理项',
+      !model.locked && !model.fixBusy && typeof this.options.actions.fixAllAuto === 'function',
+      () => this.options.actions.fixAllAuto?.(),
+      model.locked ? '文档已锁定：请先解锁' : model.fixBusy ? '正在应用修复…' : '修复服务尚未就绪',
+      false,
+      'link',
+    ))
+    return line
   }
 
   /** 顶部状态概要：只显示真实非零数量，不重复“文档检测”标题。 */
@@ -463,6 +566,7 @@ export class DocumentHubController {
 
     const actions = document.createElement('div')
     actions.className = 'inkchapter-doc-expand__overview-actions'
+    actions.appendChild(this.buildSortButton())
     actions.appendChild(this.buildFilterButton())
     actions.appendChild(this.buildIconButton(
       '重新检测',
@@ -474,6 +578,71 @@ export class DocumentHubController {
     return line
   }
 
+  private buildSortButton(): HTMLButtonElement {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'inkchapter-doc-expand__icon-button inkchapter-doc-expand__sort-button'
+    if (this.sortMode !== 'document') button.classList.add('is-active')
+    const current = DIAGNOSTIC_SORT_MODES.find(item => item.id === this.sortMode)?.label ?? '文档顺序'
+    button.setAttribute('aria-label', `排序：${current}`)
+    button.setAttribute('aria-haspopup', 'menu')
+    button.setAttribute('aria-expanded', String(this.openPopup === 'sort'))
+    button.title = `排序：${current}`
+    button.appendChild(buildSvgIcon(SORT_ICON_PATH))
+    button.addEventListener('click', () => {
+      const next = this.openPopup === 'sort' ? null : 'sort'
+      this.setOpenPopup(next)
+      if (next === 'sort') this.focusFirstMenuOption()
+    })
+    button.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowDown') return
+      event.preventDefault()
+      this.setOpenPopup('sort')
+      this.focusFirstMenuOption()
+    })
+    return button
+  }
+
+  private buildSortPopup(): HTMLElement {
+    const popup = document.createElement('div')
+    popup.className = `${FILTER_POPUP_CLASS} inkchapter-doc-expand__sort-popup`
+    popup.setAttribute('role', 'menu')
+    popup.setAttribute('aria-label', '排序方式')
+    for (const item of DIAGNOSTIC_SORT_MODES) {
+      const option = document.createElement('button')
+      option.type = 'button'
+      option.className = FILTER_OPTION_CLASS
+      option.dataset['sort'] = item.id
+      option.setAttribute('role', 'menuitemradio')
+      option.setAttribute('aria-checked', String(this.sortMode === item.id))
+      option.tabIndex = -1
+
+      const check = document.createElement('span')
+      check.className = 'inkchapter-doc-expand__filter-check'
+      check.setAttribute('aria-hidden', 'true')
+      check.textContent = this.sortMode === item.id ? '✓' : ''
+
+      const label = document.createElement('span')
+      label.className = 'inkchapter-doc-expand__filter-label'
+      label.textContent = item.label
+
+      const count = document.createElement('span')
+      count.className = 'inkchapter-doc-expand__filter-count'
+      count.textContent = item.id === 'document' ? '' : ''
+
+      option.append(check, label, count)
+      option.addEventListener('click', () => {
+        this.sortMode = item.id
+        this.setOpenPopup(null)
+        this.renderPanel()
+        this.panelEl?.querySelector<HTMLButtonElement>('.inkchapter-doc-expand__sort-button')?.focus()
+      })
+      option.addEventListener('keydown', (event) => this.handleFilterOptionKey(event, option))
+      popup.appendChild(option)
+    }
+    return popup
+  }
+
   private buildFilterButton(): HTMLButtonElement {
     const button = document.createElement('button')
     button.type = 'button'
@@ -482,17 +651,18 @@ export class DocumentHubController {
     const current = FILTERS.find(item => item.id === this.severityFilter)?.label ?? '全部'
     button.setAttribute('aria-label', `筛选：${current}`)
     button.setAttribute('aria-haspopup', 'menu')
-    button.setAttribute('aria-expanded', String(this.filterPopupOpen))
+    button.setAttribute('aria-expanded', String(this.openPopup === 'filter'))
     button.title = '筛选严重级别'
     button.appendChild(buildSvgIcon(FILTER_ICON_PATH))
     button.addEventListener('click', () => {
-      this.setFilterPopupOpen(!this.filterPopupOpen)
-      if (this.filterPopupOpen) this.focusFirstFilterOption()
+      const next = this.openPopup === 'filter' ? null : 'filter'
+      this.setOpenPopup(next)
+      if (next === 'filter') this.focusFirstFilterOption()
     })
     button.addEventListener('keydown', (event) => {
       if (event.key !== 'ArrowDown') return
       event.preventDefault()
-      this.setFilterPopupOpen(true)
+      this.setOpenPopup('filter')
       this.focusFirstFilterOption()
     })
     return button
@@ -534,7 +704,7 @@ export class DocumentHubController {
       option.append(check, label, count)
       option.addEventListener('click', () => {
         this.severityFilter = item.id
-        this.setFilterPopupOpen(false)
+        this.setOpenPopup(null)
         this.severityFilterFocusRestore()
       })
       option.addEventListener('keydown', (event) => this.handleFilterOptionKey(event, option))
@@ -558,8 +728,10 @@ export class DocumentHubController {
     if (event.key === 'Escape') {
       event.preventDefault()
       event.stopPropagation()
-      this.setFilterPopupOpen(false)
-      this.severityFilterFocusRestore()
+      // Capture the owning menu BEFORE closing (the restore target depends on it).
+      const owner = this.openPopup
+      this.setOpenPopup(null)
+      this.menuFocusRestore(owner)
       return
     }
     if (event.key === 'Enter' || event.key === ' ') {
@@ -572,7 +744,19 @@ export class DocumentHubController {
     this.panelEl?.querySelector<HTMLButtonElement>('.inkchapter-doc-expand__filter-button')?.focus()
   }
 
+  /** Restore focus to the button that owned the CLOSED menu (filter or sort). */
+  private menuFocusRestore(owner: 'filter' | 'sort' | null = this.openPopup): void {
+    const selector = owner === 'sort'
+      ? '.inkchapter-doc-expand__sort-button'
+      : '.inkchapter-doc-expand__filter-button'
+    this.panelEl?.querySelector<HTMLButtonElement>(selector)?.focus()
+  }
+
   private focusFirstFilterOption(): void {
+    this.focusFirstMenuOption()
+  }
+
+  private focusFirstMenuOption(): void {
     const first = this.panelEl?.querySelector<HTMLButtonElement>(`.${FILTER_OPTION_CLASS}`)
     if (!first) return
     for (const option of Array.from(this.panelEl?.querySelectorAll<HTMLButtonElement>(`.${FILTER_OPTION_CLASS}`) ?? [])) {
@@ -582,19 +766,31 @@ export class DocumentHubController {
     first.focus()
   }
 
-  private setFilterPopupOpen(open: boolean): void {
-    if (this.filterPopupOpen === open) return
-    this.filterPopupOpen = open
+  private setOpenPopup(next: 'filter' | 'sort' | null): void {
+    if (this.openPopup === next) return
+    this.openPopup = next
     if (this.mode === 'expanded') this.renderPanel()
   }
 
-  private buildDiagnosticRow(item: DocumentHubDiagnosticItem): HTMLButtonElement {
-    const row = document.createElement('button')
-    row.type = 'button'
+  private closePopup(): void {
+    if (this.openPopup == null) return
+    this.openPopup = null
+  }
+
+  private buildDiagnosticRow(item: DocumentHubDiagnosticItem): HTMLElement {
+    // A row is NOT a <button>: it must host an inner action button (repair).
+    // ARIA + keyboard activation keep the row's locate behavior identical.
+    const row = document.createElement('div')
     row.className = `inkchapter-doc-expand__diag is-${item.severity}`
     row.dataset['severity'] = item.severity
     row.dataset['diagnosticId'] = item.id
+    row.setAttribute('role', 'button')
+    row.tabIndex = 0
     row.setAttribute('aria-label', item.line != null ? `${item.title}（第 ${item.line} 行）` : item.title)
+    if (this.selectedDiagnosticId === item.id) {
+      row.classList.add('is-selected')
+      row.setAttribute('aria-current', 'true')
+    }
 
     const dot = document.createElement('span')
     dot.className = 'inkchapter-doc-expand__diag-dot'
@@ -605,6 +801,12 @@ export class DocumentHubController {
     const title = document.createElement('span')
     title.className = 'inkchapter-doc-expand__diag-title'
     title.textContent = item.title
+    if ((item.targetCount ?? 1) > 1) {
+      const badge = document.createElement('span')
+      badge.className = 'inkchapter-doc-expand__diag-badge'
+      badge.textContent = `${(item.targetIndex ?? 0) + 1}/${item.targetCount}`
+      title.appendChild(badge)
+    }
     body.appendChild(title)
     if (item.detail && item.detail !== item.title) {
       const detail = document.createElement('span')
@@ -618,11 +820,66 @@ export class DocumentHubController {
     loc.setAttribute('aria-hidden', 'true')
     loc.textContent = item.line != null ? `L${item.line}` : ''
 
-    row.append(dot, body, loc)
+    const action = document.createElement('span')
+    action.className = 'inkchapter-doc-expand__diag-action'
+    const fix = item.fix
+    const fixable = fix != null && fix.capability !== 'UNAVAILABLE' && fix.capability !== 'MANUAL_ONLY'
+    if (fixable) {
+      const fixButton = document.createElement('button')
+      fixButton.type = 'button'
+      fixButton.className = 'inkchapter-doc-expand__diag-fix'
+      fixButton.textContent = fix.capability === 'AUTO_SAFE' ? '修复' : '处理'
+      fixButton.setAttribute('aria-label', `${fix.label}：${item.title}`)
+      const locked = this.model?.locked === true
+      const busy = this.model?.fixBusy === true
+      fixButton.disabled = locked || busy || typeof this.options.actions.fixDiagnostic !== 'function'
+      fixButton.title = locked ? '文档已锁定：请先解锁' : busy ? '正在应用修复…' : fix.label
+      fixButton.addEventListener('click', (event) => {
+        event.stopPropagation()
+        if (fixButton.disabled) return
+        this.selectedDiagnosticId = item.id
+        this.options.actions.fixDiagnostic?.(item.id)
+      })
+      fixButton.addEventListener('keydown', (event) => event.stopPropagation())
+      action.appendChild(fixButton)
+
+      // 同类修复 — only when this rule really has more than one instance in the
+      // current snapshot (never a dead button). The batch is planned and
+      // conflict-checked by the SAME controller.
+      const sameRuleCount = item.ruleId
+        ? (this.model?.diagnostics.filter(other => other.ruleId === item.ruleId).length ?? 0)
+        : 0
+      if (sameRuleCount > 1 && typeof this.options.actions.fixSameRule === 'function') {
+        const sameButton = document.createElement('button')
+        sameButton.type = 'button'
+        sameButton.className = 'inkchapter-doc-expand__diag-fix is-same-rule'
+        sameButton.textContent = '同类'
+        sameButton.title = `同类修复（共 ${sameRuleCount} 项）`
+        sameButton.setAttribute('aria-label', `同类修复：${item.title}（共 ${sameRuleCount} 项）`)
+        sameButton.disabled = locked || busy
+        sameButton.addEventListener('click', (event) => {
+          event.stopPropagation()
+          if (sameButton.disabled) return
+          this.selectedDiagnosticId = item.id
+          this.options.actions.fixSameRule?.(item.ruleId!)
+        })
+        sameButton.addEventListener('keydown', (event) => event.stopPropagation())
+        action.appendChild(sameButton)
+      }
+    }
+
+    row.append(dot, body, loc, action)
     row.title = item.line != null ? `${item.title}（第 ${item.line} 行）` : item.title
-    row.addEventListener('click', () => {
+    const locate = (): void => {
+      this.selectedDiagnosticId = item.id
       this.close()
       this.options.actions.locateDiagnostic?.(item.id)
+    }
+    row.addEventListener('click', locate)
+    row.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
+      locate()
     })
     return row
   }
@@ -806,6 +1063,47 @@ export class DocumentHubController {
     return this.panelEl
   }
 
+  /** Render the REAL fix interaction (input / diff preview) inside the panel. */
+  showFixPanel(state: FixPanelState, handlers: FixPanelHandlers): void {
+    if (!this.rootEl) this.mount()
+    this.fixPanelState = state
+    this.fixPanelHandlers = handlers
+    if (this.mode !== 'expanded') this.open()
+    if (this.tab !== 'diagnostics') this.switchTab('diagnostics')
+    this.renderPanel()
+  }
+
+  /** Re-render the current fix panel state (busy / error / live diff). */
+  updateFixPanel(state: FixPanelState): void {
+    if (this.fixPanelState == null) return
+    this.fixPanelState = state
+    if (this.mode === 'expanded' && this.tab === 'diagnostics') this.renderPanel()
+  }
+
+  closeFixPanel(): void {
+    if (this.fixPanelState == null) return
+    this.fixPanelState = null
+    this.fixPanelHandlers = null
+    if (this.mode === 'expanded' && this.tab === 'diagnostics') this.renderPanel()
+  }
+
+  isFixPanelOpen(): boolean {
+    return this.fixPanelState != null
+  }
+
+  getFixPanelElement(): HTMLElement | null {
+    return this.panelEl?.querySelector('.inkchapter-doc-expand__fix') as HTMLElement | null
+  }
+
+  /** User-initiated cancellation (Esc / cancel button / tab switch). */
+  cancelFixPanel(): void {
+    const handlers = this.fixPanelHandlers
+    this.fixPanelState = null
+    this.fixPanelHandlers = null
+    handlers?.onCancel()
+    if (this.mode === 'expanded' && this.tab === 'diagnostics') this.renderPanel()
+  }
+
   getStatusElement(): HTMLElement | null {
     return this.statusEl
   }
@@ -855,6 +1153,8 @@ export class DocumentHubController {
       this.pendingClickTimer = null
     }
     this.close()
+    this.fixPanelState = null
+    this.fixPanelHandlers = null
     this.rootEl?.remove()
     this.rootEl = null
     this.layoutEl = null
@@ -879,6 +1179,8 @@ const RECHECK_ICON_PATH =
   'M13 8a5 5 0 1 1-1.5-3.5M13 2v3.2H9.8'
 const FILTER_ICON_PATH =
   'M2.5 3.5h11M4.5 8h7M6.5 12.5h3'
+const SORT_ICON_PATH =
+  'M4 12.5V3.5M2 5.5L4 3.5l2 2M12 3.5v9M10 10.5l2 2 2-2'
 const LOCK_ICON_PATH =
   'M4.5 7V5.5a3.5 3.5 0 1 1 7 0V7M3.5 7h9v6.5h-9z'
 const UNLOCK_ICON_PATH =

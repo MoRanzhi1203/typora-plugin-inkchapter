@@ -167,6 +167,17 @@ export interface DocumentUtilitiesSources {
     openImageSettings: () => void
     getHint?: () => string | null
   }
+  /**
+   * F0 — the REAL editor write bridge (verified Typora transaction + existing
+   * caption/numbering service). Absent ⇒ the fix panel never offers a write.
+   */
+  diagnosticFix?: {
+    applyMarkdown(next: string, expectedBefore: string): { ok: boolean; reason?: string }
+    setCaptionName(request: import('./document-diagnostic-fix-controller').CaptionNameRequest): {
+      ok: boolean
+      reason?: string
+    }
+  }
 }
 
 export interface DocumentUtilities {
@@ -444,6 +455,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
         }
       : undefined,
     documentHub: sources.documentHub,
+    diagnosticFix: sources.diagnosticFix,
     onBindDocument: (bind) => {
       sources.onDocumentSwitch(() => {
         indexHeadingIdentities()

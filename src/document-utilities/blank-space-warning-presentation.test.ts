@@ -149,14 +149,21 @@ describe('Blank-Space Warning Presentation Policy — CSS band', () => {
     expect(STYLE_SCSS).toContain('--ink-blank-space-warning-fragment-rail: 3px')
   })
 
-  it('统一绘制权威 — ONE range background + ONE left accent + ONE count label', () => {
-    // the container owns the ONE range surface + ONE accent (no stacked layers)
+  it('M1 edge-only — ONE left rail + ONE count label, never a filled gap band', () => {
+    // The internal gap is EMPTY SPACE: painting its whole surface produced the
+    // "yellow stray blank row" defect. The container now owns ONE 2px rail.
     const containerBlock = STYLE_SCSS.match(/\.inkchapter-block-gap-fragments \{[^}]*\}/)?.[0] ?? ''
     expect(containerBlock).not.toBe('')
-    expect(containerBlock).toContain('background: var(--ink-blank-space-warning-bg)')
-    // 光标安全 — the container must carry NO inner vertical bar / border line
-    expect(containerBlock).toContain('border: 0')
-    expect(containerBlock).not.toContain('border-left')
+    expect(containerBlock).toContain('background: transparent')
+    expect(containerBlock).toContain('border-left: 2px solid var(--ink-blank-space-warning-accent)')
+    expect(containerBlock).not.toContain('background: var(--ink-blank-space-warning-bg)')
+    // The per-row fragments keep the shared marker class for OWNERSHIP, but the
+    // scoped override must suppress the per-row 18% fill (stacked band).
+    const fragmentOverride = STYLE_SCSS.match(
+      /\.inkchapter-block-gap-fragments \.inkchapter-blank-space-warning \{[^}]*\}/,
+    )?.[0] ?? ''
+    expect(fragmentOverride).toContain('background: transparent')
+    expect(fragmentOverride).toContain('border-left: 0')
     // the per-row fragments are pure geometry anchors → NO surface of their own
     const fragBlock = STYLE_SCSS.match(/\.inkchapter-block-gap-fragment \{[^}]*\}/)?.[0] ?? ''
     expect(fragBlock).toContain('background: transparent')

@@ -501,6 +501,34 @@ export default class extends Plugin<InkChapterSettings> {
     Notice.info('墨章：按 Ctrl+. 打开插件设置，选择「墨章 · 图片」调整图片策略。')
   }
 
+  /**
+   * F2 — resolve a caption target by the diagnostics' OWN canonical identity
+   * (`block:<kind>:<ordinal>`). The caption service decides the authoritative
+   * target order; the raw DOM order is only a bounded fallback.
+   */
+  private resolveCaptionElementByCanonicalOrdinal(
+    kind: 'code' | 'table',
+    identity: string,
+  ): HTMLElement | null {
+    const match = new RegExp(`^block:${kind}:(\\d+)$`).exec(identity)
+    if (!match) return null
+    const ordinal = Number.parseInt(match[1], 10)
+    const root = document.getElementById('write')
+    if (!root) return null
+    const selector = kind === 'code' ? 'pre.md-fences' : 'table'
+    const all = Array.from(root.querySelectorAll<HTMLElement>(selector))
+    const service = this.captionService
+    if (!service) return all[ordinal] ?? null
+    let index = 0
+    for (const element of all) {
+      const naming = service.resolveCaptionNamingTarget(element)
+      if (!naming || naming.type !== kind) continue
+      if (index === ordinal) return element
+      index++
+    }
+    return all[ordinal] ?? null
+  }
+
   /** 文档切换 / 设置变化后刷新缓存，避免同步回调读到上一份文档的配置。 */
   private refreshActiveImageScope(): void {
     void this.resolveActiveImageSettings().catch(() => undefined)
@@ -1544,6 +1572,78 @@ export default class extends Plugin<InkChapterSettings> {
           checkDualLink: () => { void this.getDocumentImageBatchService().run('dual-link') },
           openImageSettings: () => this.openImageSettingsEntry(),
           getHint: () => this.documentHubHint(),
+        },
+        // F0 — the ONLY production diagnostic-fix write bridge.
+        // `File.reloadContent(markdown, {})` runs Typora's `reload` undo command
+        // (undo.register) — ONE Undo restores the previous document — and we
+        // read the buffer back so the UI never claims an unverified write.
+        diagnosticFix: {
+          applyMarkdown: (next: string, expectedBefore: string) => {
+            try {
+              // The SAME structural authority the planner used: the incremental
+              // mirror can lag on blank-line structure, and a read-back against
+              // it would be meaningless.
+              const readSource = (): string | null => {
+                try {
+                  const structural = readStructuralMarkdown()
+                  if (structural.structural && typeof structural.markdown === 'string' && structural.markdown !== '') {
+                    return structural.markdown
+                  }
+                } catch { /* fall through */ }
+                try { return editor.getMarkdown() } catch { return null }
+              }
+              const before = readSource()
+              // The plan was built from `expectedBefore`; a different live
+              // buffer means the diagnostic plan is stale — never write blind.
+              if (before !== expectedBefore) {
+                return { ok: false, reason: 'STALE_SOURCE' }
+              }
+              if (typeof next !== 'string' || next === before) {
+                return { ok: false, reason: 'NO_CHANGE' }
+              }
+              // The Typora typings describe positional booleans, but the real
+              // implementation destructures an OPTIONS object. Pass the object
+              // explicitly so undo registration is the documented default path.
+              ;(File.reloadContent as unknown as (
+                markdown: string,
+                options?: Record<string, unknown>,
+              ) => void)(next, {})
+              const after = readSource()
+              if (after !== next) {
+                console.error('[InkChapter] diagnostic fix readback mismatch', {
+                  expectedLength: next.length,
+                  actualLength: after?.length ?? null,
+                })
+                return { ok: false, reason: 'READBACK_MISMATCH' }
+              }
+              return { ok: true }
+            } catch (error) {
+              console.error('[InkChapter] diagnostic fix write failed', error)
+              return { ok: false, reason: error instanceof Error ? error.message : 'WRITE_THREW' }
+            }
+          },
+          setCaptionName: (request) => {
+            try {
+              const service = this.captionService
+              if (!service) return { ok: false, reason: 'CAPTION_SERVICE_UNAVAILABLE' }
+              const element = request.element && request.element.isConnected
+                ? request.element
+                : this.resolveCaptionElementByCanonicalOrdinal(request.kind, request.targetIdentity)
+              if (!element) return { ok: false, reason: 'TARGET_ELEMENT_MISSING' }
+              const naming = service.resolveCaptionNamingTarget(element)
+              if (!naming) return { ok: false, reason: 'TARGET_NOT_A_CAPTION' }
+              // Kind mismatch means the diagnostic identity moved: refuse rather
+              // than naming an unrelated object.
+              if (naming.type !== request.kind) return { ok: false, reason: 'TARGET_KIND_MISMATCH' }
+              const record = service.setCaption(naming.type, naming.target, request.name)
+              if (!record) return { ok: false, reason: 'NAME_NOT_SAVED' }
+              this.documentUtilities?.requestDiagnosticsRefresh?.('CAPTION_NAME_APPLIED')
+              return { ok: true }
+            } catch (error) {
+              console.error('[InkChapter] caption name fix failed', error)
+              return { ok: false, reason: error instanceof Error ? error.message : 'CAPTION_WRITE_THREW' }
+            }
+          },
         },
         getActiveFilePath: () => this.app.workspace.activeFile ?? null,
         getDocumentKey: () => {

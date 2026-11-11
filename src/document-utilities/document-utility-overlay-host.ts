@@ -15,6 +15,9 @@ import type { DocumentDiagnosticsProviders } from './document-diagnostics-author
 // V5.1 — 右上角状态方块 + 统一文档管理中心。
 import { DocumentHubController } from './document-hub-controller'
 import { buildDocumentHubModel, type DocumentHubImageSummary } from './document-hub-model'
+import { DiagnosticFixController } from './document-diagnostic-fix-controller'
+import { describeFixCapability, planAllAutoFixesV2, selectNonConflictingPlans } from './document-diagnostic-fix-v2'
+import type { FixPanelHandlers, FixPanelState } from './document-diagnostic-fix-panel'
 import { buildDocumentStatusView } from './document-status-indicator'
 import { DocumentDiagnosticLocator, prefersReducedMotion, DIAGNOSTIC_HIGHLIGHT_CLASS } from './document-diagnostic-locator'
 import type { DiagnosticLocateResult } from './document-diagnostic-locator'
@@ -1252,6 +1255,21 @@ export interface DocumentUtilitiesOverlayOptions {
     getDocumentDir?: () => string | null
     /** 图片资产扩展动作（图名 / 下载）；缺省时只保留复制菜单。 */
     imageAssetActions?: import('./content-block-toolbar-controller').ContentBlockToolbarImageAssetActions
+  }
+  /**
+   * F0 — the REAL editor write bridge for diagnostic fixes.
+   *
+   * `applyMarkdown` MUST be the verified Typora transaction
+   * (`File.reloadContent`, one undo entry) — never disk IO / `#write` writes.
+   * `setCaptionName` is the existing caption/numbering service entry
+   * (`CaptionService.setCaption`), not a second naming system.
+   */
+  diagnosticFix?: {
+    applyMarkdown(next: string, expectedBefore: string): { ok: boolean; reason?: string }
+    setCaptionName(request: import('./document-diagnostic-fix-controller').CaptionNameRequest): {
+      ok: boolean
+      reason?: string
+    }
   }
 }
 
@@ -2780,6 +2798,10 @@ export class DocumentUtilityOverlayHost {
   /** V5.1 — 右上角状态方块与统一文档管理中心。 */
   private documentHub?: DocumentHubController
   private documentHubMountEl: HTMLElement | null = null
+  /** F0/F1/F2 — the ONE diagnostic fix orchestration authority. */
+  private diagnosticFixController?: DiagnosticFixController
+  /** Live AUTO_SAFE plan count for the current snapshot (computed, never typed). */
+  private fixAutoPlanCount = 0
   /** V1.1 — Drawer severity filter, shared with the Toolbar status segments. */
   private drawerFilter: DiagnosticsSeverityFilter = 'all'
   private drawerFiltersEl: HTMLDivElement | null = null
@@ -3468,6 +3490,39 @@ export class DocumentUtilityOverlayHost {
     this.editGuard = new DocumentEditGuard({
       getDocumentKey: () => opts.ctx.authority.getDocumentKey(),
     })
+    this.diagnosticFixController = new DiagnosticFixController(
+      {
+        // SAFETY — fixes plan against the STRUCTURAL serializer, never the
+        // incremental typing mirror (which can omit blank-line structure; a
+        // whole-document reload from it could drop user content).
+        getMarkdown: () => this.readFixSource().markdown,
+        isSourceVerified: () => this.readFixSource().verified,
+        getDocumentKey: () => opts.ctx.authority.getDocumentKey(),
+        getSnapshot: () => this.getSnapshot(),
+        isLocked: () => this.editGuard?.isLocked() ?? false,
+        applyMarkdown: (next, expectedBefore) => {
+          const port = this.opts.diagnosticFix
+          if (!port) return { ok: false, reason: 'NO_EDITOR_PORT' }
+          return port.applyMarkdown(next, expectedBefore)
+        },
+        setCaptionName: (request) => {
+          const port = this.opts.diagnosticFix
+          if (!port) return { ok: false, reason: 'NO_CAPTION_PORT' }
+          return port.setCaptionName(request)
+        },
+        recheck: () => {
+          try { this.diagnostics.recompute('DIAGNOSTIC_FIX_APPLIED') } catch { /* fail-open */ }
+        },
+        notify: (message) => this.showToast(message),
+        getCaptionElement: (diagnostic) => diagnostic.locator?.targetElement ?? null,
+      },
+      {
+        renderFixPanel: (state: FixPanelState, handlers: FixPanelHandlers) => {
+          this.documentHub?.showFixPanel(state, handlers)
+        },
+        closeFixPanel: () => this.documentHub?.closeFixPanel(),
+      },
+    )
   }
 
   /** Phase 7R.3.11.8B.7.1 — latest PUBLISHED diagnostic snapshot (read-only
@@ -4824,6 +4879,8 @@ export class DocumentUtilityOverlayHost {
     if (this.disposed) return
     this.disposed = true
     this.mounted = false
+    // L1 — a disposed host must never leave a confirmable fix plan behind.
+    this.diagnosticFixController?.cancel()
     // TRAE §P2/§P3 — cancel any in-flight geometry recovery: a disposed host must
     // never run a stale recovery (and must never leak its rAF handle).
     if (this.geometryRecoveryRaf != null) {
@@ -4944,6 +5001,9 @@ export class DocumentUtilityOverlayHost {
     // WC-R2 — a document switch drops any pending navigator gesture before it
     // could be applied to the NEW document.
     this.cancelNavigatorGesture('DOCUMENT_SWITCH')
+    // L1 — a pending fix plan belongs to the OLD document: cancel it so it can
+    // never be confirmed against the new buffer.
+    this.diagnosticFixController?.cancel()
     this.clearActiveGapGroup('DOCUMENT_SWITCH')
     // EN-11 R3 — a document switch must drop every parked presentation paint so a
     // captured intent can never be applied to the NEW document (DROP_STALE).
@@ -22898,8 +22958,12 @@ export class DocumentUtilityOverlayHost {
         dualLink: () => { this.opts.documentHub?.checkDualLink() },
         openImageSettings: () => { this.opts.documentHub?.openImageSettings() },
         locateDiagnostic: (diagnosticId) => this.locateDiagnostic(diagnosticId),
+        fixDiagnostic: (diagnosticId) => this.diagnosticFixController?.startDiagnostic(diagnosticId),
+        fixSameRule: (ruleId) => this.diagnosticFixController?.startRule(ruleId),
+        fixAllAuto: () => this.diagnosticFixController?.startAllAuto(),
       },
       getHint: () => this.opts.documentHub?.getHint?.() ?? null,
+      onOpen: () => this.refreshDocumentHub(),
     })
     this.documentHub.mount()
 
@@ -23105,6 +23169,9 @@ export class DocumentUtilityOverlayHost {
     const projections = sortProjectionsByDocumentPosition(
       flattenDiagnosticsToProjections(snapshotDiagnostics),
     )
+    const captionPortAvailable = this.opts.diagnosticFix != null
+      && typeof this.opts.diagnosticFix.setCaptionName === 'function'
+      && typeof this.opts.diagnosticFix.applyMarkdown === 'function'
     const diagnostics = projections.map((projection) => {
       const diagnostic = diagnosticsById.get(projection.diagnosticId)
       const copy = resolveDiagnosticCopy({
@@ -23114,16 +23181,35 @@ export class DocumentUtilityOverlayHost {
         severity: projection.severity,
         category: diagnostic?.category ?? null,
       })
+      const capability = describeFixCapability(projection.ruleId, captionPortAvailable)
       return {
         id: projection.diagnosticId,
         severity: (projection.severity === 'error' || projection.severity === 'warning' ? projection.severity : 'info') as 'error' | 'warning' | 'hint' | 'info',
         title: copy.title,
         detail: copy.description,
         line: projection.sourceLine,
+        ruleId: projection.ruleId,
         targetIndex: projection.targetIndex,
         targetCount: projection.targetCount,
+        ...(capability.capability === 'UNAVAILABLE'
+          ? {}
+          : {
+              fix: {
+                capability: capability.capability,
+                label: capability.label,
+                ...(capability.requiresInput ? { requiresInput: capability.requiresInput } : {}),
+              },
+            }),
       }
     })
+    // F1 — `N 项可自动修复` is derived from REAL plans over the SAME admitted
+    // snapshot, never a hand-written number. A locked document still reports the
+    // capability count (the button is disabled, the plan is not invented).
+    this.fixAutoPlanCount = this.computeAutoFixableCount(
+      snapshotDiagnostics,
+      documentPath != null,
+      locked,
+    )
     // B1 §B1-03 — status/square counts are NORMALIZED DIAGNOSTIC EVENTS (the
     // document-domain projection), never the expanded row count. A multi-target
     // warning stays ONE warning; the list still renders N clickable rows.
@@ -23147,8 +23233,67 @@ export class DocumentUtilityOverlayHost {
       image,
       diagnosticsAvailable: true,
       diagnostics,
+      autoFixableCount: this.fixAutoPlanCount,
+      fixBusy: this.diagnosticFixController?.isBusy() === true,
     })
     hub.update(view, model)
+  }
+
+  /**
+   * F0 SAFETY — the ONE source read for diagnostic fixes.
+   *
+   * `verified=true` only when the STRUCTURAL serializer produced the string.
+   * The incremental mirror (`getMarkdown`) can lag on blank-line structure, so
+   * a fix planned/written from it could drop content. Source-patch fixes are
+   * refused when this is degraded (caption-name fixes do not touch Markdown).
+   */
+  private readFixSource(): { markdown: string | null; verified: boolean } {
+    try {
+      const structural = this.opts.ctx.authority.getStructuralMarkdown?.()
+      if (structural
+        && structural.structural === true
+        && typeof structural.markdown === 'string'
+        && structural.markdown !== '') {
+        return { markdown: structural.markdown, verified: true }
+      }
+    } catch { /* fall through to the mirror */ }
+    let markdown: string | null = null
+    try { markdown = this.opts.ctx.authority.getMarkdown() } catch { markdown = null }
+    return { markdown, verified: false }
+  }
+
+  /**
+   * F1 — count REAL, non-conflicting AUTO_SAFE plans over the admitted snapshot.
+   * The value drives the `N 项可自动修复` label and the one-click button; it is
+   * never a hand-written capability number.
+   */
+  private computeAutoFixableCount(
+    snapshotDiagnostics: readonly DocumentDiagnostic[],
+    hasDocument: boolean,
+    locked: boolean,
+  ): number {
+    if (!hasDocument || this.opts.diagnosticFix == null) return 0
+    // The count is only visible in the open 检测 page. Planning every gap on
+    // every publish while the panel is closed would be wasted work on large
+    // documents (typing latency), so it is refreshed by `onOpen`.
+    if (this.documentHub?.isOpen() !== true || this.documentHub.getActiveTab() !== 'diagnostics') return 0
+    const snapshot = this.getSnapshot()
+    if (!snapshot) return 0
+    const source = this.readFixSource()
+    if (!source.verified || source.markdown == null || source.markdown === '') return 0
+    const markdown = source.markdown
+    try {
+      const plans = planAllAutoFixesV2({
+        markdown,
+        snapshotMarkdown: markdown,
+        documentKey: snapshot.documentKey ?? '',
+        snapshot: { ...snapshot, diagnostics: snapshotDiagnostics },
+        locked,
+      }, { captionAvailable: true })
+      return selectNonConflictingPlans(plans).accepted.length
+    } catch {
+      return 0
+    }
   }
 
   /**
@@ -23199,6 +23344,8 @@ export class DocumentUtilityOverlayHost {
       return
     }
     const nextLocked = !this.editGuard.isLocked()
+    // L1 — locking invalidates any pending write (the guard blocks the buffer).
+    if (nextLocked) this.diagnosticFixController?.cancel()
     if (nextLocked) {
       const ok = this.editGuard.lock()
       if (!ok) {

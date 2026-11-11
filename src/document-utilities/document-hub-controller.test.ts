@@ -570,10 +570,12 @@ describe('V5.2 Fluent Compact visual contract', () => {
     expect(ruleBodies('.inkchapter-doc-expand__filter')).not.toContain('display:')
   })
 
-  it('diagnostics use a stable 40px right-aligned location cell', () => {
+  it('diagnostics use a stable 40px right-aligned location cell + 44px fix action', () => {
     const diagBody = ruleBodies('.inkchapter-doc-expand__diag')
-    expect(diagBody).toContain('grid-template-columns: 6px minmax(0, 1fr) 40px')
+    expect(diagBody).toContain('grid-template-columns: 6px minmax(0, 1fr) 40px 44px')
     expect(ruleBodies('.inkchapter-doc-expand__diag-loc')).toContain('text-align: right')
+    // The fix action is a low-emphasis but ALWAYS reachable entry (touch too).
+    expect(ruleBodies('.inkchapter-doc-expand__diag-fix')).toContain('font-size: 11px')
   })
 })
 
@@ -606,5 +608,137 @@ describe('V5.2 lifecycle / isolation', () => {
     expect(controller.isOpen()).toBe(true)
     controller.close()
     expect(controller.isOpen()).toBe(false)
+  })
+})
+
+describe('F3 — row-level fix entries', () => {
+  const FIXED: readonly DocumentHubDiagnosticItem[] = [
+    { id: 'a', severity: 'warning', title: '连续空行过多', detail: '建议压缩', line: 4, ruleId: 'EXCESSIVE_INTERNAL_BLANK_LINES', fix: { capability: 'AUTO_SAFE', label: '压缩连续空行' } },
+    { id: 'b', severity: 'warning', title: '连续空行过多', detail: '建议压缩', line: 9, ruleId: 'EXCESSIVE_INTERNAL_BLANK_LINES', fix: { capability: 'AUTO_SAFE', label: '压缩连续空行' } },
+    { id: 'c', severity: 'info', title: '标题跳跃', detail: '', line: 12, ruleId: 'HEADING_LEVEL_GAP' },
+  ]
+
+  function mountFixed(locked = false, fixBusy = false) {
+    const mountEl = document.createElement('div')
+    document.body.appendChild(mountEl)
+    const a = {
+      recheck: vi.fn(), toggleLock: vi.fn(), uploadAll: vi.fn(), downloadAll: vi.fn(),
+      dualLink: vi.fn(), openImageSettings: vi.fn(), locateDiagnostic: vi.fn(),
+      fixDiagnostic: vi.fn(), fixSameRule: vi.fn(), fixAllAuto: vi.fn(),
+    }
+    const controller = new DocumentHubController({ mountEl, actions: a, doubleClickWindowMs: 260 })
+    controller.mount()
+    controller.update(buildDocumentStatusView(FACTS, locked), buildDocumentHubModel({
+      documentPath: 'D:/vault/notes/doc.md',
+      saved: true,
+      status: buildDocumentStatusView(FACTS, locked),
+      locked,
+      image: null,
+      diagnosticsAvailable: true,
+      diagnostics: FIXED,
+      autoFixableCount: 2,
+      fixBusy,
+    }))
+    controller.open()
+    return { controller, mountEl, actions: a }
+  }
+
+  it('renders a fix action only on rules with a real capability', () => {
+    const { controller } = mountFixed()
+    const rows = Array.from(panel(controller).querySelectorAll<HTMLElement>('.inkchapter-doc-expand__diag'))
+    expect(rows[0].querySelector('.inkchapter-doc-expand__diag-fix')).not.toBeNull()
+    expect(rows[2].querySelector('.inkchapter-doc-expand__diag-fix')).toBeNull()
+  })
+
+  it('fix click never triggers the row locate (no double jump)', () => {
+    const { controller, actions: a } = mountFixed()
+    const fix = panel(controller).querySelector<HTMLButtonElement>('.inkchapter-doc-expand__diag-fix')!
+    fix.click()
+    expect(a.fixDiagnostic).toHaveBeenCalledWith('a')
+    expect(a.locateDiagnostic).not.toHaveBeenCalled()
+    expect(controller.isOpen()).toBe(true)
+  })
+
+  it('offers 同类修复 only when the rule really has more than one instance', () => {
+    const { controller, actions: a } = mountFixed()
+    const same = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__diag-fix.is-same-rule'))
+    expect(same.length).toBe(2)
+    same[0].click()
+    expect(a.fixSameRule).toHaveBeenCalledWith('EXCESSIVE_INTERNAL_BLANK_LINES')
+    expect(a.locateDiagnostic).not.toHaveBeenCalled()
+  })
+
+  it('the auto-fix row reports the REAL planned count and disables while locked', () => {
+    const { controller } = mountFixed(true)
+    const text = panel(controller).textContent ?? ''
+    expect(text).toContain('2 项可自动修复')
+    const all = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__button'))
+      .find(b => b.textContent === '一键修复可处理项')!
+    expect(all.disabled).toBe(true)
+    expect(all.title).toContain('已锁定')
+    // Row actions are disabled under the same lock.
+    const fix = panel(controller).querySelector<HTMLButtonElement>('.inkchapter-doc-expand__diag-fix')!
+    expect(fix.disabled).toBe(true)
+  })
+})
+
+describe('S1 — view sort menu', () => {
+  const ITEMS: readonly DocumentHubDiagnosticItem[] = [
+    { id: 'w', severity: 'warning', title: '连续空行过多', line: 3, ruleId: 'Z_RULE' },
+    { id: 'e', severity: 'error', title: '围栏未闭合', line: 9, ruleId: 'A_RULE' },
+    { id: 'i', severity: 'info', title: '标题跳跃', line: 12, ruleId: 'M_RULE' },
+  ]
+
+  function mountSortable() {
+    const mountEl = document.createElement('div')
+    document.body.appendChild(mountEl)
+    const a = { ...actions(), fixDiagnostic: vi.fn(), fixSameRule: vi.fn(), fixAllAuto: vi.fn() }
+    const controller = new DocumentHubController({ mountEl, actions: a, doubleClickWindowMs: 260 })
+    controller.mount()
+    controller.update(buildDocumentStatusView(FACTS, false), buildDocumentHubModel({
+      documentPath: 'D:/vault/notes/doc.md',
+      saved: true,
+      status: buildDocumentStatusView(FACTS, false),
+      locked: false,
+      image: null,
+      diagnosticsAvailable: true,
+      diagnostics: ITEMS,
+    }))
+    controller.open()
+    return { controller }
+  }
+
+  function renderedIds(controller: DocumentHubController): (string | null)[] {
+    return Array.from(panel(controller).querySelectorAll<HTMLElement>('.inkchapter-doc-expand__diag'))
+      .map(row => row.dataset['diagnosticId'] ?? null)
+  }
+
+  it('offers document / severity / rule sorts and keeps the document order by default', () => {
+    const { controller } = mountSortable()
+    expect(renderedIds(controller)).toEqual(['w', 'e', 'i'])
+    const sortButton = panel(controller).querySelector<HTMLButtonElement>('.inkchapter-doc-expand__sort-button')!
+    sortButton.click()
+    const options = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__filter-option'))
+    expect(options.map(o => o.dataset['sort'])).toEqual(['document', 'severity', 'rule'])
+  })
+
+  it('severity / rule sorts are VIEW-ONLY (counts and filter results unchanged)', () => {
+    const { controller } = mountSortable()
+    panel(controller).querySelector<HTMLButtonElement>('.inkchapter-doc-expand__sort-button')!.click()
+    const severity = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__filter-option'))
+      .find(o => o.dataset['sort'] === 'severity')!
+    severity.click()
+    expect(controller.getSortMode()).toBe('severity')
+    expect(renderedIds(controller)).toEqual(['e', 'w', 'i'])
+    // The authoritative summary is untouched by the view sort.
+    expect(panel(controller).querySelector('.inkchapter-doc-expand__summary')?.textContent)
+      .toContain('1 项错误 · 1 项警告')
+
+    panel(controller).querySelector<HTMLButtonElement>('.inkchapter-doc-expand__sort-button')!.click()
+    const rule = Array.from(panel(controller).querySelectorAll<HTMLButtonElement>('.inkchapter-doc-expand__filter-option'))
+      .find(o => o.dataset['sort'] === 'rule')!
+    rule.click()
+    expect(controller.getSortMode()).toBe('rule')
+    expect(renderedIds(controller)).toEqual(['e', 'i', 'w'])
   })
 })

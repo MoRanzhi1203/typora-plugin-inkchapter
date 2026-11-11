@@ -3545,10 +3545,26 @@ body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
    NO border line: a 4px rail sat exactly on the text/caret column and obscured
    the Typora editing caret / selection. The overlay is pointer-events:none in a
    0×0 document layer, so it can never affect caret, selection or body layout. */
+/* M1 §1 — EDGE-ONLY convergence (user report: the filled whole-gap band read as
+   a stray yellow blank ROW). The blank gap is EMPTY SPACE: it is marked by ONE
+   2px Warning left rail + the right-aligned count chip, never by painting the
+   entire gap surface. The diagnosis itself is untouched (same rule, same
+   identity, same count, same locate). */
 .inkchapter-block-gap-fragments {
-  background: var(--ink-blank-space-warning-bg);
+  box-sizing: border-box;
+  background: transparent;
   border: 0;
-  border-radius: var(--ink-blank-space-warning-radius);
+  border-left: 2px solid var(--ink-blank-space-warning-accent);
+  border-radius: 0 3px 3px 0;
+}
+
+/* The per-row fragments inherit the shared marker class for OWNERSHIP/audit,
+   but they must not paint an 18% fill per row (that stacked into the same
+   full-gap yellow band). */
+.inkchapter-block-gap-fragments .inkchapter-blank-space-warning {
+  background: transparent;
+  border-left: 0;
+  border-radius: 0;
 }
 .inkchapter-block-gap-fragment {
   background: transparent;
@@ -5680,23 +5696,74 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 .inkchapter-doc-expand__diag {
   appearance: none;
   display: grid;
-  grid-template-columns: 6px minmax(0, 1fr) 40px;
-  column-gap: 8px;
+  /* 6px severity dot · title/detail · 40px line number · 44px fix action */
+  grid-template-columns: 6px minmax(0, 1fr) 40px 44px;
+  column-gap: 6px;
   align-items: start;
   width: 100%;
+  box-sizing: border-box;
   text-align: left;
   border: 0;
   border-radius: var(--ink-doc-radius-sm);
   background: transparent;
   color: inherit;
-  padding: 7px 8px;
+  padding: 6px 6px 6px 8px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.4;
 }
 
 .inkchapter-doc-expand__diag:hover { background: var(--ink-doc-hover); }
 .inkchapter-doc-expand__diag:focus-visible { outline: 2px solid var(--text-accent, #4a8cff); outline-offset: -2px; }
+.inkchapter-doc-expand__diag.is-selected { background: var(--ink-doc-selection); }
+
+/* Row-level fix entry: always reachable (touch), low-emphasis until hover. */
+.inkchapter-doc-expand__diag-action {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: flex-end;
+  gap: 1px;
+  min-width: 0;
+}
+
+.inkchapter-doc-expand__diag-fix {
+  appearance: none;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink-doc-secondary);
+  padding: 0 3px;
+  min-height: 18px;
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.inkchapter-doc-expand__diag-fix:hover:not(:disabled) { color: var(--ink-doc-text); background: var(--ink-doc-hover); }
+.inkchapter-doc-expand__diag-fix:focus-visible { outline: 2px solid var(--text-accent, #4a8cff); outline-offset: 0; }
+.inkchapter-doc-expand__diag-fix:disabled { opacity: 0.42; cursor: not-allowed; }
+
+.inkchapter-doc-expand__diag-badge {
+  margin-left: 4px;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--ink-doc-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Second row: `N 项可自动修复` + one low-emphasis action. */
+.inkchapter-doc-expand__fixall {
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+}
+.inkchapter-doc-expand__fixall .is-fixall-count {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--ink-doc-secondary);
+}
 
 .inkchapter-doc-expand__diag-dot {
   width: 6px;
@@ -5727,7 +5794,7 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 
 .inkchapter-doc-expand__diag-detail {
   color: var(--ink-doc-secondary);
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -5751,6 +5818,143 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
   color: var(--ink-doc-secondary);
   font-size: 12px;
   padding: 4px 1px;
+}
+
+/* ── F3 — 修复交互（输入 / 真实 diff 预览），完全在检测页内部 ───────── */
+.inkchapter-doc-expand__fix {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-height: var(--inkchapter-toolbar-panel-max, calc(100vh - 140px));
+  overflow-y: auto;
+}
+
+.inkchapter-doc-expand__fix__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.inkchapter-doc-expand__fix__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-doc-text);
+}
+
+.inkchapter-doc-expand__fix__icon {
+  appearance: none;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink-doc-secondary);
+  width: 22px;
+  height: 22px;
+  line-height: 20px;
+  font-size: 15px;
+  cursor: pointer;
+}
+.inkchapter-doc-expand__fix__icon:hover { color: var(--ink-doc-text); background: var(--ink-doc-hover); }
+
+.inkchapter-doc-expand__fix__desc,
+.inkchapter-doc-expand__fix__summary,
+.inkchapter-doc-expand__fix__note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-doc-secondary);
+  word-break: break-word;
+}
+
+.inkchapter-doc-expand__fix__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.inkchapter-doc-expand__fix__label {
+  font-size: 11.5px;
+  color: var(--ink-doc-secondary);
+}
+
+.inkchapter-doc-expand__fix__input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--ink-doc-hairline);
+  border-radius: var(--ink-doc-radius-sm);
+  background: var(--ink-doc-surface-strong);
+  color: var(--ink-doc-text);
+  font-size: 12px;
+  line-height: 24px;
+  outline: none;
+}
+.inkchapter-doc-expand__fix__input:focus { border-color: var(--ink-doc-focus); }
+.inkchapter-doc-expand__fix__input[aria-invalid='true'] { border-color: var(--ink-doc-error); }
+
+.inkchapter-doc-expand__fix__error {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--ink-doc-error);
+}
+
+.inkchapter-doc-expand__fix__diff {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.inkchapter-doc-expand__fix__hunk {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 4px 5px;
+  border-radius: var(--ink-doc-radius-sm);
+  background: var(--ink-doc-hover);
+}
+
+.inkchapter-doc-expand__fix__hunk-loc {
+  font-size: 10px;
+  color: var(--ink-doc-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.inkchapter-doc-expand__fix__hunk-lines {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.inkchapter-doc-expand__fix__hunk-lines code {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+  font-family: var(--monospace, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.inkchapter-doc-expand__fix__hunk-lines.is-before code { color: var(--ink-doc-secondary); }
+.inkchapter-doc-expand__fix__hunk-lines.is-after code { color: var(--ink-doc-success); }
+
+.inkchapter-doc-expand__fix__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .inkchapter-doc-expand__diag-fix { transition: none; }
 }
 
 /* ── 锁定标签：一行状态 + 右侧按钮 ───────────────────────────────── */

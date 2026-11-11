@@ -31,6 +31,22 @@ export interface DocumentHubImageSummary {
   autoSyncText?: string
 }
 
+/** 检测面板的视图排序模式（只影响呈现，不改变诊断身份/计数）。 */
+export type DiagnosticSortMode = 'document' | 'severity' | 'rule'
+
+export const DIAGNOSTIC_SORT_MODES: readonly { id: DiagnosticSortMode; label: string }[] = [
+  { id: 'document', label: '文档顺序' },
+  { id: 'severity', label: '严重程度' },
+  { id: 'rule', label: '规则类型' },
+]
+
+/** 行内修复入口的能力描述（来自真实修复能力矩阵）。 */
+export interface DocumentHubFixAction {
+  capability: 'AUTO_SAFE' | 'USER_INPUT_REQUIRED' | 'MANUAL_ONLY' | 'UNAVAILABLE'
+  label: string
+  requiresInput?: { field: 'name' | 'language'; label: string; placeholder?: string }
+}
+
 /** 检测标签列表的一行（来自真实诊断快照 + 既有文案/排序权威）。 */
 export interface DocumentHubDiagnosticItem {
   id: string
@@ -41,9 +57,13 @@ export interface DocumentHubDiagnosticItem {
   detail?: string
   /** 文档位置行号（1 基；未知为 null）。 */
   line: number | null
+  /** 规则 ID（同类修复的分组键）。 */
+  ruleId?: string
   /** 目标组/多目标语义（保留既有投影规则）。 */
   targetIndex?: number
   targetCount?: number
+  /** 行内修复能力；缺省/ UNAVAILABLE 时不渲染空按钮。 */
+  fix?: DocumentHubFixAction
 }
 
 export interface DocumentHubModelInput {
@@ -56,6 +76,10 @@ export interface DocumentHubModelInput {
   diagnosticsAvailable: boolean
   /** 当前文档诊断列表（详情视图；缺省为空）。 */
   diagnostics?: readonly DocumentHubDiagnosticItem[]
+  /** 当前快照中可安全自动修复的诊断数（实时计划结果）。 */
+  autoFixableCount?: number
+  /** 是否正在应用修复（禁用重复提交）。 */
+  fixBusy?: boolean
 }
 
 export interface DocumentHubActionAvailability {
@@ -87,6 +111,9 @@ export interface DocumentHubModel {
    * warning event but N clickable rows.
    */
   rowCount: number
+  /** 可安全自动修复的诊断数（0 ⇒ 不出现“一键修复”按钮）。 */
+  autoFixableCount: number
+  fixBusy: boolean
 }
 
 export function buildDocumentHubModel(input: DocumentHubModelInput): DocumentHubModel {
@@ -115,7 +142,51 @@ export function buildDocumentHubModel(input: DocumentHubModelInput): DocumentHub
     headline: input.status.label,
     diagnostics: input.diagnostics ?? [],
     rowCount: input.diagnostics?.length ?? 0,
+    autoFixableCount: Math.max(0, input.autoFixableCount ?? 0),
+    fixBusy: input.fixBusy === true,
   }
+}
+
+const SEVERITY_RANK: Readonly<Record<DocumentHubDiagnosticItem['severity'], number>> = {
+  error: 0,
+  warning: 1,
+  hint: 2,
+  info: 3,
+}
+
+/**
+ * VIEW-ONLY sort. `document` keeps the host's authoritative source-position
+ * order untouched; `severity` / `rule` are STABLE secondary views over the same
+ * array, so equal keys keep document order and counts never change.
+ */
+export function sortDiagnosticItems(
+  items: readonly DocumentHubDiagnosticItem[],
+  mode: DiagnosticSortMode,
+): DocumentHubDiagnosticItem[] {
+  if (mode === 'document') return [...items]
+  const decorated = items.map((item, index) => ({ item, index }))
+  decorated.sort((a, b) => {
+    if (mode === 'severity') {
+      const rank = SEVERITY_RANK[a.item.severity] - SEVERITY_RANK[b.item.severity]
+      if (rank !== 0) return rank
+    } else {
+      const ra = a.item.ruleId ?? ''
+      const rb = b.item.ruleId ?? ''
+      if (ra !== rb) return ra < rb ? -1 : 1
+    }
+    return a.index - b.index
+  })
+  return decorated.map(entry => entry.item)
+}
+
+/** Severity filter is a pure view predicate (never reorders the survivors). */
+export function filterDiagnosticItems(
+  items: readonly DocumentHubDiagnosticItem[],
+  filter: 'all' | 'error' | 'warning' | 'info',
+): DocumentHubDiagnosticItem[] {
+  if (filter === 'all') return [...items]
+  if (filter === 'info') return items.filter(item => item.severity === 'info' || item.severity === 'hint')
+  return items.filter(item => item.severity === filter)
 }
 
 /** 批量操作按钮的禁用原因（用于 tooltip，避免“按钮灰了但不知道为什么”）。 */
