@@ -2754,7 +2754,7 @@ export const BLOCK_GAP_BAND_OVERHANG_TOLERANCE_PX = 1
  * anchor) and the paint target are DECOUPLED: a code diagnostic always scrolls to
  * the code BLOCK, but the painted region is chosen by rule semantics.
  */
-export type CodePaintKindV1 = 'CAPTION_ONLY' | 'BLOCK_BODY' | 'N/A'
+export type CodePaintKindV1 = 'CAPTION_ONLY' | 'CODE_TOPBAR' | 'BLOCK_BODY' | 'N/A'
 
 export class DocumentUtilityOverlayHost {
   private root: HTMLDivElement | null = null
@@ -7472,24 +7472,49 @@ export class DocumentUtilityOverlayHost {
     const codeRuleActive = !gapActive && !explicitCarrier && !docEndScoped && kind === 'code'
     let codeCarrierCoveredPrimary: boolean | null = null
     let codeCarrierCoveredSecondary: boolean | null = null
+    let codeCarrierCoveredTopbar: boolean | null = null
     let codeCarrierOverflowPx: number | null = null
+    let codeTargetBindingDecision: 'MATCH' | 'MISMATCH' | 'NOT_VERIFIED' | 'NOT_APPLICABLE' = 'NOT_APPLICABLE'
+    let expectedCodeIdentity: string | null = null
+    let markerOwnerIdentity: string | null = null
     let codeVisualScopeOk = true
     if (codeRuleActive) {
       const carrierEl = this.locateDocCarrier
       const carrierRect = carrierEl && carrierEl.isConnected ? this.measureLocateRect(carrierEl) : null
       const primaryRect = this.measureLocateRect(this.locateCommittedPrimaryEl)
       const secondaryRect = this.measureLocateRect(this.locateCommittedSecondaryEl)
-      const covers = (t: RectRecord | null): boolean | null =>
+      const covers = (t: RectLike | null): boolean | null =>
         t == null ? null : carrierRect != null
           && carrierRect.left <= t.left + 1 && carrierRect.top <= t.top + 1
           && carrierRect.right >= t.right - 1 && carrierRect.bottom >= t.bottom - 1
       codeCarrierCoveredPrimary = covers(primaryRect)
       codeCarrierCoveredSecondary = covers(secondaryRect)
+      codeCarrierCoveredTopbar = covers(this.currentCodeTopbarRect)
+      // ── CODE TARGET IDENTITY — the coverage check alone proves only that the
+      // carrier covers SOME element. It cannot prove the element is the diagnostic's
+      // canonical `block:code:N`. Compare the LIVE canonical identity with the
+      // diagnostic's OWN stable identity; a mismatch / unmeasurable identity is
+      // never a visual PASS (production only; headless unit stubs keep legacy).
+      if (!isHeadlessTestRuntime()) {
+        const codeDiag = this.diagnosticById(this.lastLocatedDiagnosticId ?? '')
+        const loc = codeDiag?.location
+        expectedCodeIdentity = loc != null && loc.kind === 'block-node' && loc.blockKind === 'code'
+          ? loc.stableIdentity
+          : null
+        markerOwnerIdentity = this.locateCommittedSecondaryEl
+          ? this.canonicalBlockIdentityOf('code', this.locateCommittedSecondaryEl)
+          : null
+        codeTargetBindingDecision = expectedCodeIdentity == null
+          ? 'NOT_APPLICABLE'
+          : markerOwnerIdentity == null
+            ? 'NOT_VERIFIED'
+            : markerOwnerIdentity === expectedCodeIdentity ? 'MATCH' : 'MISMATCH'
+      }
       const contentCol = this.measureSemanticContentColumnRect()
       // The overflow is measured ONLY on a side where the TARGET is already inside
       // the column — a target that legitimately extends past the column keeps its
       // own extent (never a false "overflow" on its account).
-      const targetRect: RectRecord | null = primaryRect && secondaryRect
+      const targetRect: RectLike | null = primaryRect && secondaryRect
         ? {
             left: Math.min(primaryRect.left, secondaryRect.left),
             top: Math.min(primaryRect.top, secondaryRect.top),
@@ -7507,10 +7532,34 @@ export class DocumentUtilityOverlayHost {
           this.countersDocSpaceV511.codeCarrierOverflowsContentColumn++
         }
       }
+      // The visual target is the caption, the code top bar, or the body depending
+      // on the paint policy. A top-bar marker must NOT be required to cover the
+      // whole code body (the old secondary-only check was the false-pass hole).
+      const codeTargetCovered = this.currentCodePaintKind === 'CODE_TOPBAR'
+        ? codeCarrierCoveredTopbar
+        : this.currentCodePaintKind === 'CAPTION_ONLY'
+          ? codeCarrierCoveredPrimary
+          : codeCarrierCoveredSecondary
+      const identityOk = codeTargetBindingDecision === 'MATCH' || codeTargetBindingDecision === 'NOT_APPLICABLE'
       codeVisualScopeOk = carrierRect != null
-        && codeCarrierCoveredPrimary !== false
-        && codeCarrierCoveredSecondary !== false
+        && codeTargetCovered === true
+        && identityOk
         && (codeCarrierOverflowPx ?? 0) <= BLOCK_GAP_BAND_OVERHANG_TOLERANCE_PX
+      if (codeTargetBindingDecision === 'MISMATCH' || codeTargetBindingDecision === 'NOT_VERIFIED') {
+        emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-CODE-TARGET-IDENTITY', {
+          documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+          diagnosticId: this.lastLocatedDiagnosticId,
+          ruleCode: this.ruleCodeForDiagnosticId(this.lastLocatedDiagnosticId),
+          expectedCodeIdentity,
+          markerOwnerIdentity,
+          codeTargetBindingDecision,
+          paintKind: this.currentCodePaintKind,
+          decision: 'FAIL',
+        })
+      }
+      this.lastCodeTargetBindingDecision = codeTargetBindingDecision
+      this.lastExpectedCodeIdentity = expectedCodeIdentity
+      this.lastMarkerOwnerIdentity = markerOwnerIdentity
     }
     const scopedGate = evaluateVisualClosureGates(this.scopedClosureCounters())
     const payload: Record<string, unknown> = {
@@ -7537,6 +7586,12 @@ export class DocumentUtilityOverlayHost {
       codeVisualClosureScoped: codeRuleActive ? codeVisualScopeOk : null,
       codeCarrierCoveredPrimary,
       codeCarrierCoveredSecondary,
+      codeCarrierCoveredTopbar,
+      codeTargetBindingDecision,
+      expectedCodeIdentity,
+      markerOwnerIdentity,
+      canonicalCodeIdentity: markerOwnerIdentity,
+      codePaintKind: this.currentCodePaintKind,
       codeCarrierOverflowPx,
       scrollTargetKind: this.lastScrollTargetKind,
       docEndVisualRule: this.lastDocEndVisualRule,
@@ -10175,6 +10230,12 @@ export class DocumentUtilityOverlayHost {
    *   BLOCK_BODY   → the code block's own body (no caption union).
    */
   private currentCodePaintKind: CodePaintKindV1 = 'N/A'
+  /** CODE_TOPBAR: the real measured language bar, never a fixed offset. */
+  private currentCodeTopbarRect: RectLike | null = null
+  /** Last code-target identity evidence (audit / acceptance). */
+  private lastCodeTargetBindingDecision: 'MATCH' | 'MISMATCH' | 'NOT_VERIFIED' | 'NOT_APPLICABLE' = 'NOT_APPLICABLE'
+  private lastExpectedCodeIdentity: string | null = null
+  private lastMarkerOwnerIdentity: string | null = null
   private currentCodeCaptionOwned = false
   private currentCodeCaptionRect: RectLike | null = null
   private currentCodeObjectRect: RectLike | null = null
@@ -10275,7 +10336,9 @@ export class DocumentUtilityOverlayHost {
     return {
       codeCaptionRefusedCount: this.countersCodeCarrierV1.captionRefused,
       codePaintRectDriftMaxPx: this.countersCodeCarrierV1.lastPaintRectDriftPx,
-      codeTargetIdentityMatch: this.countersCodeCarrierV1.captionOwnerMatch || this.currentCodePaintKind === 'BLOCK_BODY',
+      codeTargetIdentityMatch: this.lastCodeTargetBindingDecision === 'MATCH'
+        || (this.lastCodeTargetBindingDecision === 'NOT_APPLICABLE'
+          && (this.countersCodeCarrierV1.captionOwnerMatch || this.currentCodePaintKind === 'BLOCK_BODY')),
       codeActivePassiveTargetParity: this.countersCodeCarrierV1.activePassiveTargetParity,
     }
   }
@@ -18478,6 +18541,12 @@ export class DocumentUtilityOverlayHost {
     // is the caption/title ROW ALONE — the compound `caption ∪ body` background
     // that washed the whole code block is exactly what this replaces.
     const objectRectForPaint = this.measureLocateRect(anchor)
+    const commitCodeExpectedIdentity = diag?.location?.kind === 'block-node' && diag.location.blockKind === 'code'
+      ? diag.location.stableIdentity
+      : null
+    const commitCodeActualIdentity = commitCodeExpectedIdentity != null && anchor
+      ? this.canonicalBlockIdentityOf('code', anchor)
+      : null
     let captionHostRect: RectLike | null = null
     let captionHostEl: HTMLElement | null = null
     if (anchor && diag && (code === 'TABLE_MISSING_NAME' || code === 'CODE_MISSING_NAME') && !isHeadlessTestRuntime()) {
@@ -18494,6 +18563,7 @@ export class DocumentUtilityOverlayHost {
     }
     // §A/§2/§4/§6 — the per-rule CODE paint policy (reset every commit).
     this.currentCodePaintKind = 'N/A'
+    this.currentCodeTopbarRect = null
     this.currentCodeCaptionOwned = false
     this.currentCodeCaptionRect = null
     this.currentCodeObjectRect = objectRectForPaint
@@ -18509,16 +18579,31 @@ export class DocumentUtilityOverlayHost {
         this.currentCodeCaptionRect = captionHostRect
         preciseRect = captionHostRect
       } else {
-        // Justified non-intrusive fallback: no REAL owned caption slot → paint the
-        // block's OWN body only (never a parent container, never a sibling caption).
-        this.currentCodePaintKind = 'BLOCK_BODY'
+        // No REAL owned caption slot: use the code block's OWN measured top bar
+        // (language bar) when available; otherwise fall back to the body only.
+        // Never a fixed top offset, never a sibling caption.
         captionHostRect = null
+        const topbarRect = this.measureCodeTopbarRect(anchor)
+        if (topbarRect) {
+          this.currentCodePaintKind = 'CODE_TOPBAR'
+          this.currentCodeTopbarRect = topbarRect
+          preciseRect = topbarRect
+        } else {
+          this.currentCodePaintKind = 'BLOCK_BODY'
+        }
       }
     } else if (code === 'CODE_MISSING_LANGUAGE' || code === 'CODE_EMPTY_BLOCK') {
-      // §6 — their OWN semantic target is the code block body; they NEVER inherit
-      // the NAME rule's compound (caption ∪ body) carrier.
-      this.currentCodePaintKind = 'BLOCK_BODY'
+      // Their semantic target is the code block's OWN top bar (language bar) when
+      // present; the body is only a fallback when the real bar cannot be measured.
       captionHostRect = null
+      const topbarRect = this.measureCodeTopbarRect(anchor)
+      if (topbarRect) {
+        this.currentCodePaintKind = 'CODE_TOPBAR'
+        this.currentCodeTopbarRect = topbarRect
+        preciseRect = topbarRect
+      } else {
+        this.currentCodePaintKind = 'BLOCK_BODY'
+      }
     }
     this.locateCollapseAttemptedThisCommit = false
     frame.commit({
@@ -18607,6 +18692,17 @@ export class DocumentUtilityOverlayHost {
       // the CSS suppresses the redundant full-object context wash (the caption cue
       // remains the single visible fill). Any other rule never carries the mark.
       if (this.currentCodePaintKind === 'CAPTION_ONLY') frameEl.dataset.paintKind = 'caption-only'
+      else if (this.currentCodePaintKind === 'CODE_TOPBAR') frameEl.dataset.paintKind = 'code-topbar'
+      if (code) {
+        frameEl.dataset.diagnosticId = diagId ?? ''
+        if (commitCodeExpectedIdentity != null) {
+          frameEl.dataset.codeTargetIdentity = commitCodeExpectedIdentity
+          frameEl.dataset.markerOwnerIdentity = commitCodeActualIdentity ?? ''
+          frameEl.dataset.codeTargetBinding = commitCodeActualIdentity == null
+            ? 'NOT_VERIFIED'
+            : commitCodeActualIdentity === commitCodeExpectedIdentity ? 'MATCH' : 'MISMATCH'
+        }
+      }
       else frameEl.removeAttribute('data-paint-kind')
     }
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-FRAME', {
@@ -27216,6 +27312,20 @@ export class DocumentUtilityOverlayHost {
    *
    * Vertical extents are left on the border box (scrolling / drawer math unchanged).
    */
+  /**
+   * B2/GUI — real code-topbar measurement for a diagnostic marker. Uses the
+   * plugin's own language bar DOM child; never a fixed px offset and never a
+   * sibling element. Returns null when the bar is not mounted/measurable so the
+   * caller can fall back without inventing geometry.
+   */
+  private measureCodeTopbarRect(anchor: HTMLElement | null): RectLike | null {
+    if (!anchor) return null
+    const bar = anchor.querySelector<HTMLElement>('.inkchapter-content-toolbar--langbar')
+    if (!bar || !bar.isConnected) return null
+    const r = this.measureLocateRect(bar)
+    return r && r.width > 0 && r.height > 0 ? r : null
+  }
+
   private measureSemanticContentColumnRect(): RectLike | null {
     const root = resolveBusinessContentRoot()
     const content = this.measureLocateRect(root)
