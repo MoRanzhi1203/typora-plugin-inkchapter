@@ -221,13 +221,20 @@ BLOCK_BODY 之后残留 `caption-only`（透明）状态。
 - BUILD：`dist/main.js` `2D7DE822CDAB2A3EF3559DED1D084DF0861666AE2AFE08EC2FF5E163D9CD7D7A`；
   `dist/style.css` `EBEDF8A9BC567584C7F94B8F2AB8EDCBC4E30AB619ABF5676B1A05A32811A3DD`（未改 CSS）。
 - DEPLOY：`test/vault/.typora/plugins/dist/main.js` 同 SHA（`deploy-test-vault.ps1` 校验通过）。
-- RUNTIME_LOAD：仍是上一构建的记录（`3733016B…`），**新构建尚未被真实 Typora 加载**。
+- RUNTIME_LOAD：真实 Typora 已加载最终构建
+  （`mainJsSha256=2D7DE822…`，`loadSource=vault`，`initializationCount=1`，
+  `loadedAt=2026-11-11T11:25:51.576Z`）；`Document-Diagnostics-Code-Integrity-Test.md`
+  已打开，插件面板显示 `错误 0 / 警告 10 / 提示 0`，语言栏（TXT/TS + 复制按钮）正常。
 
-### 9.5 真实 GUI 状态：NEEDS_MANUAL
+### 9.5 真实 GUI 状态：NEEDS_MANUAL（仅“点击后的标记像素/DOMRect”）
 
-本轮尝试 `Typora.exe --remote-debugging-port=9222` 与测试 vault 启动：CDP
-端口未开放，Typora 进程在窗口自动化接管前退出，无法取得同屏截图 / DOMRect。
-因此**不宣布 GUI 验收通过**，也未合并到 `main`。
+最终构建已真实加载（见 9.4）。但本轮无法取得“点击代码诊断后同屏截图 + marker DOMRect”：
+
+- `--remote-debugging-port=9222` 不开放 CDP；
+- DevTools 控制台虽可打开，但桌面焦点被其他应用（微信/Trae）抢占，
+  自动化输入无法稳定落到控制台提示符，无法可靠执行只读测量脚本。
+
+因此**不宣布 GUI 标记验收通过**，也未合并到 `main`；需要用户按下列最小步骤确认一次。
 
 最小人工步骤：
 
