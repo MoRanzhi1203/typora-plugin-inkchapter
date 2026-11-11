@@ -2756,6 +2756,19 @@ export const BLOCK_GAP_BAND_OVERHANG_TOLERANCE_PX = 1
  */
 export type CodePaintKindV1 = 'CAPTION_ONLY' | 'CODE_TOPBAR' | 'BLOCK_BODY' | 'N/A'
 
+/**
+ * P0 regression — the CODE marker lifecycle keeps VISIBILITY and IDENTITY as
+ * SEPARATE states. A marker is still rendered (safe degradation) while its
+ * geometry settles; only a REAL identity conflict is a visual failure.
+ */
+export type CodeMarkerBindingStateV1 =
+  | 'BOUND_TOPBAR'
+  | 'BOUND_CAPTION'
+  | 'BOUND_BODY'
+  | 'PENDING_LAYOUT'
+  | 'IDENTITY_CONFLICT'
+  | 'NO_TARGET'
+
 export class DocumentUtilityOverlayHost {
   private root: HTMLDivElement | null = null
   private toolbarEl: HTMLDivElement | null = null
@@ -5544,16 +5557,23 @@ export class DocumentUtilityOverlayHost {
       // commit); a fallback paints the block body. TABLE keeps its compound
       // `caption ∪ body` carrier UNCHANGED.
       const isCaptionOnlyPaint = diag.code === 'CODE_MISSING_NAME' && this.currentCodePaintKind === 'CAPTION_ONLY'
+      // ── P0 REGRESSION — a BLOCK_BODY paint is EXACTLY the diagnosed code block.
+      // Never union a caption row here: a caption below the block made the marker
+      // look like it "landed under the code block", and the top-bar-only workaround
+      // that tried to avoid it removed the marker from the visible editor.
+      const isBodyOnlyPaint = this.currentCodePaintKind === 'BLOCK_BODY'
       const vp = isCaptionOnlyPaint && captionVpForCarrier
         ? captionVpForCarrier
-        : vpFrame && captionVpForCarrier
-          ? {
-              left: Math.min(vpFrame.left, captionVpForCarrier.left),
-              top: Math.min(vpFrame.top, captionVpForCarrier.top),
-              right: Math.max(vpFrame.right, captionVpForCarrier.right),
-              bottom: Math.max(vpFrame.bottom, captionVpForCarrier.bottom),
-            }
-          : vpFrame
+        : isBodyOnlyPaint && vpFrame
+          ? vpFrame
+          : vpFrame && captionVpForCarrier
+            ? {
+                left: Math.min(vpFrame.left, captionVpForCarrier.left),
+                top: Math.min(vpFrame.top, captionVpForCarrier.top),
+                right: Math.max(vpFrame.right, captionVpForCarrier.right),
+                bottom: Math.max(vpFrame.bottom, captionVpForCarrier.bottom),
+              }
+            : vpFrame
       // TRAE §A2-3 — the ACTUAL carrier↔block drift of this activation (0 when the
       // caption was refused, i.e. the paint is exactly the block's own rect).
       this.countersCodeCarrierV1.lastPaintRectDriftPx = captionVpForCarrier && vpFrame && vp
@@ -7493,8 +7513,8 @@ export class DocumentUtilityOverlayHost {
       // ── CODE TARGET IDENTITY — the coverage check alone proves only that the
       // carrier covers SOME element. It cannot prove the element is the diagnostic's
       // canonical `block:code:N`. Compare the LIVE canonical identity with the
-      // diagnostic's OWN stable identity; a mismatch / unmeasurable identity is
-      // never a visual PASS (production only; headless unit stubs keep legacy).
+      // diagnostic's OWN stable identity (production only; headless unit stubs keep
+      // legacy). Identity is EVIDENCE: it never decides whether a marker exists.
       if (!isHeadlessTestRuntime()) {
         const codeDiag = this.diagnosticById(this.lastLocatedDiagnosticId ?? '')
         const loc = codeDiag?.location
@@ -7504,6 +7524,15 @@ export class DocumentUtilityOverlayHost {
         markerOwnerIdentity = this.locateCommittedSecondaryEl
           ? this.canonicalBlockIdentityOf('code', this.locateCommittedSecondaryEl)
           : null
+        // ── SAFE DEGRADATION — an unmeasurable committed node must NOT turn a
+        // known canonical target into "no marker". Re-resolve the SAME identity
+        // live; the body carrier is still painted on that canonical block.
+        if (expectedCodeIdentity != null && markerOwnerIdentity == null) {
+          const canonicalEl = this.resolveBlockIdentity('code', expectedCodeIdentity)
+          if (canonicalEl && canonicalEl.isConnected) {
+            markerOwnerIdentity = this.canonicalBlockIdentityOf('code', canonicalEl)
+          }
+        }
         codeTargetBindingDecision = expectedCodeIdentity == null
           ? 'NOT_APPLICABLE'
           : markerOwnerIdentity == null
@@ -7533,18 +7562,33 @@ export class DocumentUtilityOverlayHost {
         }
       }
       // The visual target is the caption, the code top bar, or the body depending
-      // on the paint policy. A top-bar marker must NOT be required to cover the
-      // whole code body (the old secondary-only check was the false-pass hole).
+      // on the paint policy. A code diagnostic is normally carried by the block
+      // BODY, so the body coverage is what must hold (the top-bar-only policy is
+      // kept for explicit top-bar carriers only).
       const codeTargetCovered = this.currentCodePaintKind === 'CODE_TOPBAR'
         ? codeCarrierCoveredTopbar
         : this.currentCodePaintKind === 'CAPTION_ONLY'
           ? codeCarrierCoveredPrimary
           : codeCarrierCoveredSecondary
-      const identityOk = codeTargetBindingDecision === 'MATCH' || codeTargetBindingDecision === 'NOT_APPLICABLE'
-      codeVisualScopeOk = carrierRect != null
+      // ── VISIBILITY ≠ IDENTITY. `coverageOk` proves the marker really paints the
+      // target; identity stays a SEPARATE verdict (a `NOT_VERIFIED` identity must
+      // never be reported as PASS, but it must also never hide the marker: the
+      // body anchor was re-resolved from the diagnostic's canonical identity).
+      const coverageOk = carrierRect != null
         && codeTargetCovered === true
-        && identityOk
         && (codeCarrierOverflowPx ?? 0) <= BLOCK_GAP_BAND_OVERHANG_TOLERANCE_PX
+      const identityOk = codeTargetBindingDecision === 'MATCH' || codeTargetBindingDecision === 'NOT_APPLICABLE'
+      codeVisualScopeOk = coverageOk && identityOk
+      this.lastCodeMarkerVisible = coverageOk
+      this.lastCodeMarkerBindingState = codeTargetBindingDecision === 'MISMATCH'
+        ? 'IDENTITY_CONFLICT'
+        : codeTargetBindingDecision === 'NOT_VERIFIED'
+          ? 'PENDING_LAYOUT'
+          : this.currentCodePaintKind === 'CAPTION_ONLY'
+            ? 'BOUND_CAPTION'
+            : this.currentCodePaintKind === 'CODE_TOPBAR'
+              ? 'BOUND_TOPBAR'
+              : coverageOk ? 'BOUND_BODY' : 'NO_TARGET'
       if (codeTargetBindingDecision === 'MISMATCH' || codeTargetBindingDecision === 'NOT_VERIFIED') {
         emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-CODE-TARGET-IDENTITY', {
           documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
@@ -7554,7 +7598,10 @@ export class DocumentUtilityOverlayHost {
           markerOwnerIdentity,
           codeTargetBindingDecision,
           paintKind: this.currentCodePaintKind,
-          decision: 'FAIL',
+          // The marker stays visible on a `NOT_VERIFIED` identity (safe
+          // degradation) — only a REAL conflict suppresses the visual PASS.
+          markerVisible: coverageOk,
+          decision: codeTargetBindingDecision === 'MISMATCH' ? 'FAIL' : 'DEGRADED',
         })
       }
       this.lastCodeTargetBindingDecision = codeTargetBindingDecision
@@ -7592,6 +7639,9 @@ export class DocumentUtilityOverlayHost {
       markerOwnerIdentity,
       canonicalCodeIdentity: markerOwnerIdentity,
       codePaintKind: this.currentCodePaintKind,
+      // P0 regression — VISIBILITY and IDENTITY are separate closure facts.
+      codeMarkerBindingState: codeRuleActive ? this.lastCodeMarkerBindingState : null,
+      codeMarkerVisible: codeRuleActive ? this.lastCodeMarkerVisible : null,
       codeCarrierOverflowPx,
       scrollTargetKind: this.lastScrollTargetKind,
       docEndVisualRule: this.lastDocEndVisualRule,
@@ -10234,6 +10284,10 @@ export class DocumentUtilityOverlayHost {
   private currentCodeTopbarRect: RectLike | null = null
   /** Last code-target identity evidence (audit / acceptance). */
   private lastCodeTargetBindingDecision: 'MATCH' | 'MISMATCH' | 'NOT_VERIFIED' | 'NOT_APPLICABLE' = 'NOT_APPLICABLE'
+  /** P0 regression — the split visibility/identity lifecycle state. */
+  private lastCodeMarkerBindingState: CodeMarkerBindingStateV1 | null = null
+  /** P0 regression — the marker really covers the diagnosed block (visibility). */
+  private lastCodeMarkerVisible = false
   private lastExpectedCodeIdentity: string | null = null
   private lastMarkerOwnerIdentity: string | null = null
   private currentCodeCaptionOwned = false
@@ -18537,9 +18591,27 @@ export class DocumentUtilityOverlayHost {
     this.presentationFallbackLevel = fallbackLevel
     // ── TRAE P0 §A/§2 — NAVIGATION ≠ PAINT for a CODE diagnostic. ──────────────
     // The scroll anchor stays the code BLOCK (a Drawer click scrolls to the block);
-    // the PAINT target is chosen by rule semantics. For the NAME rule that target
-    // is the caption/title ROW ALONE — the compound `caption ∪ body` background
-    // that washed the whole code block is exactly what this replaces.
+    // the PAINT target is chosen by rule semantics. For the NAME rule with a REAL
+    // owned caption that target is the caption/title ROW ALONE.
+    //
+    // ── P0 REGRESSION — OWNERSHIP IS THE CANONICAL IDENTITY, NOT THE LOCATOR'S
+    // RETURNED NODE. A stale / off-by-one locator result must never paint the
+    // NEIGHBOURING code block. When the diagnostic carries a canonical
+    // `block:code:N`, the live element for THAT identity is the only legal anchor.
+    if (diag?.location?.kind === 'block-node' && diag.location.blockKind === 'code') {
+      const canonicalEl = this.resolveBlockIdentity('code', diag.location.stableIdentity)
+      if (canonicalEl && canonicalEl.isConnected && canonicalEl !== anchor) {
+        emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-CODE-ANCHOR-CANONICAL-CORRECTION', {
+          documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+          diagnosticId: diag.id,
+          expectedCodeIdentity: diag.location.stableIdentity,
+          locatorElementIdentity: this.canonicalBlockIdentityOf('code', anchor),
+          canonicalElementIdentity: this.canonicalBlockIdentityOf('code', canonicalEl),
+          decision: 'CORRECTED',
+        })
+        anchor = canonicalEl
+      }
+    }
     const objectRectForPaint = this.measureLocateRect(anchor)
     const commitCodeExpectedIdentity = diag?.location?.kind === 'block-node' && diag.location.blockKind === 'code'
       ? diag.location.stableIdentity
@@ -18579,31 +18651,21 @@ export class DocumentUtilityOverlayHost {
         this.currentCodeCaptionRect = captionHostRect
         preciseRect = captionHostRect
       } else {
-        // No REAL owned caption slot: use the code block's OWN measured top bar
-        // (language bar) when available; otherwise fall back to the body only.
-        // Never a fixed top offset, never a sibling caption.
+        // No REAL owned caption slot: the marker MUST still cover the diagnosed
+        // code block's OWN body. The language bar is EVIDENCE only (`currentCodeTopbarRect`
+        // feeds the closure audit) — it is never the sole paint target: a 30px top
+        // bar can be scrolled out of the visible editor, which used to fail the
+        // one-click visual gate and ROLL BACK the marker entirely.
         captionHostRect = null
-        const topbarRect = this.measureCodeTopbarRect(anchor)
-        if (topbarRect) {
-          this.currentCodePaintKind = 'CODE_TOPBAR'
-          this.currentCodeTopbarRect = topbarRect
-          preciseRect = topbarRect
-        } else {
-          this.currentCodePaintKind = 'BLOCK_BODY'
-        }
+        this.currentCodePaintKind = 'BLOCK_BODY'
+        this.currentCodeTopbarRect = this.measureCodeTopbarRect(anchor)
       }
     } else if (code === 'CODE_MISSING_LANGUAGE' || code === 'CODE_EMPTY_BLOCK') {
-      // Their semantic target is the code block's OWN top bar (language bar) when
-      // present; the body is only a fallback when the real bar cannot be measured.
+      // Their semantic target is the code block's OWN body. A real language bar is
+      // recorded as evidence (topbar) but never replaces the visible block carrier.
       captionHostRect = null
-      const topbarRect = this.measureCodeTopbarRect(anchor)
-      if (topbarRect) {
-        this.currentCodePaintKind = 'CODE_TOPBAR'
-        this.currentCodeTopbarRect = topbarRect
-        preciseRect = topbarRect
-      } else {
-        this.currentCodePaintKind = 'BLOCK_BODY'
-      }
+      this.currentCodePaintKind = 'BLOCK_BODY'
+      this.currentCodeTopbarRect = this.measureCodeTopbarRect(anchor)
     }
     this.locateCollapseAttemptedThisCommit = false
     frame.commit({
@@ -18692,7 +18754,8 @@ export class DocumentUtilityOverlayHost {
       // the CSS suppresses the redundant full-object context wash (the caption cue
       // remains the single visible fill). Any other rule never carries the mark.
       if (this.currentCodePaintKind === 'CAPTION_ONLY') frameEl.dataset.paintKind = 'caption-only'
-      else if (this.currentCodePaintKind === 'CODE_TOPBAR') frameEl.dataset.paintKind = 'code-topbar'
+      else if (this.currentCodePaintKind === 'BLOCK_BODY') frameEl.dataset.paintKind = 'block-body'
+      else frameEl.removeAttribute('data-paint-kind')
       if (code) {
         frameEl.dataset.diagnosticId = diagId ?? ''
         if (commitCodeExpectedIdentity != null) {
@@ -18703,7 +18766,6 @@ export class DocumentUtilityOverlayHost {
             : commitCodeActualIdentity === commitCodeExpectedIdentity ? 'MATCH' : 'MISMATCH'
         }
       }
-      else frameEl.removeAttribute('data-paint-kind')
     }
     emitRuntimeAudit('DOCUMENT-DIAGNOSTIC-LOCATE-FRAME', {
       diagnosticId: diagId,

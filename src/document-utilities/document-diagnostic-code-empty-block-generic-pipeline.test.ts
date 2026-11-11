@@ -230,7 +230,7 @@ describe('TRAE rebase §13.2–13.6 — generic code-diagnostic pipeline', () =>
     })
   }
 
-  it('§13.2b: a real language bar becomes the CODE_TOPBAR paint target (never the next block)', () => {
+  it('§13.2b: a real language bar never shrinks the marker off the code body (never the next block)', () => {
     mount([EMPTY])
     const pre = document.querySelector<HTMLElement>('pre.md-fences')!
     const bar = document.createElement('div')
@@ -240,13 +240,16 @@ describe('TRAE rebase §13.2–13.6 — generic code-diagnostic pipeline', () =>
     activate(EMPTY.id)
     const frame = frames()[0]
     expect(frame).toBeTruthy()
-    expect(frame.dataset.paintKind).toBe('code-topbar')
+    // The language bar is EVIDENCE only: it must never replace the visible block
+    // carrier (a 30px top-bar-only marker is rolled back when scrolled out).
+    expect(frame.dataset.paintKind).not.toBe('code-topbar')
     expect(frame.dataset.codeTargetIdentity).toBe('block:code:0')
     expect(frame.dataset.markerOwnerIdentity).toBe('block:code:0')
     expect(frame.dataset.codeTargetBinding).toBe('MATCH')
   })
 
-  it('§13.2: CODE_MISSING_NAME uses the SAME code frame branch as CODE_EMPTY_BLOCK', () => {    // Severity is deliberately aligned here: this test proves the SHARED locate /
+  it('§13.2: CODE_MISSING_NAME uses the SAME code frame branch as CODE_EMPTY_BLOCK', () => {
+    // Severity is deliberately aligned here: this test proves the SHARED locate /
     // frame BRANCH, not the severity→geometry token mapping (covered by the
     // inline-presentation / rule-meta suites).
     const nameInfo: CodeDiag = { ...MISSING_NAME, severity: 'info' }

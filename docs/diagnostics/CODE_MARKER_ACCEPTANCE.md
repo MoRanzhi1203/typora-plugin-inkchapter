@@ -167,3 +167,73 @@ data-paint-kind="caption-only|code-topbar"  (when applicable)
 - 已复制到 `test/vault/.typora/plugins/dist/main.js`（同 SHA）。
 - 当前 Typora 未运行；`inkchapter-runtime-load.json` 仍是上一次 `17E64A2…` 的
   加载记录，**新构建尚未真实加载**。GUI 项因此仍为 **NEEDS_MANUAL**。
+
+## 9. P0 回归修复（2026-11-11 第二轮，标记消失）
+
+### 9.1 真实根因
+
+上一轮把 `CODE_MISSING_NAME` / `CODE_MISSING_LANGUAGE` / `CODE_EMPTY_BLOCK`
+的 `preciseRect` 改成了 `measureCodeTopbarRect(anchor)`，即**可见载体只有约
+30px 的语言栏**。生产链路里：
+
+1. `verifyOneClickPaintedVisual` → `verifyOneClickLocateVisual` 要求 painted
+   rect 与可见编辑器**交集 > 0**（`PAINTED_OUTSIDE_VISIBLE_EDITOR`）；
+2. 高代码块被居中/滚动后，语言栏这一行可以完全在可见区之外；
+3. 失败 → 同一事务内有界重试 → `ONE_CLICK_VISUAL_FAILED` →
+   `teardownDiagnosticInteraction` 回滚 → **标记被清除**。
+
+`NOT_VERIFIED` 本身只影响 `codeVisualScopeOk` 审计，不是移除标记的直接分支；
+但它没有安全降级，也没有把定位器返回的节点纠正到 canonical 代码块。
+另外 `data-paint-kind` 的 `else` 在上一轮被错误绑定到 `if (code)`，会造成
+BLOCK_BODY 之后残留 `caption-only`（透明）状态。
+
+### 9.2 修复
+
+- 恢复 `BLOCK_BODY` 为三种代码规则的可见载体；`currentCodeTopbarRect`
+  仅作为 closure 证据，不再作为唯一绘制目标。
+- 提交前按 `location.stableIdentity` 解析 canonical `block:code:N`；
+  定位器返回相邻代码块时纠正锚点并发出
+  `DOCUMENT-DIAGNOSTIC-CODE-ANCHOR-CANONICAL-CORRECTION`。
+- `commitDocumentSpaceCarrier`：`BLOCK_BODY` 只使用代码块自身矩形，
+  不再与题注 union（避免“标记落到代码块下方”）。
+- 拆分 `codeMarkerVisible`（可见性）与 `codeMarkerBindingState`
+  （`BOUND_BODY` / `BOUND_CAPTION` / `PENDING_LAYOUT` / `IDENTITY_CONFLICT` /
+  `NO_TARGET`）；`NOT_VERIFIED` 保持可见但审计为 `DEGRADED`，不伪造 PASS。
+- 修正 `data-paint-kind` 的生命周期。
+
+### 9.3 回归测试
+
+新增 `document-diagnostic-code-marker-visibility-v1.test.ts`（先失败后修复）：
+
+- 真实 langbar 存在时，三种代码规则的标记高度必须覆盖代码块本体（修复前 34px）；
+- langbar 后挂载不得移除/缩小标记；
+- 4 个连续代码块只有目标块有标记；
+- 定位器给错相邻块时必须纠正回 `block:code:0`。
+
+结果：修复前 5 failed；修复后该套件 6/6 PASS，
+`document-diagnostic-code-empty-block-generic-pipeline.test.ts` 11/11 PASS，
+`document-diagnostic-locate-document-space-v511…` 29/29 PASS。
+
+### 9.4 全量 / 构建 / 部署
+
+- 全量：**339 文件 / 5913 tests PASS**（181.98s，最终代码）。
+- TSC：PASS；`verify:archive` / `docs:verify` / `verify:image-privacy`：PASS。
+- BUILD：`dist/main.js` `2D7DE822CDAB2A3EF3559DED1D084DF0861666AE2AFE08EC2FF5E163D9CD7D7A`；
+  `dist/style.css` `EBEDF8A9BC567584C7F94B8F2AB8EDCBC4E30AB619ABF5676B1A05A32811A3DD`（未改 CSS）。
+- DEPLOY：`test/vault/.typora/plugins/dist/main.js` 同 SHA（`deploy-test-vault.ps1` 校验通过）。
+- RUNTIME_LOAD：仍是上一构建的记录（`3733016B…`），**新构建尚未被真实 Typora 加载**。
+
+### 9.5 真实 GUI 状态：NEEDS_MANUAL
+
+本轮尝试 `Typora.exe --remote-debugging-port=9222` 与测试 vault 启动：CDP
+端口未开放，Typora 进程在窗口自动化接管前退出，无法取得同屏截图 / DOMRect。
+因此**不宣布 GUI 验收通过**，也未合并到 `main`。
+
+最小人工步骤：
+
+1. 关闭 Typora，然后在测试 vault 目录执行
+   `Typora.exe D:\TyporaPluginProjects\typora-plugin-inkchapter\test\vault`；
+2. 打开 `Document-Diagnostics-Code-Integrity-Test.md`，点击“缺少语言/缺少名称/空代码块”；
+3. 确认标记覆盖**该代码块本体**，不越过下一个代码块或空段落；
+4. 在 DevTools Console 粘贴 `CODE_MARKER_ACCEPTANCE_DEVTOOLS.js`，保存 JSON + 截图；
+5. 若 `data-code-target-binding=MATCH` 且 `verdict=PASS`，再合并分支；否则附 JSON 返回。
