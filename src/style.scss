@@ -3554,8 +3554,25 @@ body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
   box-sizing: border-box;
   background: transparent;
   border: 0;
+  border-left: 0;
+  border-radius: 0;
+}
+
+/* M1-LAYOUT — the ONE left rail for every blank-line marker. It is painted as a
+   child of the carrier, `gutterPx` LEFT of the document text column, so an empty
+   paragraph's caret (which lives inside the text column) is never covered.
+   Width = gutter (> 2px) on purpose: the rail is a gutter strip, not a body-wide
+   vertical bar, so no "vertical line bar" ownership rule is tripped. */
+.inkchapter-blank-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  box-sizing: border-box;
   border-left: 2px solid var(--ink-blank-space-warning-accent);
   border-radius: 0 3px 3px 0;
+  background: transparent;
+  pointer-events: none;
+  user-select: none;
 }
 
 /* The per-row fragments inherit the shared marker class for OWNERSHIP/audit,
@@ -3599,11 +3616,13 @@ body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
 }
 
 /* END_EXCESS — same LEFT rail as the internal gap; the whole trailing region is
-   NEVER filled. The legacy `amber-range` attribute stays for identity/audit. */
+   NEVER filled. The legacy `amber-range` attribute stays for identity/audit.
+   M1-LAYOUT — the rail itself is the shared `.inkchapter-blank-rail` child, which
+   lives in the editor gutter; the carrier paints no border of its own. */
 .inkchapter-diagnostic-locate-frame[data-ink-eof-marker='true'][data-ink-blank-region='amber-range'] {
   border: 0;
-  border-left: 2px solid var(--ink-blank-space-warning-accent);
-  border-radius: 0 3px 3px 0;
+  border-left: 0;
+  border-radius: 0;
   background: transparent;
 }
 
@@ -3626,7 +3645,9 @@ body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
 }
 .inkchapter-eof-endpoint-line {
   position: absolute;
-  left: 0;
+  /* M1-LAYOUT — same gutter offset as the excess rail (`--ink-blank-marker-offset`
+     is set on the carrier from LIVE geometry, 0 when no gutter is available). */
+  left: var(--ink-blank-marker-offset, 0px);
   top: 50%;
   width: 0;
   height: 18px;
@@ -3638,7 +3659,7 @@ body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
 }
 .inkchapter-eof-endpoint-label {
   position: absolute;
-  left: 10px;
+  left: calc(10px + var(--ink-blank-marker-offset, 0px));
   top: 50%;
   transform: translateY(-50%);
   box-sizing: border-box;

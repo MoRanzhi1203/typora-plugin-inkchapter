@@ -173,6 +173,12 @@ export interface DocumentUtilitiesSources {
    */
   diagnosticFix?: {
     applyMarkdown(next: string, expectedBefore: string): { ok: boolean; reason?: string }
+    /**
+     * READBACK authority — the EXACT document text mirror. The structural
+     * serializer is block-level and omits the terminal newline, so it can never
+     * verify an EOF blank-line repair; absent ⇒ the structural read is used.
+     */
+    readMarkdownExact?(): string | null
     setCaptionName(request: import('./document-diagnostic-fix-controller').CaptionNameRequest): {
       ok: boolean
       reason?: string

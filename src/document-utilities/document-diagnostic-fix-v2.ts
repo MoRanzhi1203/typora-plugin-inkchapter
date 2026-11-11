@@ -383,6 +383,12 @@ export function buildFixedMarkdown(
  */
 export interface MarkdownEditPort {
   readMarkdown(): string | null
+  /**
+   * READBACK — the EXACT text mirror Typora reloaded. The structural serializer
+   * is block-level and drops the document's terminal newline, so readback must
+   * use the text mirror when the port can provide it.
+   */
+  readMarkdownExact?(): string | null
   getDocumentKey(): string | null
   /**
    * Apply the verified transaction. `expectedBefore` is the EXACT base the plan
@@ -450,7 +456,7 @@ export function createEditorFixTransactionAdapter(port: MarkdownEditPort): Edito
         return { ok: false, reason: 'WRITE_REJECTED', readBackMarkdown: null }
       }
       let readBack: string | null = null
-      try { readBack = port.readMarkdown() } catch { readBack = null }
+      try { readBack = (port.readMarkdownExact ?? port.readMarkdown).call(port) } catch { readBack = null }
       if (readBack !== request.afterMarkdown) {
         return { ok: false, reason: 'READBACK_MISMATCH', readBackMarkdown: readBack }
       }

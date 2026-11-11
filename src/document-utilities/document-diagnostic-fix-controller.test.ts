@@ -152,6 +152,24 @@ describe('fix controller — auto-safe one-click flow', () => {
     expect(h.ui.state).toBeNull()
   })
 
+  it('states the PLANNED EOF deletion and its REAL source range in the preview', () => {
+    const d = diag('DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE', { extraTrailingBlankLineCount: 3 })
+    const h = createHarness({
+      markdown: '# 标题\n\n最后一段。\n\n\n\n',
+      diagnostics: [d],
+      onRecheck: (state) => {
+        state.markdown = '# 标题\n\n最后一段。\n'
+        state.snapshot = snapshot([])
+      },
+    })
+    h.controller.startAllAuto()
+    const state = h.ui.state as FixPanelPreviewState
+    expect(state.phase).toBe('preview')
+    // Content ends on line 3; the removed source blank lines are 4–6.
+    expect(state.summary).toContain('将删除 3 行源码空行（源码第 4–6 行）')
+    expect(h.state.writes).toEqual([])
+  })
+
   it('cancel performs ZERO writes', () => {
     const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', blankMeta, blankLocation)
     const h = createHarness({ markdown: '# H1\n\n\n\n\nBody\n', diagnostics: [d] })

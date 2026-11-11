@@ -143,9 +143,14 @@ export function decideInternalBlankPublication(
  * view. The `source` is available in the record metadata for source parsing /
  * position mapping / debugging, but it is not presented as the displayed quantity.
  */
-export function internalBlankLineVisibleDetail(visibleBlankLineCount: number): string {
+export function internalBlankLineVisibleDetail(visibleBlankLineCount: number, allowanceBlankLineCount = 1): string {
   const n = Math.max(0, Math.floor(visibleBlankLineCount))
-  return `当前两个内容块之间存在 ${n} 个可视连续空行，建议压缩为 1 个空行。`
+  const allowed = Math.max(1, Math.floor(allowanceBlankLineCount))
+  // M1-RENDER-COUNT §5 — state the SAME "多余 N" the Active chip states, so the
+  // List and the in-document label can never disagree (the old copy stated the
+  // total while the chip stated a source-derived excess).
+  const excess = Math.max(0, n - allowed)
+  return `当前两个内容块之间存在 ${n} 个可视连续空行（建议保留 ${allowed} 个，多余 ${excess} 个）。`
 }
 
 /** §9 — the metadata key carrying the source count for parsing / mapping / debug. */

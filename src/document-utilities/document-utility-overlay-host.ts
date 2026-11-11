@@ -20,10 +20,19 @@ import { describeFixCapability, planAllAutoFixesV2, selectNonConflictingPlans } 
 import {
   blankLineMarkerText,
   formatBlankMarkerText,
-  resolveInternalExcessCount,
   resolveEofMarkerSurfacePainted,
+  resolveRenderedBlankLineCounts,
+  renderedMarkerLabelText,
   END_EXCESS_BLANK_MARKER_RULE,
 } from './document-diagnostic-blank-marker-v1'
+import {
+  resolveBlankMarkerGutter,
+  resolveBlankMarkerChipPlacement,
+  markerIntersectsCaret,
+  BLANK_MARKER_CHIP_HEIGHT_PX,
+  type BlankMarkerChipPlacement,
+  type MarkerCaretRect,
+} from './document-diagnostic-blank-marker-layout-v1'
 import type { FixPanelHandlers, FixPanelState } from './document-diagnostic-fix-panel'
 import { buildDocumentStatusView } from './document-status-indicator'
 import { DocumentDiagnosticLocator, prefersReducedMotion, DIAGNOSTIC_HIGHLIGHT_CLASS } from './document-diagnostic-locator'
@@ -1272,6 +1281,8 @@ export interface DocumentUtilitiesOverlayOptions {
    */
   diagnosticFix?: {
     applyMarkdown(next: string, expectedBefore: string): { ok: boolean; reason?: string }
+    /** READBACK — the EXACT text mirror (the structural serializer drops the terminal newline). */
+    readMarkdownExact?(): string | null
     setCaptionName(request: import('./document-diagnostic-fix-controller').CaptionNameRequest): {
       ok: boolean
       reason?: string
@@ -2793,6 +2804,23 @@ export type CodeMarkerBindingStateV1 =
   | 'IDENTITY_CONFLICT'
   | 'NO_TARGET'
 
+/**
+ * M1-LAYOUT — the LIVE geometry a blank-marker chip is placed against.
+ * Viewport space (the same space as `getBoundingClientRect`), so the placement
+ * authority never guesses a unit.
+ */
+export interface BlankMarkerChipPlacementInput {
+  containerLeft: number
+  containerTop: number
+  containerHeight: number
+  gutterPx: number
+  editorLeft: number | null
+  rowTops: number[]
+  caretRect: MarkerCaretRect | null
+  /** jsdom / headless commits must not emit runtime audits. */
+  headless?: boolean
+}
+
 export class DocumentUtilityOverlayHost {
   private root: HTMLDivElement | null = null
   private toolbarEl: HTMLDivElement | null = null
@@ -3502,6 +3530,8 @@ export class DocumentUtilityOverlayHost {
         // incremental typing mirror (which can omit blank-line structure; a
         // whole-document reload from it could drop user content).
         getMarkdown: () => this.readFixSource().markdown,
+        // READBACK — the exact text mirror, never the block-level serializer.
+        getMarkdownExact: () => this.opts.diagnosticFix?.readMarkdownExact?.() ?? null,
         isSourceVerified: () => this.readFixSource().verified,
         getDocumentKey: () => opts.ctx.authority.getDocumentKey(),
         getSnapshot: () => this.getSnapshot(),
@@ -4580,6 +4610,13 @@ export class DocumentUtilityOverlayHost {
     root.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;overflow:visible;pointer-events:none;z-index:900;'
     document.body.appendChild(root)
     this.root = root
+
+    // M1-LAYOUT §3.3 — the caret must never be covered by a blank-marker label.
+    // Re-place the (already committed) chip when the caret moves; this is a
+    // presentation-only listener, released through the host disposables.
+    const onSelectionChangeForBlankMarker = () => this.onCaretMovedForBlankMarker()
+    document.addEventListener('selectionchange', onSelectionChangeForBlankMarker)
+    this.disposables.push(() => document.removeEventListener('selectionchange', onSelectionChangeForBlankMarker))
 
     this.toolbarEl = this.buildToolbar(root)
     this.navigatorEl = this.buildNavigator(root)
@@ -10236,6 +10273,20 @@ export class DocumentUtilityOverlayHost {
   private locateDocEndCarrier: HTMLElement | null = null
   /** The diagnostic's own end-excess count for the committed EOF carrier label. */
   private lastDocEndLabelExtraCount: number | null = null
+  /**
+   * M1-LAYOUT — the last applied chip placement (rail gutter + caret avoidance).
+   * Re-applied when the caret moves; cleared when the chip is removed.
+   */
+  private lastBlankMarkerChipPlacement: {
+    chip: HTMLElement
+    input: BlankMarkerChipPlacementInput
+    result: BlankMarkerChipPlacement
+  } | null = null
+  /**
+   * M1-RENDER-COUNT §5 — the LAST verified internal-blank rendered detail, used as
+   * the doc-scoped fallback so the List row and the label always state one number.
+   */
+  private lastInternalBlankRenderedDetail: { identity: string; renderedCount: number; detail: string } | null = null
   /** Last synthetic EOF measurement (audit + gate input). */
   private lastDocEndVisual: {
     rectViewport: RectLike | null
@@ -14538,7 +14589,12 @@ export class DocumentUtilityOverlayHost {
    * The text is the NORMALIZED diagnostic count (`多余 N 空行`), never a DOM
    * row/height derivation.
    */
-  private upsertBlockGapCountChip(parent: HTMLElement, text: string | null, diagnosticId?: string | null): void {
+  private upsertBlockGapCountChip(
+    parent: HTMLElement,
+    text: string | null,
+    diagnosticId?: string | null,
+    placement?: BlankMarkerChipPlacementInput | null,
+  ): void {
     const chips = Array.from(parent.querySelectorAll<HTMLElement>(`.${BLANK_RUN_COUNT_CHIP_CLASS}`))
     const current = chips[0] ?? null
     // 去叠加 — 历史提交可能留下多个数量标签，只保留一个。
@@ -14547,11 +14603,13 @@ export class DocumentUtilityOverlayHost {
     }
     if (text == null || text === '') {
       if (current != null) current.remove()
+      if (this.lastBlankMarkerChipPlacement?.chip === current) this.lastBlankMarkerChipPlacement = null
       return
     }
     if (current != null) {
       if (current.textContent !== text) current.textContent = text
       this.bindBlankMarkerChip(current, diagnosticId)
+      this.applyBlankMarkerChipPlacement(current, placement ?? null)
       return
     }
     const chip = document.createElement('span')
@@ -14560,6 +14618,128 @@ export class DocumentUtilityOverlayHost {
     chip.textContent = text
     this.bindBlankMarkerChip(chip, diagnosticId)
     parent.appendChild(chip)
+    this.applyBlankMarkerChipPlacement(chip, placement ?? null)
+  }
+
+  /**
+   * M1-LAYOUT §3 — the SHARED 2px left rail, painted as a child of the carrier
+   * `gutterLocal` px LEFT of the document text column. The carrier's own rect is
+   * untouched (it stays the closure/anchor authority), so this is pure paint.
+   * `gutterLocal <= 0` removes the rail (never a hidden/duplicated rail).
+   */
+  private ensureBlankMarkerRail(parent: HTMLElement, gutterLocal: number): HTMLElement | null {
+    const gutter = Number.isFinite(gutterLocal) ? Math.max(0, Math.round(gutterLocal)) : 0
+    const existing = parent.querySelector<HTMLElement>(':scope > .inkchapter-blank-rail')
+    if (gutter <= 0) {
+      existing?.remove()
+      return null
+    }
+    let rail = existing
+    if (rail == null) {
+      rail = document.createElement('span')
+      rail.className = 'inkchapter-blank-rail'
+      rail.setAttribute('data-ink-blank-rail', '1')
+      rail.setAttribute('aria-hidden', 'true')
+      parent.appendChild(rail)
+    }
+    const css = `left:${-gutter}px;width:${gutter}px;`
+    if (rail.style.cssText !== css) rail.style.cssText = css
+    return rail
+  }
+
+  /**
+   * M1-LAYOUT §3 — put the rail + chip in the EDITOR GUTTER so an empty
+   * paragraph's caret is never covered. Measured against REAL rects: the chip is
+   * re-measured after insertion (its width depends on the text), and the caret
+   * comes from the live selection inside the business content root.
+   */
+  private applyBlankMarkerChipPlacement(
+    chip: HTMLElement,
+    input: BlankMarkerChipPlacementInput | null,
+  ): BlankMarkerChipPlacement | null {
+    if (input == null || input.editorLeft == null || !Number.isFinite(input.editorLeft)) return null
+    const chipWidth = chip.offsetWidth > 0 ? chip.offsetWidth : 64
+    const chipHeight = chip.offsetHeight > 0 ? chip.offsetHeight : BLANK_MARKER_CHIP_HEIGHT_PX
+    const result = resolveBlankMarkerChipPlacement({
+      containerLeft: input.containerLeft,
+      containerTop: input.containerTop,
+      containerHeight: input.containerHeight,
+      gutterPx: input.gutterPx,
+      editorLeft: input.editorLeft,
+      chipWidth,
+      chipHeight,
+      rowTops: input.rowTops,
+      caretRect: input.caretRect,
+    })
+    chip.style.left = `${result.left}px`
+    chip.style.top = `${result.top}px`
+    chip.setAttribute('data-ink-blank-chip-placement', result.placement)
+    chip.setAttribute('data-ink-blank-chip-caret-collision', result.collidesWithCaret ? '1' : '0')
+    this.lastBlankMarkerChipPlacement = { chip, input, result }
+    if (!input.headless) {
+      emitRuntimeAudit('BLANK-MARKER-CARET-COLLISION-AUDIT', {
+        documentKey: this.opts.ctx.authority.getDocumentKey() ?? null,
+        placement: result.placement,
+        gutterPx: input.gutterPx,
+        chipLeftPx: result.left,
+        chipTopPx: result.top,
+        caretRect: input.caretRect,
+        collidesWithCaret: result.collidesWithCaret,
+        caretUnavoidable: result.caretUnavoidable,
+        decision: result.collidesWithCaret ? 'FAIL' : 'PASS',
+      })
+    }
+    return result
+  }
+
+  /** M1-LAYOUT — the REAL caret rect (viewport), only inside the business root. */
+  private readCaretViewportRect(): MarkerCaretRect | null {
+    try {
+      const sel = window.getSelection()
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed !== true) return null
+      const range = sel.getRangeAt(0)
+      const node = range.startContainer
+      const root = resolveBusinessContentRoot()
+      if (root != null && node != null && !root.contains(node)) return null
+      const r = range.getBoundingClientRect()
+      if (!Number.isFinite(r.left) || !Number.isFinite(r.top)) return null
+      if (r.height > 0 || r.width > 0) {
+        return {
+          left: r.left,
+          top: r.top,
+          right: r.left + Math.max(r.width, 1),
+          bottom: r.top + Math.max(r.height, 1),
+        }
+      }
+      // §3.3 — a collapsed caret inside an EMPTY paragraph returns a ZERO rect in
+      // Chromium, which is exactly the user-visible case (the caret of a blank
+      // line). The editable line box IS the caret region there: use its left edge
+      // and full line height (never a guessed point, never a stale rect).
+      const el = node != null && node.nodeType === 1 ? node as Element : node?.parentElement ?? null
+      const box = el != null ? el.getBoundingClientRect() : null
+      if (box == null || !(box.height > 0)) return null
+      return {
+        left: box.left,
+        top: box.top,
+        right: box.left + Math.max(box.width, 1),
+        bottom: box.bottom,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  /** M1-LAYOUT §3.3 — re-place the visible chip after the caret moved. */
+  private onCaretMovedForBlankMarker(): void {
+    const current = this.lastBlankMarkerChipPlacement
+    if (current == null) return
+    const chip = current.chip
+    if (!chip.isConnected) {
+      this.lastBlankMarkerChipPlacement = null
+      return
+    }
+    const caret = this.readCaretViewportRect()
+    this.applyBlankMarkerChipPlacement(chip, { ...current.input, caretRect: caret })
   }
 
   /** M1 — ONLY the label is interactive: click/Esc/Enter locate its diagnostic. */
@@ -15040,6 +15220,15 @@ export class DocumentUtilityOverlayHost {
         warning: true,
         layoutEpoch: this.currentDocumentLayoutEpoch,
       })
+      // M1-RENDER-COUNT §5 — the LIST row states the SAME rendered number as the
+      // in-document label. The identity-keyed authority is the primary source; this
+      // cached entry is the doc-scoped fallback for the common single-gap case,
+      // where the row can be built before the identity is attached.
+      this.lastInternalBlankRenderedDetail = {
+        identity: gapTargetIdentity,
+        renderedCount: visibleBlankLineCount,
+        detail: internalBlankLineVisibleDetail(visibleBlankLineCount),
+      }
     } else {
       this.renderedBlankRowAuthority.delete(gapTargetIdentity)
     }
@@ -15187,19 +15376,50 @@ export class DocumentUtilityOverlayHost {
       // blank run; its SURFACE + ONE left accent come from style.scss (so it must
       // NOT force `background:none` inline). The per-row fragments are pure
       // geometry/closure anchors (transparent), so there is EXACTLY ONE background.
+      //
+      // M1-LAYOUT §3 — the LEFT RAIL must sit in the EDITOR GUTTER, not on the
+      // text column edge (it hid the empty-paragraph caret). The carrier rect and
+      // EVERY fragment stay byte-identical (they are the closure authority); only
+      // the shared rail child and the label move into the gutter.
+      const gutterVp = resolveBlankMarkerGutter({
+        textColumnLeft: textColumnVp.left,
+        editorLeft: hostRect ? hostRect.left : null,
+      }).gutterPx
+      const gutterLocal = useCalibrated && Number.isFinite(calibration.scaleX) && calibration.scaleX > 0
+        ? Math.round(gutterVp / calibration.scaleX)
+        : gutterVp
       const nextCss = `position:absolute;left:${Math.round(box.left)}px;top:${Math.round(box.top)}px;`
         + `width:${Math.round(box.width)}px;height:${Math.round(box.height)}px;pointer-events:none;`
       // 几何不变时不写 style（幂等：重复提交不引起样式重算 / 过渡重放）。
       if (container.style.cssText !== nextCss) container.style.cssText = nextCss
       const allowance = INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines
       const fragEls = this.reconcileBlankRowFragmentEls(container, fragmentGeometry.fragments, allowance, severity)
-      // ONE left label — the NORMALIZED excess count from the diagnostic itself
-      // (`actualBlankLines − passMaxBlankLines`). Never a DOM row/height count.
-      const markerText = blankLineMarkerText(diag?.code ?? '', meta)
-        ?? (actualBlankLines != null
-          ? formatBlankMarkerText('INTERNAL_EXCESS', Math.max(1, actualBlankLines - allowance))
-          : null)
-      this.upsertBlockGapCountChip(container, markerText, diagId ?? diag?.id ?? null)
+      this.ensureBlankMarkerRail(container, gutterLocal)
+      // M1-RENDER-COUNT §4/§5 — the label states the RENDERED count, never the
+      // source `\n` count. `visibleBlankLineCount` is the measured blank-line band
+      // count from the live editing DOM (Typora collapses 9 source blank lines
+      // into 4 visible rows). The label states the EXCESS over the allowance, and
+      // the Drawer copy states the SAME number (see `internalBlankLineVisibleDetail`).
+      const renderedCounts = resolveRenderedBlankLineCounts({
+        kind: 'INTERNAL_EXCESS',
+        renderedBlankLineCount: renderedBlankRows.decision === 'VERIFIED' ? visibleBlankLineCount : null,
+        allowedBlankLineCount: allowance,
+        evidence: `RENDERED_ROWS:${renderedRowCount};VISIBLE_BANDS:${visibleBlankLineCount}`,
+      })
+      const markerText = renderedMarkerLabelText(renderedCounts, 'INTERNAL_EXCESS')
+        ?? blankLineMarkerText(diag?.code ?? '', meta)
+      const firstRow = renderedBlankRows.rows[0]?.rect ?? null
+      const lastRow = renderedBlankRows.rows[renderedBlankRows.rows.length - 1]?.rect ?? null
+      this.upsertBlockGapCountChip(container, markerText, diagId ?? diag?.id ?? null, {
+        containerLeft: textColumnVp.left ?? (hostRect ? hostRect.left : 0),
+        containerTop: firstRow ? firstRow.top : box.top + (hostRect?.top ?? 0),
+        containerHeight: firstRow && lastRow ? Math.max(1, lastRow.bottom - firstRow.top) : Math.max(1, box.height),
+        gutterPx: gutterVp,
+        editorLeft: hostRect ? hostRect.left : null,
+        rowTops: renderedBlankRows.rows.map(r => (r.rect ? r.rect.top : Number.NaN)).filter(t => Number.isFinite(t)),
+        caretRect: this.readCaretViewportRect(),
+        headless,
+      })
       // 去叠加 — 无论复用还是新建，都把同一区间上一轮泄漏的孤儿载体
       // （旧 revision / 失同步的重复 carrier）清出 DOM，保证「一个区间一个载体」。
       this.retireStrayBlockGapCarriers(container)
@@ -15246,8 +15466,11 @@ export class DocumentUtilityOverlayHost {
         const publishedBlankCount = typeof meta.publishedBlankLineCount === 'number'
           ? meta.publishedBlankLineCount
           : visibleBlankLineCount
-        // The visible label now states the DIAGNOSTIC's excess count.
-        const activeLabelBlankCount = resolveInternalExcessCount(meta) ?? visibleBlankLineCount
+        // M1-RENDER-COUNT §5 — the label states the RENDERED count from the SAME
+        // authority the Drawer headline uses (never `actualBlankLines −
+        // passMaxBlankLines`, a source newline count).
+        const renderedExcessBlankCount = renderedCounts.excessBlankLineCount
+        const activeLabelBlankCount = renderedCounts.renderedBlankLineCount ?? visibleBlankLineCount
         const paintedFragmentCount = fragEls.length
         const staleFactDiff = this.staleActiveVisualFactDiff(diag, live)
         const staleActiveVisualCount = staleFactDiff !== '' ? 1 : 0
@@ -15257,12 +15480,14 @@ export class DocumentUtilityOverlayHost {
           && visibleBlankLineCount !== sourceBlankLineCountUsed ? 1 : 0
         // BUSINESS + VISUAL contracts (never conflated):
         //   · the rule is PUBLISHED iff the VISIBLE count is excessive (§2/§3);
-        //   · the published count == Active label == Drawer copy == the VISIBLE count;
+        //   · the published count == Drawer's rendered total == the VISIBLE count;
+        //   · the Active label == the rendered EXCESS over the allowance;
         //   · the painted fragments equal the rendered rows (geometry);
         //   · the SOURCE axis stays consistent and is NEVER dressed as the visible one.
         const consistency = staleActiveVisualCount === 0
           && visibleBlankLineCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold
           && publishedBlankCount === visibleBlankLineCount
+          && renderedCounts.countConfidence === 'VERIFIED'
           && activeLabelBlankCount === visibleBlankLineCount
           && paintedFragmentCount === renderedRowCount
           && sourceBlankLineCountUsed === diagnosticSourceBlankCount
@@ -15277,6 +15502,9 @@ export class DocumentUtilityOverlayHost {
           SOURCE_BLANK_LINE_COUNT_USED: sourceBlankLineCountUsed,
           VISIBLE_BLANK_LINE_COUNT: visibleBlankLineCount,
           RENDERED_BLANK_ROW_COUNT: renderedRowCount,
+          RENDERED_EXCESS_BLANK_COUNT: renderedExcessBlankCount,
+          RENDERED_COUNT_CONFIDENCE: renderedCounts.countConfidence,
+          RENDERED_COUNT_EVIDENCE: renderedCounts.countEvidence,
           DRAWER_DISPLAYED_BLANK_COUNT: publishedBlankCount,
           ACTIVE_LABEL_BLANK_COUNT: activeLabelBlankCount,
           ACTIVE_PAINTED_FRAGMENT_COUNT: paintedFragmentCount,
@@ -17724,6 +17952,10 @@ export class DocumentUtilityOverlayHost {
         touched = true
       }
     }
+    if (this.lastInternalBlankRenderedDetail != null
+      && !this.renderedBlankRowAuthority.has(this.lastInternalBlankRenderedDetail.identity)) {
+      this.lastInternalBlankRenderedDetail = null
+    }
     // WC-R2 — retry ONCE the DOM has had a frame to materialize the split's
     // blank rows. Bounded per source revision, and only when this snapshot is
     // BOTH the admitted one and the authority's current snapshot (a direct
@@ -18538,6 +18770,16 @@ export class DocumentUtilityOverlayHost {
    * (already visible-based) detail — the Drawer must never state a different number
    * than the rule / the Active label. It NEVER states the source count.
    */
+  private countInternalBlankDiagnostics(): number {
+    const snapshot = this.snapshot
+    if (snapshot == null) return 0
+    let n = 0
+    for (const d of snapshot.diagnostics) {
+      if (d.code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE) n++
+    }
+    return n
+  }
+
   private renderedBlankRowDetailForDiagnostic(
     d: DocumentDiagnosticsSnapshot['diagnostics'][number] | null,
   ): string | null {
@@ -18545,7 +18787,14 @@ export class DocumentUtilityOverlayHost {
     if (d.code === EXCESSIVE_INTERNAL_BLANK_LINES_CODE) {
       const targetIdentity = String((d as { targetIdentity?: string }).targetIdentity ?? '')
       const record = targetIdentity !== '' ? this.renderedBlankRowAuthority.get(targetIdentity) ?? null : null
-      return record != null ? record.displayDetail : (d.detail ?? RENDERED_BLANK_ROW_PENDING_DETAIL)
+      if (record != null) return record.displayDetail
+      // M1-RENDER-COUNT §5 — the row must state the RENDERED number the label
+      // states. When the identity is not attached yet (single-gap document), the
+      // doc-scoped verified record is the authority; the static producer copy is
+      // only a last resort.
+      const cached = this.lastInternalBlankRenderedDetail
+      if (cached != null && this.countInternalBlankDiagnostics() <= 1) return cached.detail
+      return d.detail ?? RENDERED_BLANK_ROW_PENDING_DETAIL
     }
     // ── TRAE EOF-ENTER-BLANK §3.1/§4 — the two document-end blank rules ALSO state
     // the CURRENT authoritative count (VERIFIED VISIBLE in WYSIWYG, labelled SOURCE
@@ -28036,7 +28285,7 @@ export class DocumentUtilityOverlayHost {
     el: HTMLElement
     severity: string
     tail: { trailingBlankRects: RectLike[] }
-    localRect: { left: number; top: number; width: number }
+    localRect: { left: number; top: number; width: number; height: number }
     hostRect: RectLike | null
     extraTrailingBlankLineCount: number
     diagnosticId: string | null
@@ -28079,6 +28328,15 @@ export class DocumentUtilityOverlayHost {
         }
       }
       actual = 0
+      // M1-LAYOUT §3 — the EOF rail lives in the editor gutter too (the carrier
+      // rect must NOT move: `endBandAnchorDriftPx` is gated to 1px).
+      const eofGutterVp = input.hostRect != null
+        ? resolveBlankMarkerGutter({
+          textColumnLeft: input.hostRect.left + input.localRect.left,
+          editorLeft: input.hostRect.left,
+        }).gutterPx
+        : 0
+      this.ensureBlankMarkerRail(input.el, eofGutterVp)
       if (input.hostRect != null && excess > 0) {
         const localRows = input.tail.trailingBlankRects.slice(requiredRows)
           .map(r => viewportRectToDocumentLocalRect({ viewportRect: r, contentHostRect: input.hostRect }))
@@ -28102,11 +28360,37 @@ export class DocumentUtilityOverlayHost {
       chip.className = BLANK_RUN_COUNT_CHIP_CLASS
       chip.setAttribute(DOCUMENT_END_TRAILING_CHIP_POS_ATTR, DOCUMENT_END_TRAILING_CHIP_POSITION)
       chip.setAttribute('aria-hidden', 'true')
-      // The label states the DIAGNOSTIC's own excess count (never a DOM row count).
-      const labelCount = input.extraTrailingBlankLineCount > 0 ? input.extraTrailingBlankLineCount : excess
-      chip.textContent = formatBlankMarkerText('END_EXCESS', Math.max(1, labelCount))
+      // M1-RENDER-COUNT §5 — the label states the RENDERED excess
+      // (`paintable − required`), never the source `extraTrailingBlankLineCount`
+      // (the "正文多余3 / 面板多余9" defect). The Drawer copy states the same number.
+      const eofRenderedCounts = resolveRenderedBlankLineCounts({
+        kind: 'END_EXCESS',
+        renderedBlankLineCount: paintable,
+        allowedBlankLineCount: requiredRows,
+        evidence: `RENDERED_ROWS:${paintable};SOURCE_EXTRA:${input.extraTrailingBlankLineCount}`,
+      })
+      chip.textContent = renderedMarkerLabelText(eofRenderedCounts, 'END_EXCESS')
+        ?? formatBlankMarkerText('END_EXCESS', Math.max(1, excess))
       this.bindBlankMarkerChip(chip, input.diagnosticId)
       input.el.appendChild(chip)
+      if (input.hostRect != null) {
+        // M1-LAYOUT §3.3 — the chip's inline `top` is relative to THIS carrier, so
+        // the placement base MUST be the carrier's own viewport box. The previous
+        // base was the FIRST trailing row (which is the ALLOWED row, outside this
+        // carrier), so every EOF label was judged and painted one row too low — the
+        // collision verdict then described a rect that was never shown. Only the
+        // EXCESS rows are candidates: the allowed row is not part of this diagnosis.
+        const excessRows = input.tail.trailingBlankRects.slice(requiredRows)
+        this.applyBlankMarkerChipPlacement(chip, {
+          containerLeft: input.hostRect.left + input.localRect.left,
+          containerTop: input.hostRect.top + input.localRect.top,
+          containerHeight: Math.max(1, input.localRect.height),
+          gutterPx: eofGutterVp,
+          editorLeft: input.hostRect.left,
+          rowTops: excessRows.map(r => r.top),
+          caretRect: this.readCaretViewportRect(),
+        })
+      }
       this.lastEofFragmentSetSignature = signature
       rebuilt = true
       if (cleaned > 0) this.countersEofFragmentV1.oldFragmentCleanup += cleaned
@@ -28408,6 +28692,7 @@ export class DocumentUtilityOverlayHost {
     el.setAttribute('data-severity', severity)
     el.setAttribute('data-target-kind', 'block')
     el.setAttribute('data-presentation', 'full-frame')
+    let endpointGutterPx = 0
     if (isExcessRule) {
       // 统一样式 — the document-end excess marker uses the SAME amber blank-area
       // region style as the internal block gap: a plain RANGE BACKGROUND with NO
@@ -28449,8 +28734,20 @@ export class DocumentUtilityOverlayHost {
       label.textContent = blankLineMarkerText(diag.code, diag.metadata) ?? EOF_NEWLINE_MARKER_ENDPOINT_LABEL
       this.bindBlankMarkerChip(label, diag.id)
       el.appendChild(label)
+      // M1-LAYOUT §3 — the short DASHED line and its label share the SAME gutter
+      // offset as the excess rail, so the caret of the last empty line stays clear.
+      // (Applied AFTER `cssText`, which would otherwise wipe the custom property.)
+      endpointGutterPx = hostRect != null
+        ? resolveBlankMarkerGutter({
+          textColumnLeft: hostRect.left + localRect.left,
+          editorLeft: hostRect.left,
+        }).gutterPx
+        : 0
     }
     el.style.cssText = `position:absolute;display:block;left:${Math.round(localRect.left)}px;top:${Math.round(localRect.top)}px;width:${Math.round(localRect.width)}px;height:${Math.round(localRect.height)}px;pointer-events:none;`
+    if (endpointGutterPx > 0) {
+      el.style.setProperty('--ink-blank-marker-offset', `${-endpointGutterPx}px`)
+    }
     layer.appendChild(el)
     this.locateDocEndCarrier = el
     this.locateDocCarrier = el
@@ -28639,6 +28936,9 @@ export class DocumentUtilityOverlayHost {
       fillCount: fillFacts.fillCount,
       pluginOwnedBorderCount: fillFacts.pluginOwnedBorderCount,
       endpointForm: this.findEndpointFormCarrier(layer) != null,
+      // M1-LAYOUT — the gutter rail is a real painted surface of the marker.
+      railPainted: layer.querySelector('[data-ink-blank-rail="1"]') != null
+        || (this.blockGapVisualEl?.querySelector('[data-ink-blank-rail="1"]') != null),
     })
     if (!eofSurfacePainted) c.fillCountZeroAfterLocate++
     c.verticalLine += fillFacts.verticalLineCount

@@ -1608,11 +1608,18 @@ export default class extends Plugin<InkChapterSettings> {
                 markdown: string,
                 options?: Record<string, unknown>,
               ) => void)(next, {})
-              const after = readSource()
+              // READBACK — the STRUCTURAL serializer is block-level and cannot
+              // represent the document's terminal newline (a real 1.6.7 document
+              // ending in `\n` serializes without it), so it can never verify an
+              // EOF blank-line repair. The incremental mirror IS the document text
+              // Typora reloaded, so it is the exact readback authority here.
+              let after: string | null = null
+              try { after = editor.getMarkdown() } catch { after = null }
               if (after !== next) {
                 console.error('[InkChapter] diagnostic fix readback mismatch', {
                   expectedLength: next.length,
                   actualLength: after?.length ?? null,
+                  structuralLength: readSource()?.length ?? null,
                 })
                 return { ok: false, reason: 'READBACK_MISMATCH' }
               }
@@ -1621,6 +1628,9 @@ export default class extends Plugin<InkChapterSettings> {
               console.error('[InkChapter] diagnostic fix write failed', error)
               return { ok: false, reason: error instanceof Error ? error.message : 'WRITE_THREW' }
             }
+          },
+          readMarkdownExact: () => {
+            try { return editor.getMarkdown() } catch { return null }
           },
           setCaptionName: (request) => {
             try {

@@ -151,12 +151,17 @@ describe('Blank-Space Warning Presentation Policy — CSS band', () => {
 
   it('M1 edge-only — ONE left rail + ONE count label, never a filled gap band', () => {
     // The internal gap is EMPTY SPACE: painting its whole surface produced the
-    // "yellow stray blank row" defect. The container now owns ONE 2px rail.
+    // "yellow stray blank row" defect. M1-LAYOUT moves the ONE 2px rail into the
+    // editor gutter (a shared child), so the carrier itself stays paint-free.
     const containerBlock = STYLE_SCSS.match(/\.inkchapter-block-gap-fragments \{[^}]*\}/)?.[0] ?? ''
     expect(containerBlock).not.toBe('')
     expect(containerBlock).toContain('background: transparent')
-    expect(containerBlock).toContain('border-left: 2px solid var(--ink-blank-space-warning-accent)')
+    expect(containerBlock).not.toContain('border-left: 2px solid var(--ink-blank-space-warning-accent)')
     expect(containerBlock).not.toContain('background: var(--ink-blank-space-warning-bg)')
+    const railBlock = STYLE_SCSS.match(/\.inkchapter-blank-rail \{[^}]*\}/)?.[0] ?? ''
+    expect(railBlock).not.toBe('')
+    expect(railBlock).toContain('border-left: 2px solid var(--ink-blank-space-warning-accent)')
+    expect(railBlock).toContain('pointer-events: none')
     // The per-row fragments keep the shared marker class for OWNERSHIP, but the
     // scoped override must suppress the per-row 18% fill (stacked band).
     const fragmentOverride = STYLE_SCSS.match(
@@ -169,13 +174,10 @@ describe('Blank-Space Warning Presentation Policy — CSS band', () => {
     expect(fragBlock).toContain('background: transparent')
     // the removed per-row role fills must NOT come back (they caused stacked layers)
     expect(STYLE_SCSS).not.toMatch(/data-ink-blank-role='(allowed|excess)'\] \{/)
-    // ONE count label, overlay-only
+    // ONE count label, overlay-only, placed by the caret-collision authority.
     const chipBlock = STYLE_SCSS.match(/\.inkchapter-blank-run-count \{[^}]*\}/)?.[0] ?? ''
     expect(chipBlock).not.toBe('')
     expect(chipBlock).toContain('pointer-events: none')
-    // M1 — the label now sits LEFT of the rail (8px gap), never at the right end.
-    expect(chipBlock).toContain('left: 10px')
-    expect(chipBlock).toContain('right: auto')
     expect(chipBlock).not.toContain('right: 6px')
   })
 

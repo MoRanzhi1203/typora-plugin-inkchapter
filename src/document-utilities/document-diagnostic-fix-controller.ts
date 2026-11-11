@@ -41,6 +41,8 @@ export interface CaptionNameRequest {
 
 export interface DiagnosticFixEnvironment {
   getMarkdown(): string | null
+  /** READBACK only — the EXACT text mirror (absent ⇒ `getMarkdown`). */
+  getMarkdownExact?(): string | null
   getDocumentKey(): string | null
   getSnapshot(): DocumentDiagnosticsSnapshot | null
   isLocked(): boolean
@@ -100,6 +102,7 @@ export class DiagnosticFixController {
   ) {
     this.adapter = createEditorFixTransactionAdapter({
       readMarkdown: () => this.env.getMarkdown(),
+      readMarkdownExact: () => this.env.getMarkdownExact?.() ?? this.env.getMarkdown(),
       getDocumentKey: () => this.env.getDocumentKey(),
       applyMarkdown: (next, expectedBefore) => this.env.applyMarkdown(next, expectedBefore),
     })
@@ -347,6 +350,24 @@ export class DiagnosticFixController {
     }))
     const parts: string[] = []
     if (patchPlans.length > 0) parts.push(`将修改源码 ${patchPlans.length} 处`)
+    // M1-RENDER-COUNT §5 — a blank-line repair must state the PLANNED deletion and
+    // its REAL source range (line numbers), so the preview can be verified against
+    // the rendered count shown in the row above.
+    const deletePatches = patchPlans
+      .flatMap(plan => plan.patches.filter(p => p.kind === 'delete-lines'))
+    if (deletePatches.length > 0) {
+      const removed = deletePatches.reduce((n, p) => n + Math.max(0, p.lineEnd - p.lineStart + 1), 0)
+      const ranges = deletePatches.map(p => `${p.lineStart + 1}–${p.lineEnd + 1}`)
+      parts.push(`将删除 ${removed} 行空行（源码第 ${ranges.join('、')} 行）`)
+    }
+    // The EOF repair is a TAIL replacement (`replace-tail`), not a line-delete
+    // patch — it must state the same planned deletion + REAL source range.
+    const tailPatches = patchPlans.flatMap(plan => plan.patches.filter(p => p.kind === 'replace-tail'))
+    if (tailPatches.length > 0) {
+      const removed = tailPatches.reduce((n, p) => n + Math.max(0, p.before.split(/\r\n|\r|\n/).length - 1), 0)
+      const ranges = tailPatches.map(p => `${p.lineStart + 1}–${p.lineEnd + 1}`)
+      parts.push(`将删除 ${removed} 行源码空行（源码第 ${ranges.join('、')} 行）`)
+    }
     if (captionPlans.length > 0) parts.push(`将写入名称 ${captionPlans.length} 项`)
     if (rejected.length > 0) parts.push(`跳过 ${rejected.length} 项（冲突或不可用）`)
     const captionNames = captionPlans

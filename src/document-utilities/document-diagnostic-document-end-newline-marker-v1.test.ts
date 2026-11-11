@@ -104,7 +104,8 @@ describe('端点标记 — 文末缺空行端点（短横线 + 缺少 1 空行�
     const labelBlock = css.match(/\.inkchapter-eof-endpoint-label \{[^}]*\}/)?.[0] ?? ''
     expect(labelBlock).not.toBe('')
     expect(labelBlock).toContain('pointer-events: none')
-    expect(labelBlock).toContain('left: 10px')
+    // M1-LAYOUT — the label follows the rail into the editor gutter.
+    expect(labelBlock).toContain('calc(10px + var(--ink-blank-marker-offset, 0px))')
     expect(labelBlock).toContain('var(--ink-blank-space-warning-accent)')
   })
 })
@@ -115,17 +116,19 @@ describe('统一样式 — 文末多余空行复用内部琥珀色空行区域',
     const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
     const region = css.match(/\[data-ink-eof-marker='true'\]\[data-ink-blank-region='amber-range'\] \{[^}]*\}/)?.[0] ?? ''
     expect(region).not.toBe('')
-    expect(region).toContain('border-left: 2px solid var(--ink-blank-space-warning-accent)')
+    // M1-LAYOUT — the rail moved into the gutter (shared `.inkchapter-blank-rail`);
+    // the carrier itself must paint NO border and NO fill.
+    expect(region).not.toContain('border-left: 2px solid var(--ink-blank-space-warning-accent)')
     expect(region).toContain('background: transparent')
     expect(region).not.toContain('background: var(--ink-blank-space-warning-bg)')
+    const rail = css.match(/\.inkchapter-blank-rail \{[^}]*\}/)?.[0] ?? ''
+    expect(rail).toContain('border-left: 2px solid var(--ink-blank-space-warning-accent)')
   })
 
-  it('the doc-end count is a LEFT label (legacy position attribute stays, visual left)', () => {
+  it('the doc-end count is placed by the caret-collision authority (legacy attr stays)', () => {
     const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
     const chip = css.match(/\.inkchapter-blank-run-count\[data-ink-chip-pos='top-right'\] \{[^}]*\}/)?.[0] ?? ''
     expect(chip).not.toBe('')
-    expect(chip).toContain('left: 10px')
-    expect(chip).toContain('right: auto')
     expect(chip).not.toContain('right: 6px')
   })
 
@@ -943,11 +946,12 @@ describe('三方 DOM 一致性 — 文末多余空行（Passive / Active / Drawe
     // 统一样式 — the SAME amber blank-area region as the internal blank line
     expect(carrier.getAttribute('data-ink-blank-region')).toBe('amber-range')
     expect(carrier.getAttribute('data-ink-marker-kind')).toBe(EOF_MARKER_KIND_DOCUMENT_END_WARNING)
-    // 左侧「多余 N 空行」— N is the DIAGNOSTIC's normalized extra count (3),
-    // never a DOM row count and never a second threshold subtraction.
+    // 左侧「多余 N 空行」— M1-RENDER-COUNT §5: N is the RENDERED blank-row count
+    // (the fixture has 6 REAL trailing rows), never the source `\n` count and
+    // never a second threshold subtraction.
     const chip = carrier.querySelector<HTMLElement>('[data-ink-chip-pos="top-right"]')
     expect(chip).not.toBeNull()
-    expect(chip!.textContent).toBe('多余 3 空行')
+    expect(chip!.textContent).toBe('多余 6 空行')
     // the last block itself is never polluted
     expect(world.last.querySelector('[data-ink-eof-marker="true"]')).toBeNull()
   })
@@ -980,8 +984,9 @@ describe('三方 DOM 一致性 — 文末多余空行（Passive / Active / Drawe
     internals.lastLocatedDiagnosticId = String(diag.id)
     expect(internals.commitSyntheticEofVisual(fakeTx(), diag, 2, true)).toBe(true)
     const chip = excessCarrier()!.querySelector<HTMLElement>('[data-ink-chip-pos="top-right"]')
-    // The chip states the DIAGNOSTIC's normalized extra count (2).
-    expect(chip!.textContent).toBe('多余 2 空行')
+    // M1-RENDER-COUNT §5 — the chip states the RENDERED blank-row count (6 real
+    // trailing rows in this fixture); the Drawer detail states the same 6.
+    expect(chip!.textContent).toBe('多余 6 空行')
     // Active — a re-locate must never duplicate the marker nor leave a residue, and
     // the Drawer row set is unchanged (ONE lifecycle / one identity).
     internals.locateDiagnostic(String(diag.id))
@@ -989,7 +994,7 @@ describe('三方 DOM 一致性 — 文末多余空行（Passive / Active / Drawe
     expect(drawerRows().length).toBe(rows.length)
     const after = excessCarrier()
     if (after != null) {
-      expect(after.querySelector<HTMLElement>('[data-ink-chip-pos="top-right"]')!.textContent).toBe('多余 2 空行')
+      expect(after.querySelector<HTMLElement>('[data-ink-chip-pos="top-right"]')!.textContent).toBe('多余 6 空行')
     }
   })
 

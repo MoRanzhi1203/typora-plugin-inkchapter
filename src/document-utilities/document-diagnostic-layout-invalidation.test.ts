@@ -216,15 +216,17 @@ describe('ROOT_BLANK_LAYOUT_REDERIVE / ROOT_BLANK_SOURCE_AUTHORITY — 契约', 
     expect(body).toContain('this.commitBlockGapVisual(')
   })
 
-  it('§4 — Active 数量标签取规范化诊断超额数（不得用源码总数或渲染节点数）', () => {
-    // M1 — the label now states `actualBlankLines − passMaxBlankLines` from the
-    // diagnostic metadata, never the raw source total nor the DOM row count.
-    const idx = HOST_SRC.indexOf('ONE left label')
+  it('§4/M1-RENDER-COUNT — Active 数量标签取渲染层可见空行数（不得用源码总数）', () => {
+    // M1-RENDER-COUNT §4/§5 — the label must state the RENDERED blank-line count
+    // measured from the live editing DOM. Using `actualBlankLines −
+    // passMaxBlankLines` (a source `\n` count) is exactly the "正文多余3 / 面板
+    // 多余9" defect the user reported.
+    const idx = HOST_SRC.indexOf('RENDERED_ROWS:${renderedRowCount}')
     expect(idx).toBeGreaterThan(0)
-    const body = HOST_SRC.slice(idx, idx + 900)
-    expect(body).toContain("blankLineMarkerText(diag?.code ?? '', meta)")
-    expect(HOST_SRC).toContain('const activeLabelBlankCount = resolveInternalExcessCount(meta)')
-    expect(HOST_SRC).not.toContain('const labelBlankCount = visibleBlankLineCount')
+    expect(HOST_SRC).toContain('resolveRenderedBlankLineCounts({')
+    expect(HOST_SRC).toContain("renderedMarkerLabelText(renderedCounts, 'INTERNAL_EXCESS')")
+    expect(HOST_SRC).toContain('activeLabelBlankCount = renderedCounts.renderedBlankLineCount')
+    expect(HOST_SRC).toContain('activeLabelBlankCount === visibleBlankLineCount')
   })
 
   it('§2.2 — 源码计数缺失时绝不回退渲染行数（UNRESOLVED_SOURCE + 一次有界重解析）', () => {

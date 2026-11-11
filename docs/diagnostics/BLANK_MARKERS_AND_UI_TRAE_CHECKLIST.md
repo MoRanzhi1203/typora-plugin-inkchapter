@@ -134,6 +134,64 @@ Typora 已启动并加载本轮 bundle。以下项目保留人工验收：
 5. 100/125/150% DPI、深色主题、窗口缩放、侧栏拖拽：面板左右边界与顶部严格同宽（≤1 CSS px）。
 6. 内部连续空行：见上方 BLOCKED 事实；待策略决策后再验收。
 
+---
+
+## M1-LAYOUT / M1-RENDER-COUNT 本轮真实 GUI 采证（2026-11-12）
+
+### 1. 源码空行 ↔ 渲染空段落映射（`runtime/gui-acceptance/blank-dom-*.json`）
+
+| 夹具 | 源码行 | 源码空行 | 渲染空 `<p>` |
+| --- | --- | --- | --- |
+| `__gui-b0.md` | 2 | 0 | 0 |
+| `__gui-b1.md` | 3 | 1 | 0 |
+| `__gui-b2.md` | 4 | 2 | 0 |
+| `__gui-b4.md` | 6 | 4 | 1 |
+| `__gui-b9.md` | 11 | 9 | 4 |
+| `blank-end-excess`（文末 3 空行） | 6 | 3 | 2（含 1 个 allowed 行） |
+| `blank-end-missing` | 3 | 0 | 0（无幻影占位段落） |
+
+结论：**1 个 `\n` ≠ 1 个渲染空行**。用户可见数量只能取 `renderedBlankLineCount`；源码数仅在 source 模式并显式标注「源码」。
+
+### 2. 标记几何（真实 Typora 1.6.7，`snap-D/E/G.json`）
+
+| 项 | 实测 |
+| --- | --- |
+| `#write.left` | 390.4 |
+| 文本列 left | 420.4 |
+| 内部空行 rail | `left=-18px; width=18px` → 视口 l=402.4, w=18, `border-left` 2px（1.6px @125%）实线 |
+| 内部空行 chip | `多余 4 空行`（源码 9），L406.4 T183.2 |
+| 光标进入首个空行后 | chip 自动 T183.2 → T221.2（避让下一行），`collision=0` |
+| 文末多余 rail | 载体 rect 保持 l=420.4（`endBandAnchorDriftPx` 门禁），rail l=402.4 w=18 |
+| 文末多余 chip | `多余 2 空行`（源码 3 空行） |
+| 文末缺少 | `--ink-blank-marker-offset: -18px`；虚线 l=402.4 `1.6px dashed rgb(168,121,50)`；标签 `缺少 1 空行` l=412.4 |
+| 独立碰撞检查 | chip 246.2–266.2 vs 光标行 218–243.6 → `manualChipCaretCollision=false` |
+
+### 3. 修复链路（真实 GUI，`snap-H3.json`）
+
+- 预览：`将修改源码 1 处 · 将删除 3 行源码空行（源码第 4–6 行）`（渲染层显示「多余 2」）。
+- 确认后：面板关闭、诊断行清空、chip/rail 移除，`editor.getMarkdown()` = `…最后一段内容。\n`。
+- 真实按键：`Ctrl+Z` → 恢复 `\n\n\n\n`；`Ctrl+Y` → 回到修复态 `\n`（单事务一次撤销）。
+
+### 4. 本轮修复的两个真实缺陷（非 CSS 掩盖）
+
+1. **EOF chip 定位基座错误**：`paintDocEndExcessRows` 用「第一条尾随行」当 `containerTop`，而 chip 的 `top` 相对载体 → 每个文末标签下移约 38px，碰撞判定评估的矩形与实际绘制矩形不一致（假 PASS）。改为载体自身 `hostRect.top + localRect.top`，候选行仅取 `trailingBlankRects.slice(requiredRows)`（超额行），全部被光标占用时移到载体下方。
+2. **写回校验权威错误**：块级结构序列化器不保留文末换行（写回后 `…内容。`），导致真实成功的修复被判 `READBACK_MISMATCH`。新增 `readMarkdownExact`（文本镜像）作为唯一 READBACK 权威；基座仍用结构序列化器。
+
+### 5. 本轮验证
+
+- `npx vitest run`：345 文件 / 6006 测试 PASS。
+- `tsc --noEmit` PASS；`pnpm build` PASS。
+- `dist/main.js` SHA256：`B7C93D55D7B1E51A5074C8ECEFD6DF4EF506D75BDC45D4B740A920C2EC0F7897`。
+- 测试 vault 部署文件已还原为无探针的同一 `dist/main.js`；夹具已还原；采证脚本保留在 gitignored 的 `runtime/gui-acceptance/`。
+
+### 6. 仍未验收（NEEDS_MANUAL）
+
+1. 100% / 125% / 150% DPI、深色主题下的 rail 与 chip 位置（本轮仅在默认 DPI/浅色下实测）。
+2. 窗口缩放与侧栏拖拽到极窄时 `gutterPx` 收缩与 chip 重新安置（纯函数已测，真实窄窗未点验）。
+3. 文档锁定、多文档快速切换下的标记生命周期。
+4. 「同类修复（N 项）」多诊断一次写回 + 一次撤销（本轮为单项）。
+5. 内部空行诊断在 source 模式下的发布策略（上方既有 BLOCKED 事实未变）。
+
 DevTools 只读采证（可选）：
 ```js
 const panel = document.querySelector('.inkchapter-doc-toolbar-ui .inkchapter-doc-expand__panel')

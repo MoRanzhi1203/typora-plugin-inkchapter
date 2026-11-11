@@ -438,7 +438,7 @@ describe('TRAE EOF-ENTER-BLANK — 源事实/可见事实分离，Drawer 文案�
       expect(Number(a?.renderedVisibleBlankCount)).not.toBe(Number(a?.sourceBlankLineCount))
       internals.renderDrawer()
       if (warn) {
-        expect(drawerEofDetail()).toBe(`文末有 ${n} 个可见空行，建议保留 1 个。`)
+        expect(drawerEofDetail()).toBe(`文末有 ${n} 个可见空行（建议保留 1 个，多余 ${Math.max(0, n - 1)} 个）。`)
       } else {
         // retracted: no stale Drawer count either
         expect(a?.publishReason).toBe(`VISIBLE_WITHIN_ALLOWANCE_${Math.max(0, n - 1)}`)
@@ -463,6 +463,7 @@ describe('TRAE EOF-ENTER-BLANK — 源事实/可见事实分离，Drawer 文案�
       const detail = drawerEofDetail()
       expect(detail).toMatch(/^源码：/)
       expect(detail).toContain('7 个源码空行')
+      expect(detail).toContain('多余 6 个')
       expect(detail).not.toContain('可见空行')
     } finally {
       document.body.classList.remove('typora-sourceview-on')
@@ -483,8 +484,8 @@ describe('TRAE EOF-ENTER-BLANK — 源事实/可见事实分离，Drawer 文案�
       internals.renderDrawer()
       seen.push(drawerEofDetail())
     }
-    expect(seen[0]).toBe('文末有 3 个可见空行，建议保留 1 个。')
-    expect(seen[1]).toBe('文末有 2 个可见空行，建议保留 1 个。')
+    expect(seen[0]).toBe('文末有 3 个可见空行（建议保留 1 个，多余 2 个）。')
+    expect(seen[1]).toBe('文末有 2 个可见空行（建议保留 1 个，多余 1 个）。')
     // 1 and 0 are within allowance → retracted (no Drawer row at all)
     expect(seen[2]).not.toContain('可见空行')
     expect(seen[3]).not.toContain('可见空行')
@@ -603,9 +604,10 @@ describe('TRAE §B2/B3 — 文末片段集合随真实行数重建（不冻结/�
     setVisible(w.write, 3) // → 2 excess
     t.rederiveSyntheticEofVisualOnLayoutChange()
     expect(fragCount()).toBe(2)
-    // The label states the DIAGNOSTIC's normalized extra count (6); the fragment
-    // rows follow the real rendered rows (2). Geometry and text stay separate.
-    expect(chipText()).toBe('多余 6 空行')
+    // M1-RENDER-COUNT §5 — the label states the RENDERED blank-row count (3), the
+    // same number the Drawer headline states; the SOURCE extra (6) is never shown
+    // as the visible count. Fragment rows follow the painted excess rows (2).
+    expect(chipText()).toBe('多余 3 空行')
     expect(host.getEofFragmentSetEvidence().fragmentSetMismatchCount).toBe(0)
   })
 
@@ -624,9 +626,9 @@ describe('TRAE §B2/B3 — 文末片段集合随真实行数重建（不冻结/�
       t.rederiveSyntheticEofVisualOnLayoutChange()
       const expected = Math.max(0, n - 1)
       expect(fragCount(), `visible=${n}`).toBe(expected)
-      // The label never re-derives the count from the rows: it states the
-      // diagnostic's own extra count (10) for the whole sequence.
-      if (expected > 0) expect(chipText()).toBe('多余 10 空行')
+      // M1-RENDER-COUNT §5 — the label follows the RENDERED count for every step
+      // of the sequence (never the source extra), so text and geometry agree.
+      if (expected > 0) expect(chipText()).toBe(`多余 ${n} 空行`)
     }
     expect(host.getEofFragmentSetEvidence().fragmentSetMismatchCount).toBe(0)
   })

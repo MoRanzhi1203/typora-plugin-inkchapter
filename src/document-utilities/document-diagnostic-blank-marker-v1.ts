@@ -112,8 +112,101 @@ export function resolveEofMarkerSurfacePainted(input: {
   fillCount: number
   pluginOwnedBorderCount: number
   endpointForm: boolean
+  /** M1-LAYOUT — the rail is a separate gutter strip (no carrier border). */
+  railPainted?: boolean
 }): boolean {
   return input.fillCount >= 1
     || input.pluginOwnedBorderCount >= 1
     || input.endpointForm === true
+    || input.railPainted === true
+}
+
+/**
+ * §4/§5 — RENDER-LAYER blank-line counting authority (M1-RENDER-COUNT).
+ *
+ * The count the USER sees must come from the REAL Typora editing structure, NOT
+ * from the number of `\n` characters in the Markdown source. Measured mapping
+ * (Typora 1.6.7, WYSIWYG, fixture `__gui-b*.md`):
+ *
+ *   source blank lines | rendered empty `<p>` rows
+ *   -------------------+---------------------------
+ *          0           |            0   (soft break)
+ *          1           |            0
+ *          2           |            0
+ *          4           |            1
+ *          9           |            4
+ *   EOF 3 trailing      |            2
+ *   EOF 0 (clean file)  |            0   (no phantom placeholder row)
+ *
+ * Therefore `renderedBlankLineCount` is the number of REAL empty editable rows
+ * inside the region (see `resolveRenderedBlankRows`), never `sourceBlankLineCount`
+ * and never `actualBlankLines - passMaxBlankLines`.
+ *
+ * When the rendered structure cannot be proven, the result is explicitly
+ * `NOT_VERIFIED` with a null count — a source number must NEVER impersonate it.
+ */
+export type BlankLineCountConfidence = 'VERIFIED' | 'NOT_VERIFIED'
+
+export interface BlankLineMarkerCounts {
+  renderedBlankLineCount: number | null
+  allowedBlankLineCount: number
+  excessBlankLineCount: number | null
+  missingBlankLineCount: number | null
+  countEvidence: string
+  countConfidence: BlankLineCountConfidence
+}
+
+/**
+ * §5 — `excess = max(0, rendered − allowed)` and
+ *       `missing = max(0, required − rendered)`, computed ONLY from a verified
+ *       rendered count. `allowed` is the rule's own allowance (never re-guessed).
+ */
+export function resolveRenderedBlankLineCounts(input: {
+  kind: BlankLineMarkerKind
+  renderedBlankLineCount: number | null
+  allowedBlankLineCount: number
+  requiredBlankLineCount?: number
+  evidence: string
+}): BlankLineMarkerCounts {
+  const allowed = Math.max(0, Math.round(input.allowedBlankLineCount))
+  const rendered = input.renderedBlankLineCount
+  const verified = typeof rendered === 'number' && Number.isFinite(rendered) && rendered >= 0
+  if (!verified) {
+    return {
+      renderedBlankLineCount: null,
+      allowedBlankLineCount: allowed,
+      excessBlankLineCount: null,
+      missingBlankLineCount: null,
+      countEvidence: `${input.evidence}:RENDERED_UNKNOWN`,
+      countConfidence: 'NOT_VERIFIED',
+    }
+  }
+  const count = Math.round(rendered)
+  const required = Math.max(0, Math.round(input.requiredBlankLineCount ?? 1))
+  return {
+    renderedBlankLineCount: count,
+    allowedBlankLineCount: allowed,
+    excessBlankLineCount: Math.max(0, count - allowed),
+    missingBlankLineCount: Math.max(0, required - count),
+    countEvidence: input.evidence,
+    countConfidence: 'VERIFIED',
+  }
+}
+
+/**
+ * §5 — the label number for a verified rendered count.
+ *
+ * Excesso rules state the RENDERED blank-line count (the number the user can
+ * actually see and count in the editor) — the same number the Drawer headline
+ * states; the Drawer then spells out allowed/excess. The missing rule states the
+ * shortfall. Returns null when the rendered structure is not verified.
+ */
+export function renderedMarkerLabelText(counts: BlankLineMarkerCounts, kind: BlankLineMarkerKind): string | null {
+  if (counts.countConfidence !== 'VERIFIED') return null
+  if (kind === 'END_MISSING') {
+    const missing = counts.missingBlankLineCount
+    return missing == null ? null : formatBlankMarkerText('END_MISSING', missing)
+  }
+  const rendered = counts.renderedBlankLineCount
+  return rendered == null ? null : formatBlankMarkerText(kind, rendered)
 }

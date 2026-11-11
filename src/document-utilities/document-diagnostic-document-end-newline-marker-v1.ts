@@ -54,14 +54,18 @@ export function eofTailExcessDetailText(input: {
 }): string {
   const src = Math.max(0, Math.floor(input.sourceBlankLineCount))
   if (input.mode === 'source') {
-    return `源码：文末有 ${src} 个源码空行，建议保留 1 个。`
+    const srcExcess = Math.max(0, src - 1)
+    return `源码：文末有 ${src} 个源码空行（建议保留 1 个，多余 ${srcExcess} 个）。`
   }
   if (input.visibleBlankRowCount == null) {
     // §3.1 — an unverified visible count is DEFERRED, never stated as measured.
     return `文末空行数量待测量（源码事实：${src} 个空行），建议保留 1 个。`
   }
   const n = Math.max(0, Math.floor(input.visibleBlankRowCount))
-  return `文末有 ${n} 个可见空行，建议保留 1 个。`
+  // M1-RENDER-COUNT §5 — the Drawer states the SAME excess number as the chip
+  // ("多余 N 空行"), so the two can never disagree again.
+  const excess = Math.max(0, n - 1)
+  return `文末有 ${n} 个可见空行（建议保留 1 个，多余 ${excess} 个）。`
 }
 
 /**
