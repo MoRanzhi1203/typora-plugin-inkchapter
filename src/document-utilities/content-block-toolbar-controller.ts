@@ -45,6 +45,16 @@ export const CODE_FOLD_ATTR = 'data-inkchapter-code-folded'
 export const CODE_FOLD_SUMMARY_ATTR = 'data-inkchapter-fold-summary'
 /** 语言栏存在标记（CSS 用它为代码块预留顶部内边距）。 */
 export const CODE_LANGBAR_ATTR = 'data-inkchapter-langbar'
+
+/** 节点本身是不是一个已渲染的代码块 PRE。 */
+function isCodeFenceNode(node: Node): boolean {
+  return node.nodeType === 1 && (node as HTMLElement).matches(CODE_BLOCK_SELECTOR)
+}
+
+/** 节点是不是本插件自己的语言栏（被 Typora 重建 PRE 时判定为“需要补挂”）。 */
+function isOwnToolbarNode(node: Node): boolean {
+  return node.nodeType === 1 && (node as HTMLElement).classList.contains(CONTENT_TOOLBAR_CLASS)
+}
 /** 折叠预览行数（5 | 10）。 */
 export const CODE_FOLD_PREVIEW_ATTR = 'data-inkchapter-fold-preview'
 /**
@@ -338,6 +348,9 @@ export class ContentBlockToolbarController {
   /** CodeMirror 实例代次：实例被重建时让诊断标记签名失效。 */
   private readonly cmGenerations = new WeakMap<object, number>()
   private cmGenerationSeq = 0
+  /** 代码块被 Typora 重建时，在同一帧内把语言栏挂回去（避免“消失后重现”）。 */
+  private fenceObserver: MutationObserver | null = null
+  private immediateSyncScheduled = false
 
   private readonly onPointerOver: (ev: Event) => void
   private readonly onPointerOut: (ev: Event) => void
@@ -500,6 +513,21 @@ export class ContentBlockToolbarController {
     const root = this.boundRoot
     if (!root) return
 
+    this.syncFenceViews()
+
+    // 窗口/侧栏宽度变化后复用同一几何 pass 重新定位图片操作条（无新增观察器）。
+    if (this.imageVisible && this.imageTarget) this.positionImageBar()
+    this.auditViewportLayout()
+  }
+
+  /**
+   * 语言栏视图同步（唯一入口）。既由几何 pass 调用，也由代码块结构变更的
+   * 微任务调用，因此语言栏与代码块在同一帧出现。
+   */
+  private syncFenceViews(): void {
+    const root = this.boundRoot
+    if (!root) return
+
     const previewLines = this.previewLines()
     const fences = Array.from(root.querySelectorAll<HTMLElement>(CODE_BLOCK_SELECTOR))
     const seen = new Set<string>()
@@ -528,9 +556,40 @@ export class ContentBlockToolbarController {
     if (removed.length > 0) {
       this.opts.emitAudit?.('CONTENT-BLOCK-TOOLBAR-FOLD-RETIRED', { removedCount: removed.length })
     }
-    // 窗口/侧栏宽度变化后复用同一几何 pass 重新定位图片操作条（无新增观察器）。
-    if (this.imageVisible && this.imageTarget) this.positionImageBar()
-    this.auditViewportLayout()
+  }
+
+  /**
+   * 代码块结构变更：Typora 重建 PRE 或重新挂载 CodeMirror 时，语言栏被一并移除。
+   * 在同一个微任务里补回，避免出现“消失 → 20–40ms 后重现”的空窗。
+   * 只对「代码块节点增删」或「我们自己的语言栏被移除」响应，输入型变更不触发。
+   */
+  private onFenceStructureMutated(records: readonly MutationRecord[]): void {
+    if (this.disposed || !this.mounted) return
+    for (const record of records) {
+      for (const node of Array.from(record.addedNodes)) {
+        if (isCodeFenceNode(node)) {
+          this.scheduleImmediateFenceSync()
+          return
+        }
+      }
+      for (const node of Array.from(record.removedNodes)) {
+        if (isCodeFenceNode(node) || isOwnToolbarNode(node)) {
+          this.scheduleImmediateFenceSync()
+          return
+        }
+      }
+    }
+  }
+
+  private scheduleImmediateFenceSync(): void {
+    if (this.immediateSyncScheduled) return
+    this.immediateSyncScheduled = true
+    const flush = (): void => {
+      this.immediateSyncScheduled = false
+      if (this.disposed || !this.mounted) return
+      this.syncFenceViews()
+    }
+    try { queueMicrotask(flush) } catch { flush() }
   }
 
   /**
@@ -2186,9 +2245,23 @@ export class ContentBlockToolbarController {
     root.addEventListener('pointerdown', this.onPointerDown, { passive: true } as AddEventListenerOptions)
     root.addEventListener('focusin', this.onFocusIn, { passive: true } as AddEventListenerOptions)
     root.addEventListener('focusout', this.onFocusOut, { passive: true } as AddEventListenerOptions)
+    // 语言栏是代码块 PRE 的子节点：Typora 重建代码块（整篇 reload / 重新挂载
+    // CodeMirror）会把它一起带走，而宿主几何 pass 要晚 20–40ms 才补回来。这段空窗
+    // 就是用户看到的“TXT 纯文本 1 行”消失又出现。用同一个微任务同步补齐。
+    const view = root.ownerDocument?.defaultView ?? null
+    const ObserverCtor = view?.MutationObserver ?? null
+    if (ObserverCtor) {
+      this.fenceObserver = new ObserverCtor((records) => this.onFenceStructureMutated(records))
+      this.fenceObserver.observe(root, { childList: true, subtree: true })
+    }
   }
 
   private detachSurface(): void {
+    if (this.fenceObserver) {
+      this.fenceObserver.disconnect()
+      this.fenceObserver = null
+    }
+    this.immediateSyncScheduled = false
     const root = this.boundRoot
     if (root) {
       root.removeEventListener('pointerover', this.onPointerOver)

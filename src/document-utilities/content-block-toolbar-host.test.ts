@@ -114,6 +114,23 @@ describe('CONTENT-TOOLBAR-HOST mount', () => {
     expect(fence.querySelector('.CodeMirror')!.querySelector(`.${CONTENT_TOOLBAR_CLASS}`)).toBeNull()
   })
 
+  it('re-attaches the language bar in the SAME microtask when Typora rebuilds the fence body', async () => {
+    mountHost()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    const fence = document.getElementById('write')!.querySelector('pre.md-fences') as HTMLElement
+    const barSelector = `.${CONTENT_TOOLBAR_CLASS}--langbar`
+    expect(fence.querySelector(barSelector)).toBeTruthy()
+
+    // Typora 重新挂载 CodeMirror 时会清空 PRE 的子节点，语言栏随之消失。
+    fence.innerHTML = '<div class="CodeMirror"><pre class="CodeMirror-line"><span>x</span></pre></div>'
+    expect(fence.querySelector(barSelector)).toBeNull()
+
+    // 必须在同一帧（微任务）内补回，而不是等下一次几何 pass（原先会空窗 20–40ms）。
+    for (let i = 0; i < 4; i++) await Promise.resolve()
+    expect(fence.querySelector(barSelector)).toBeTruthy()
+    expect(fence.getAttribute(CODE_LANGBAR_ATTR)).toBe('true')
+  })
+
   it('keeps existing overlay surfaces intact (single root / toolbar / navigator / drawer)', () => {
     mountHost()
     expect(document.querySelectorAll(rootSelector)).toHaveLength(1)
