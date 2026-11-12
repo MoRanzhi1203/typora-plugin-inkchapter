@@ -231,12 +231,20 @@ console.log({
 
 ### A. 结论
 
-- 图片「必须独立成块」只有**一条**诊断入口：`FIGURE_BLOCK_STRUCTURE_INVALID`（error，`source-block` 定位）。
-- 上一轮新增的 `FIGURE_MIXED_WITH_TEXT`（warning）与本规则的 `MIXED_WITH_TEXT` 违规重叠，已整条移除
-  （规则表 / 文案 / 能力矩阵 / 修复注册表 / 生产者 / 冻结计数同步回收）。
+- 图片结构问题按**真实容器 / 组合**分类为 7 条稳定 ruleId（`source-block` 定位）：
+  - `FIGURE_IN_LIST`（错误）图片被设置为列表项
+  - `FIGURE_IN_QUOTE`（错误）图片被设置为引用块
+  - `FIGURE_IN_TABLE`（错误）图片嵌入表格单元格
+  - `FIGURE_MULTIPLE_SAME_BLOCK`（错误）多张图片位于同一段落
+  - `FIGURE_TEXT_MIXED`（警告）图片与正文位于同一段落
+  - `FIGURE_INLINE_FORMAT`（警告）图片包含不允许的行内格式
+  - `FIGURE_BLOCK_STRUCTURE_INVALID`（错误）图片独立块结构异常（通用兜底）
+- 每个 owning block **只发布一条**诊断，优先级：非法容器 > 多图同行 > 图文混排 > 行内格式 > 通用结构。
+- 上一轮新增的 `FIGURE_MIXED_WITH_TEXT` 与本规则族重复，仍保持整条移除。
 - 原规则此前"只报错不能修"的原因：`buildStandaloneFigureBlockFix()` 只存在于纯函数层，
   `V1_FIXERS` / `CAPABILITY_MATRIX` 中没有它的条目，UI 因此永远拿不到 `fix` 描述符。
-- 本轮把拆分能力接到原规则的修复器上：`FIGURE_BLOCK_STRUCTURE_INVALID_FIX`（`AUTO_SAFE`，`replace-block`）。
+- 本轮为每个可修复分类接入真实修复器（`AUTO_SAFE`，`replace-block`）：列表移除标记、引用移除全部层级、
+  多图 / 图文拆分、行内格式剥离；表格单元格保持 `UNAVAILABLE`（不渲染修复按钮）。
 
 ### B. 真实 Typora 验收（snap-BB）
 

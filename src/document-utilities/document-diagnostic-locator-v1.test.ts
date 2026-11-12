@@ -53,7 +53,7 @@ import {
 } from './document-diagnostic-locator-authority-v1'
 import { resolveDiagnosticLocation, hasLocatableLocation, isStaleSourceRevision, STALE_SOURCE_REVISION_REASON } from './document-diagnostic-location'
 import { computeDiagnosticLocationContract } from './document-diagnostic-location'
-import { resetFigureBlockStructureV515State } from './document-standalone-object-block-invariant-v515'
+import { resetFigureBlockStructureV515State, FIGURE_STRUCTURE_BLOCK_RULE_CODES } from './document-standalone-object-block-invariant-v515'
 
 const ASSET = 'assets/a.png'
 const SAME = 'same.png'
@@ -161,7 +161,7 @@ describe('V1-GATE — runtime gates + locate/cleanup separation', () => {
 
   it('the block locator never enters the inline duplicate resolver (§5/§41.4)', () => {
     const md = `before ![](${ASSET}) after\n`
-    const diag = byCode(inputOf(md), 'FIGURE_BLOCK_STRUCTURE_INVALID')[0]
+    const diag = structureOf(inputOf(md))[0]
     expect(diag.location?.kind).toBe('source-block')
     // A block locator resolves through `resolveSourceBlock`; with NO hook it
     // must still never report the inline duplicate reason.
@@ -184,7 +184,7 @@ describe('V1-GATE — runtime gates + locate/cleanup separation', () => {
     expect(isStaleSourceRevision(1, {})).toBe(false)
 
     const md = `before ![](${ASSET}) after\n`
-    const diag = byCode({ ...inputOf(md), sourceRevision: 4 }, 'FIGURE_BLOCK_STRUCTURE_INVALID')[0]
+    const diag = structureOf({ ...inputOf(md), sourceRevision: 4 })[0]
     expect((diag.location as { sourceRevision: number | null }).sourceRevision).toBe(4)
     const stale = resolveDiagnosticLocation(diag, diag.location, {
       documentKey: 'doc:v1',
@@ -239,10 +239,16 @@ function byCode(input: DocumentDiagnosticsInput, code: string) {
   return computeDocumentDiagnostics(input).diagnostics.filter(d => d.code === code)
 }
 
+/** Every block-level figure structure diagnostic (all classified rule ids). */
+function structureOf(input: DocumentDiagnosticsInput) {
+  return computeDocumentDiagnostics(input).diagnostics
+    .filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
+}
+
 describe('V1-PRODUCER — locator split', () => {
-  it('FIGURE_BLOCK_STRUCTURE_INVALID owns a BLOCK-level locator spanning the whole block', () => {
+  it('a figure structure rule owns a BLOCK-level locator spanning the whole block', () => {
     const md = `before ![](${ASSET}) after\n`
-    const d = byCode(inputOf(md), 'FIGURE_BLOCK_STRUCTURE_INVALID')[0]
+    const d = structureOf(inputOf(md))[0]
     expect(d.location?.kind).toBe('source-block')
     if (d.location?.kind !== 'source-block') throw new Error('not source-block')
     expect(d.location.locatorStrategy).toBe('OWNING_BLOCK')
@@ -253,7 +259,7 @@ describe('V1-PRODUCER — locator split', () => {
 
   it('two byte-identical invalid blocks get distinct block ordinals (§9/§37)', () => {
     const md = `before ![](${ASSET})\n\nbefore ![](${ASSET})\n`
-    const blocks = byCode(inputOf(md), 'FIGURE_BLOCK_STRUCTURE_INVALID')
+    const blocks = structureOf(inputOf(md))
     expect(blocks).toHaveLength(2)
     const ordinals = blocks.map(b => (b.location as { sourceBlockOrdinal: number }).sourceBlockOrdinal)
     expect(new Set(ordinals).size).toBe(2)
@@ -384,7 +390,7 @@ function makeHost(markdown: string): { h: DocumentUtilityOverlayHost; write: HTM
 function injectDiagnostics(h: DocumentUtilityOverlayHost, markdown: string): string[] {
   const r = computeDocumentDiagnostics(inputOf(markdown))
   const diags = r.diagnostics.filter(d =>
-    d.code === 'FIGURE_BLOCK_STRUCTURE_INVALID'
+    FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code)
     || d.code === 'FIGURE_MISSING_NAME'
     || d.code === 'FIGURE_LOCAL_IMAGE_MISSING')
   const snapshot = {
@@ -472,7 +478,7 @@ describe('V1-HOST — structure block locate (whole owning block)', () => {
     stubRect(p, () => ({ left: 300, top: 100, right: 700, bottom: 118 }))
     stubRangeRectsByOffset(() => [{ left: 300, top: 100, right: 700, bottom: 118 }])
     const ids = injectDiagnostics(h, md)
-    const structureId = ids.find(id => id.includes('FIGURE_BLOCK_STRUCTURE_INVALID'))
+    const structureId = ids.find(id => [...FIGURE_STRUCTURE_BLOCK_RULE_CODES].some(code => id.includes(code)))
     expect(structureId).toBeTruthy()
 
     await locate(h, structureId!)
@@ -572,7 +578,7 @@ describe('V1-HOST — duplicate same.png occurrence locate + broken-image fallba
         ? [{ left: 300, top: 200, right: 372, bottom: 218 }]
         : [{ left: 300, top: 300, right: 372, bottom: 318 }]))
     const ids = injectDiagnostics(h, md)
-    const structureId = ids.find(id => id.includes('FIGURE_BLOCK_STRUCTURE_INVALID'))!
+    const structureId = ids.find(id => [...FIGURE_STRUCTURE_BLOCK_RULE_CODES].some(code => id.includes(code)))!
     const mn = ids.filter(id => id.includes('FIGURE_MISSING_NAME'))
     const lm = ids.filter(id => id.includes('FIGURE_LOCAL_IMAGE_MISSING'))
     expect(mn).toHaveLength(2)
@@ -626,7 +632,7 @@ describe('V1-FIXTURE — the runtime fixture is fully locatable by construction'
     // ONLY the declared EXPECTED_MISSING resource is absent (fixture closure).
     const missing = (t: string): boolean => (t.split('/').pop() ?? t) === 'missing-local-image.png'
     const out = computeDocumentDiagnostics(inputOf(source, { missing }))
-    const structure = out.diagnostics.filter(d => d.code === 'FIGURE_BLOCK_STRUCTURE_INVALID')
+    const structure = out.diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
     const missingName = out.diagnostics.filter(d => d.code === 'FIGURE_MISSING_NAME')
     const localMissing = out.diagnostics.filter(d => d.code === 'FIGURE_LOCAL_IMAGE_MISSING')
 

@@ -21,12 +21,16 @@ import { parseFencedCodeBlocks } from './content-block-toolbar-code-source'
 import { isRangeProtected, parseDocumentSourceSyntax } from './document-source-syntax-authority'
 import {
   FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
+  FIGURE_INLINE_FORMAT_CODE,
+  FIGURE_IN_LIST_CODE,
+  FIGURE_IN_QUOTE_CODE,
+  FIGURE_MULTIPLE_SAME_BLOCK_CODE,
+  FIGURE_TEXT_MIXED_CODE,
   analyzeFigureStandaloneSourceBlocks,
+  buildFigureBlockFixText,
+  figureBlockFixRefusalReason,
   isFigureBlockAutoFixable,
-  isFigureBlockInTableSource,
-  splitStandaloneFigureBlockText,
   type FigureStandaloneSourceBlock,
-  type StandaloneContainerKind,
 } from './document-standalone-object-block-invariant-v515'
 import { parseImageSourceOccurrences, type ImageSourceOccurrence } from './document-resource-scanner'
 import {
@@ -396,70 +400,87 @@ function locateStructureBlock(
   return { blocker: blocker('STALE_DIAGNOSTIC', '目标图片块已变化，请重新检测后再修复。') }
 }
 
-function figureContainerLabel(kind: StandaloneContainerKind): string {
-  if (kind === 'list-item') return '列表项'
-  if (kind === 'blockquote') return '引用块'
-  if (kind === 'table') return '表格单元格'
-  if (kind === 'code') return '代码块'
-  return '段落'
+/**
+ * Figure structure repair — ONE block-level fixer family.
+ *
+ * The block itself is the unit of repair (one diagnostic per block), so a
+ * paragraph carrying two images and text is repaired in ONE write. The concrete
+ * transformation depends on the block's real container:
+ *   - paragraph / figure → split into text + one block per image;
+ *   - top-level list item → remove the list marker (images become blocks);
+ *   - blockquote → remove EVERY quote level of the image's own line;
+ *   - table / nested list / irregular quote → explicit refusal, no write.
+ */
+function buildFigureStructureFix(diagnostic: DocumentDiagnostic, ctx: FixContext) {
+  const located = locateStructureBlock(ctx, diagnostic)
+  if ('blocker' in located) return { blockers: [located.blocker] }
+  const { block } = located
+  if (block.result.decision === 'VALID_STANDALONE_FIGURE') {
+    return { blockers: [blocker('NOT_APPLICABLE', '该图片块已经独立成块，无需修复。')] }
+  }
+  const refusal = figureBlockFixRefusalReason(block)
+  if (refusal != null) {
+    return { blockers: [blocker('STRUCTURE_NOT_AUTO_FIXABLE', refusal)] }
+  }
+  if (!isFigureBlockAutoFixable(block)) {
+    return { blockers: [blocker('STRUCTURE_NOT_AUTO_FIXABLE', '该图片块的结构无法在不改变语义的前提下自动修复。')] }
+  }
+  const outcome = buildFigureBlockFixText({ source: ctx.markdown, block })
+  if (outcome.refusal != null) {
+    return { blockers: [blocker('STRUCTURE_NOT_AUTO_FIXABLE', outcome.refusal)] }
+  }
+  const before = ctx.markdown.slice(block.blockStart, block.blockEnd)
+  if (outcome.changed === false || outcome.text === before) {
+    return { blockers: [blocker('NOT_APPLICABLE', '该图片块无需修复。')] }
+  }
+  return {
+    patches: [{
+      start: block.blockStart,
+      end: block.blockEnd,
+      before,
+      after: outcome.text,
+      lineStart: block.startLine,
+      lineEnd: block.endLine,
+      kind: 'replace-block' as const,
+    }],
+  }
 }
 
-/**
- * `FIGURE_BLOCK_STRUCTURE_INVALID` — split ONE invalid owning block into
- * standalone blocks. The block itself is the unit of repair (one diagnostic per
- * block), so a paragraph carrying two images and text is repaired in ONE write.
- *
- * Refusals are explicit: a container payload (list / quote) or a table cell
- * needs invented container semantics, so it never pretends to be AUTO_SAFE.
- */
-export const FIGURE_BLOCK_STRUCTURE_INVALID_FIX: Fixer = {
-  code: FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
-  support: 'AUTO',
-  label: '拆成独立图片块',
-  build(diagnostic, ctx) {
-    const located = locateStructureBlock(ctx, diagnostic)
-    if ('blocker' in located) return { blockers: [located.blocker] }
-    const { block, occurrences } = located
-    if (block.result.decision === 'VALID_STANDALONE_FIGURE') {
-      return { blockers: [blocker('NOT_APPLICABLE', '该图片块已经独立成块，无需拆分。')] }
-    }
-    if (block.result.violations.includes('NON_STANDALONE_CONTAINER')) {
-      return {
-        blockers: [blocker(
-          'STRUCTURE_NOT_AUTO_FIXABLE',
-          `图片位于${figureContainerLabel(block.containerKind)}中。自动拆分需要重建容器结构，请手动把图片移到独立段落。`,
-        )],
-      }
-    }
-    if (isFigureBlockInTableSource(block.rawText)) {
-      return {
-        blockers: [blocker(
-          'STRUCTURE_NOT_AUTO_FIXABLE',
-          '图片位于表格内。拆分会破坏表格结构，请手动把图片移到独立段落。',
-        )],
-      }
-    }
-    if (!isFigureBlockAutoFixable(block)) {
-      return { blockers: [blocker('STRUCTURE_NOT_AUTO_FIXABLE', '该图片块的结构无法在不改变语义的前提下自动拆分。')] }
-    }
-    const after = splitStandaloneFigureBlockText({ source: ctx.markdown, block, occurrences })
-    const before = ctx.markdown.slice(block.blockStart, block.blockEnd)
-    if (after === before) {
-      return { blockers: [blocker('NOT_APPLICABLE', '该图片块无需拆分。')] }
-    }
-    return {
-      patches: [{
-        start: block.blockStart,
-        end: block.blockEnd,
-        before,
-        after,
-        lineStart: block.startLine,
-        lineEnd: block.endLine,
-        kind: 'replace-block',
-      }],
-    }
-  },
+function figureStructureFixer(code: string, label: string): Fixer {
+  return {
+    code,
+    support: 'AUTO',
+    label,
+    build(diagnostic, ctx) {
+      return buildFigureStructureFix(diagnostic, ctx)
+    },
+  }
 }
+
+export const FIGURE_BLOCK_STRUCTURE_INVALID_FIX = figureStructureFixer(
+  FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
+  '拆成独立图片块',
+)
+export const FIGURE_MULTIPLE_SAME_BLOCK_FIX = figureStructureFixer(
+  FIGURE_MULTIPLE_SAME_BLOCK_CODE,
+  '拆分为独立图片段落',
+)
+export const FIGURE_TEXT_MIXED_FIX = figureStructureFixer(
+  FIGURE_TEXT_MIXED_CODE,
+  '拆分图片与正文',
+)
+export const FIGURE_IN_LIST_FIX = figureStructureFixer(
+  FIGURE_IN_LIST_CODE,
+  '移除图片列表格式',
+)
+export const FIGURE_IN_QUOTE_FIX = figureStructureFixer(
+  FIGURE_IN_QUOTE_CODE,
+  '移除图片引用格式',
+)
+export const FIGURE_INLINE_FORMAT_FIX = figureStructureFixer(
+  FIGURE_INLINE_FORMAT_CODE,
+  '移除图片行内格式',
+)
 
 function parseCodeOrdinal(diagnostic: DocumentDiagnostic): number | null {
   const location = locationOf(diagnostic)
@@ -594,6 +615,11 @@ export function createDefaultDiagnosticFixRegistry(): DiagnosticFixRegistry {
     .register(LIST_EMPTY_ITEM_FIX)
     .register(FORMULA_SINGLE_LINE_BLOCK_FIX)
     .register(FIGURE_BLOCK_STRUCTURE_INVALID_FIX)
+    .register(FIGURE_MULTIPLE_SAME_BLOCK_FIX)
+    .register(FIGURE_TEXT_MIXED_FIX)
+    .register(FIGURE_IN_LIST_FIX)
+    .register(FIGURE_IN_QUOTE_FIX)
+    .register(FIGURE_INLINE_FORMAT_FIX)
     .register(CODE_LANGUAGE_FIX)
     .register(FIGURE_NAME_FIX)
     .register(CODE_NAME_FIX)

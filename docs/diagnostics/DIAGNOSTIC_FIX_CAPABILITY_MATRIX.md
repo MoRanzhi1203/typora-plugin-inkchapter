@@ -27,7 +27,13 @@
 | `FIGURE_MISSING_NAME` | `USER_INPUT_REQUIRED` | 源补丁：仅 `![alt]` | ✅ 同上 | fix-v2 |
 | `LIST_EMPTY_ITEM` | `AUTO_SAFE` | 源补丁：删除无内容的列表标记行 | ✅ 同上 | format-integrity-v1 / fix-v2 |
 | `FORMULA_SINGLE_LINE_BLOCK` | `AUTO_SAFE` | 源补丁：`$$x$$` → `$$` / 公式 / `$$` 三行 | ✅ 同上 | format-integrity-v1 / fix-v2 |
-| `FIGURE_BLOCK_STRUCTURE_INVALID` | `AUTO_SAFE` | 源补丁：把**一个**非法 owning block 拆成「文字块 / 每图一块」 | ✅ 同上 | v515 §11 / fix-v2 |
+| `FIGURE_BLOCK_STRUCTURE_INVALID` | `AUTO_SAFE` | 源补丁：把通用非法 owning block 拆成「文字块 / 每图一块」 | ✅ 同上 | v515 §11 / fix-v2 |
+| `FIGURE_MULTIPLE_SAME_BLOCK` | `AUTO_SAFE` | 源补丁：按原顺序拆成「每图一块」 | ✅ 同上 | v515 §8.2 / classification-v1 |
+| `FIGURE_TEXT_MIXED` | `AUTO_SAFE` | 源补丁：文字 / 图片 / 文字 三段 | ✅ 同上 | v515 §8.2 / classification-v1 |
+| `FIGURE_IN_LIST` | `AUTO_SAFE` | 源补丁：仅移除**顶层**列表项标记（无序 / 有序 / 任务列表） | ✅ 同上 | classification-v1 |
+| `FIGURE_IN_QUOTE` | `AUTO_SAFE` | 源补丁：移除图片所在行的**全部**引用层级 | ✅ 同上 | classification-v1 |
+| `FIGURE_INLINE_FORMAT` | `AUTO_SAFE` | 源补丁：移除直接包裹图片的强调标记后独立成块 | ✅ 同上 | classification-v1 |
+| `FIGURE_IN_TABLE` | `UNAVAILABLE` | 仅「定位 / 说明」；不渲染修复按钮 | — | classification-v1 |
 | `CODE_MISSING_NAME` | `USER_INPUT_REQUIRED` | `CaptionService.setCaption('code', …)` | ✅ 题注服务（不改 Markdown） | fix-v2 / fix-controller |
 | `TABLE_MISSING_NAME` | `USER_INPUT_REQUIRED` | `CaptionService.setCaption('table', …)` | ✅ 题注服务（不改 Markdown） | fix-v2 / fix-controller |
 | 其余全部规则 | `UNAVAILABLE` | 仅「定位 / 说明」 | — | 能力表默认值 |
@@ -35,11 +41,21 @@
 `CODE_MISSING_NAME` / `TABLE_MISSING_NAME` 在题注服务不可用时会降级为 `UNAVAILABLE`
 （不渲染空按钮）。
 
-`FIGURE_BLOCK_STRUCTURE_INVALID` 的自动修复只覆盖**段落块**：图片位于列表项 / 引用块 /
-表格单元格时，生产者把 `metadata.autoFixable` 记为 `false`，列表行**不渲染修复按钮**，
-修复器本身也以 `STRUCTURE_NOT_AUTO_FIXABLE` 明确拒绝并说明结构原因（Markdown 逐字节不变）。
-同一 owning block 只发布一条诊断，因此「多图同行 + 图文同行」是一次写回。
-图片「必须独立成块」只有这一条诊断入口，不存在第二条图文混排规则。
+图片结构规则按真实问题分类（`FIGURE_IN_LIST` / `FIGURE_IN_QUOTE` / `FIGURE_IN_TABLE` /
+`FIGURE_MULTIPLE_SAME_BLOCK` / `FIGURE_TEXT_MIXED` / `FIGURE_INLINE_FORMAT` /
+`FIGURE_BLOCK_STRUCTURE_INVALID`），每个 owning block **只发布一条**诊断（优先级：非法容器 >
+多图同行 > 图文混排 > 行内格式 > 通用结构）。
+
+可自动修复范围：
+- 段落 / 独立图片块：文字与每张图片各自成块；
+- **顶层**列表项：移除列表标记，图片成为独立段落（嵌套列表拒绝并说明原因）；
+- 引用块：移除图片所在行的全部 `>` 层级（其他引用文字保持原样）；
+- 行内格式：仅移除直接包裹图片的 `**` / `*` / `__` / `_` / `~~`。
+
+表格单元格 `FIGURE_IN_TABLE` 的生产者把 `metadata.autoFixable` 记为 `false`，列表行
+**不渲染修复按钮**，修复器本身也以 `STRUCTURE_NOT_AUTO_FIXABLE` 明确拒绝并说明原因
+（Markdown 逐字节不变）。同一 owning block 只发布一条诊断，因此「多图同行 + 图文同行」
+是一次写回。
 
 ## 3. 安全闸门（全部在真实写入前执行）
 

@@ -390,9 +390,18 @@
 ### Standalone Object Block Invariant（V5.15）
 
 - **唯一不变式**：`1 business object = 1 standalone owning block = 1 canonical business target`。统一抽象 `StandaloneObjectKind = figure | table | formula`；`analyzeStandaloneObjectBlock()`（`src/document-utilities/document-standalone-object-block-invariant-v515.ts`）输出 `StandaloneObjectBlockAnalysis`。
-- **图片结构 Gate 前置于 canonicalization**：同一块内混正文（`IMAGE_MIXED_WITH_TEXT`）/ 同块多图（`IMAGE_MULTIPLE_IN_BLOCK`）/ 非独立块（`IMAGE_NOT_STANDALONE_BLOCK`）→ 发布 `FIGURE_BLOCK_STRUCTURE_INVALID`（`severity=error`，每个 owning block **合并为 1 条**，UI 文案「图片块格式不规范」+ 三种 detail）；非法块**压制** `FIGURE_MISSING_NAME`、**禁止**编号/命名/caption，但**仍可定位**。
-- **合法/非法容器**：合法 `paragraph | figure`；非法 `list-item | blockquote | table | code`。自动修复 `buildStandaloneFigureBlockFix()`（**只拆块**、保文本/URL/数量/顺序、exactly-one-blank、幂等；`list/quote` 保持字节不变）。
-- **审计与门禁**：`DOCUMENT-DIAGNOSTIC-STANDALONE-OBJECT-BLOCK-AUDIT` / `FIGURE-BLOCK-STRUCTURE-AUDIT`；11 项 hard gate（全 0 = PASS）+ 正向 coverage。真机（`test/vault/runtime/smoke/Figure-Standalone-Block-Invariant-Test.md`）：`rawObjectCount=16 / canonicalObjectCount=3 / figureBlockCount=12 / normalBusinessTargetAdmittedCount=3 / excludedFromNormalTargetCount=9 / figureStructureDiagnosticCount=7 / gateDecision=PASS`，11 项 gate 全 0；Drawer 7 条 occurrence 按文档位置单调排序 `PASS`。
+- **图片结构 Gate 前置于 canonicalization**：同一块内混正文 / 同块多图 / 非独立容器 → 先按优先级分类为 **7 条稳定 ruleId 之一**（每个 owning block **只发布 1 条**）：
+  - `FIGURE_IN_LIST`（错误，图片被设置为列表项）
+  - `FIGURE_IN_QUOTE`（错误，图片被设置为引用块）
+  - `FIGURE_IN_TABLE`（错误，图片嵌入表格单元格）
+  - `FIGURE_MULTIPLE_SAME_BLOCK`（错误，多张图片位于同一段落）
+  - `FIGURE_TEXT_MIXED`（警告，图片与正文位于同一段落）
+  - `FIGURE_INLINE_FORMAT`（警告，图片包含不允许的行内格式）
+  - `FIGURE_BLOCK_STRUCTURE_INVALID`（错误，通用兜底「图片独立块结构异常」）
+
+  非法块**压制** `FIGURE_MISSING_NAME`、**禁止**编号/命名/caption，但**仍可定位**（`source-block`）。
+- **合法/非法容器**：合法 `paragraph | figure`；非法 `list-item | blockquote | table | code`。自动修复 `buildStandaloneFigureBlockFix()`：段落拆分、顶层列表移除标记、引用移除**全部**层级、行内格式剥离；表格 / 嵌套列表 / 非常规引用续行显式拒绝（`autoFixable=false`，无修复按钮）。拆分保文本/URL/数量/顺序、exactly-one-blank、幂等。
+- **审计与门禁**：`DOCUMENT-DIAGNOSTIC-STANDALONE-OBJECT-BLOCK-AUDIT` / `FIGURE-BLOCK-STRUCTURE-AUDIT`；11 项 hard gate（全 0 = PASS）+ 正向 coverage。真机（`test/vault/runtime/smoke/Figure-Standalone-Block-Invariant-Test.md`）：7 个非法块分类为 3×`FIGURE_TEXT_MIXED` + 2×`FIGURE_MULTIPLE_SAME_BLOCK` + 1×`FIGURE_IN_LIST` + 1×`FIGURE_IN_QUOTE`（错误 4 / 警告 3），一键修复后 0 条结构诊断、10 个独立图片块，gateDecision=PASS。
 - **残差（如实）**：`blockquote` 容器结构块（`> ![J](…)`）DOM owning-block 绑定失败 → locate `FAIL`（见 §8 PENDING）。
 
 ### Heading Multi-Target Exact Projection V2：Canonical Active Target Authority（V5.15）

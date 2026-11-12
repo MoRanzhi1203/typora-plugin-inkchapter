@@ -33,6 +33,14 @@ import {
   IMAGE_MULTIPLE_IN_BLOCK_CODE,
   IMAGE_NOT_STANDALONE_BLOCK_CODE,
   FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
+  FIGURE_IN_LIST_CODE,
+  FIGURE_IN_QUOTE_CODE,
+  FIGURE_IN_TABLE_CODE,
+  FIGURE_INLINE_FORMAT_CODE,
+  FIGURE_MULTIPLE_SAME_BLOCK_CODE,
+  FIGURE_TEXT_MIXED_CODE,
+  FIGURE_STRUCTURE_BLOCK_RULE_CODES,
+  classifyFigureStructureIssue,
   FIGURE_BLOCK_STRUCTURE_V515_GATE_KEYS,
   FIGURE_BLOCK_STRUCTURE_V515_GATE_LABELS,
   createFigureBlockStructureV515Counters,
@@ -52,6 +60,7 @@ import { parseImageSourceOccurrences, parseLocalLinkTargets } from './document-r
 import {
   FIGURE_BLOCK_STRUCTURE_INVALID_FIX,
   applyPatchesToMarkdown,
+  createDefaultDiagnosticFixRegistry,
   type FixContext,
 } from './document-diagnostic-fix-v1'
 import {
@@ -129,7 +138,7 @@ function diagnosticsOf(
 }
 
 function structureDiags(markdown: string) {
-  return diagnosticsOf(markdown).diagnostics.filter(d => d.code === FIGURE_BLOCK_STRUCTURE_INVALID_CODE)
+  return diagnosticsOf(markdown).diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
 }
 
 function countCode(markdown: string, code: string): number {
@@ -270,11 +279,12 @@ describe('V5.15 §6/§8/§9 — diagnostics: exclusion, merge, severity, locate'
     expect(countCode(`![](${ASSET})\n`, 'FIGURE_MISSING_NAME')).toBe(1)
   })
 
-  it('Case B/C/D — an invalid block publishes ONE error and NO normal figure rule', () => {
+  it('Case B/C/D — mixed text publishes ONE warning and NO normal figure rule', () => {
     for (const md of [`before ![](${ASSET})\n`, `![](${ASSET}) after\n`, `before ![](${ASSET}) after\n`]) {
       const d = structureDiags(md)
       expect(d).toHaveLength(1)
-      expect(d[0].severity).toBe('error')
+      expect(d[0].code).toBe(FIGURE_TEXT_MIXED_CODE)
+      expect(d[0].severity).toBe('warning')
       expect(countCode(md, 'FIGURE_MISSING_NAME')).toBe(0)
       expect(countCode(md, 'FIGURE_LOCAL_IMAGE_MISSING')).toBe(0)
     }
@@ -283,6 +293,7 @@ describe('V5.15 §6/§8/§9 — diagnostics: exclusion, merge, severity, locate'
   it('Case E — two images in one invalid block: 1 structure error, 0 FIGURE_MISSING_NAME', () => {
     const md = `![a](a.png) ![b](b.png)\n`
     expect(structureDiags(md)).toHaveLength(1)
+    expect(structureDiags(md)[0].code).toBe(FIGURE_MULTIPLE_SAME_BLOCK_CODE)
     expect(countCode(md, 'FIGURE_MISSING_NAME')).toBe(0)
     expect(countCode(md, 'FIGURE_LOCAL_IMAGE_MISSING')).toBe(0)
   })
@@ -301,11 +312,18 @@ describe('V5.15 §6/§8/§9 — diagnostics: exclusion, merge, severity, locate'
     expect(countCode(md, 'FIGURE_MISSING_NAME')).toBe(2)
   })
 
-  it('Case I/J — list / blockquote images get a structure error and no figure rule', () => {
+  it('Case I/J — list / blockquote images get their OWN structure error and no figure rule', () => {
+    const list = structureDiags(`- ![](${ASSET})\n`)
+    expect(list).toHaveLength(1)
+    expect(list[0].code).toBe(FIGURE_IN_LIST_CODE)
+    expect(list[0].severity).toBe('error')
+    expect(list[0].metadata?.autoFixable).toBe(true)
+    const quote = structureDiags(`> ![](${ASSET})\n`)
+    expect(quote).toHaveLength(1)
+    expect(quote[0].code).toBe(FIGURE_IN_QUOTE_CODE)
+    expect(quote[0].severity).toBe('error')
+    expect(quote[0].metadata?.autoFixable).toBe(true)
     for (const md of [`- ![](${ASSET})\n`, `> ![](${ASSET})\n`]) {
-      const d = structureDiags(md)
-      expect(d).toHaveLength(1)
-      expect(String(d[0].metadata?.violationKinds)).toBe('NON_STANDALONE_CONTAINER')
       expect(countCode(md, 'FIGURE_MISSING_NAME')).toBe(0)
       expect(countCode(md, 'FIGURE_LOCAL_IMAGE_MISSING')).toBe(0)
     }
@@ -323,9 +341,13 @@ describe('V5.15 §6/§8/§9 — diagnostics: exclusion, merge, severity, locate'
     expect(getFigureBlockStructureV515Counters().structureUnlocatableDiagnostic).toBe(0)
   })
 
-  it('§9/§26 — FIGURE_BLOCK_STRUCTURE_INVALID is an ERROR while FIGURE_MISSING_NAME stays a WARNING', () => {
-    const invalid = structureDiags(`before ![](${ASSET})\n`)[0]
-    expect(invalid.severity).toBe('error')
+  it('§9/§26 — structural container / multi-image errors vs mixed-text warnings', () => {
+    const multi = structureDiags(`before ![](${ASSET}) ![](${ASSET})\n`)[0]
+    expect(multi.code).toBe(FIGURE_MULTIPLE_SAME_BLOCK_CODE)
+    expect(multi.severity).toBe('error')
+    const mixed = structureDiags(`before ![](${ASSET}) after\n`)[0]
+    expect(mixed.code).toBe(FIGURE_TEXT_MIXED_CODE)
+    expect(mixed.severity).toBe('warning')
     const valid = diagnosticsOf(`![](${ASSET})\n`).diagnostics.find(d => d.code === 'FIGURE_MISSING_NAME')
     expect(valid?.severity).toBe('warning')
   })
@@ -465,11 +487,12 @@ describe('V5.15 §11/§12/§21 — auto-fix splits blocks only and is idempotent
     expect(structureDiags(output)).toHaveLength(0)
   })
 
-  it('§11 — a list item is diagnostics-only: the fix leaves it byte-identical', () => {
+  it('§4 — a simple list item loses its list marker and becomes a standalone image', () => {
     const before = '- ![a](a.png)\n'
     const { changed, output } = buildStandaloneFigureBlockFix(before)
-    expect(changed).toBe(false)
-    expect(output).toBe(before)
+    expect(changed).toBe(true)
+    expect(output).toBe('![a](a.png)\n')
+    expect(structureDiags(output)).toHaveLength(0)
   })
 
   it('a CRLF document keeps its line endings', () => {
@@ -574,30 +597,33 @@ describe('V5.15 §20/§34/§36 — the real runtime fixture', () => {
   const fixturePath = resolve(process.cwd(), 'test/vault/runtime/smoke/Figure-Standalone-Block-Invariant-Test.md')
   const source = readFileSync(fixturePath, 'utf8')
 
-  it('§34 — exactly 3 valid standalone figures and 7 merged structure errors', () => {
+  it('§34 — exactly 3 valid standalone figures and 7 classified structure issues', () => {
     const blocks = blocksOf(source)
     expect(blocks.filter(b => b.result.decision === 'VALID_STANDALONE_FIGURE')).toHaveLength(3) // A + G1 + G2
     expect(blocks.filter(b => b.result.decision !== 'VALID_STANDALONE_FIGURE')).toHaveLength(7) // B C D E F I J
     // every fixture image really exists on disk → no resource warning
     const out = diagnosticsOf(source, { missing: () => false })
-    expect(out.diagnostics.filter(d => d.code === FIGURE_BLOCK_STRUCTURE_INVALID_CODE)).toHaveLength(7)
-    expect(out.errorCount).toBe(7)
-    expect(out.warningCount).toBe(0)
+    const issues = out.diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
+    expect(issues).toHaveLength(7)
+    expect(issues.filter(d => d.code === FIGURE_TEXT_MIXED_CODE)).toHaveLength(3) // B C D
+    expect(issues.filter(d => d.code === FIGURE_MULTIPLE_SAME_BLOCK_CODE)).toHaveLength(2) // E F
+    expect(issues.filter(d => d.code === FIGURE_IN_LIST_CODE)).toHaveLength(1) // I
+    expect(issues.filter(d => d.code === FIGURE_IN_QUOTE_CODE)).toHaveLength(1) // J
+    expect(out.errorCount).toBe(4) // E F I J
+    expect(out.warningCount).toBe(3) // B C D
     // an invalid block never produces a normal figure naming diagnostic
     expect(out.diagnostics.filter(d => d.code === 'FIGURE_MISSING_NAME')).toHaveLength(0)
     expect(getFigureBlockStructureV515GateDecision().decision).toBe('PASS')
   })
 
-  it('§36 — the fix clears every FIXABLE structure error and is idempotent', () => {
+  it('§36 — the fix clears every structure issue (including list / quote) and is idempotent', () => {
     const once = buildStandaloneFigureBlockFix(source)
     expect(once.changed).toBe(true)
     const after = diagnosticsOf(once.output, { missing: () => false })
-      .diagnostics.filter(d => d.code === FIGURE_BLOCK_STRUCTURE_INVALID_CODE)
-    // only the diagnostics-only containers (list item / blockquote) survive
-    expect(after).toHaveLength(2)
-    expect(after.every(d => String(d.metadata?.violationKinds) === 'NON_STANDALONE_CONTAINER')).toBe(true)
-    // the 7 previously invalid images became valid standalone figures (3 + 7 = 10)
-    expect(blocksOf(once.output).filter(b => b.result.decision === 'VALID_STANDALONE_FIGURE')).toHaveLength(10)
+      .diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
+    expect(after).toHaveLength(0)
+    // E/F each carried two images → 3 + B/C/D + (E1,E2) + (F1,F2) + I + J = 12
+    expect(blocksOf(once.output).filter(b => b.result.decision === 'VALID_STANDALONE_FIGURE')).toHaveLength(12)
     // §12 — never 2+ consecutive blank lines
     expect(/\n[ \t]*\n[ \t]*\n/.test(once.output)).toBe(false)
     // §21 — every image token survives, in the original order
@@ -621,31 +647,44 @@ describe('V5.15 §11 — ONE fix entry: FIGURE_BLOCK_STRUCTURE_INVALID', () => {
 
   function structureDiagnostics(markdown: string) {
     return diagnosticsOf(markdown, { missing: () => false })
-      .diagnostics.filter(d => d.code === FIGURE_BLOCK_STRUCTURE_INVALID_CODE)
+      .diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
   }
 
   function fixMarkdown(markdown: string, index = 0): string {
     const diagnostic = structureDiagnostics(markdown)[index]
     expect(diagnostic).toBeTruthy()
-    const built = FIGURE_BLOCK_STRUCTURE_INVALID_FIX.build(diagnostic, fixCtx(markdown))
+    const fixer = createDefaultDiagnosticFixRegistry().get(diagnostic.code)
+    expect(fixer).toBeTruthy()
+    const built = fixer!.build(diagnostic, fixCtx(markdown))
     expect(built.blockers ?? []).toEqual([])
     expect(built.patches ?? []).toHaveLength(1)
     return applyPatchesToMarkdown(markdown, built.patches ?? [])
   }
 
-  it('is the ONLY image-structure entry: no FIGURE_MIXED_WITH_TEXT duplicate', () => {
-    const markdown = '前文 ![](a.png) 后文\n'
-    const codes = diagnosticsOf(markdown, { missing: () => false }).diagnostics.map(d => d.code)
-    expect(codes).not.toContain('FIGURE_MIXED_WITH_TEXT')
-    expect(codes.filter(c => c === FIGURE_BLOCK_STRUCTURE_INVALID_CODE)).toHaveLength(1)
+  it('ONE diagnostic per owning block, classified by its real problem', () => {
+    const mixed = structureDiagnostics('前文 ![](a.png) 后文\n')
+    expect(mixed).toHaveLength(1)
+    expect(mixed[0].code).toBe(FIGURE_TEXT_MIXED_CODE)
     // ONE row per owning block, never one row per image
-    const multi = diagnosticsOf('a ![](a.png) b ![](b.png) c\n', { missing: () => false }).diagnostics
-    expect(multi.filter(d => d.code === FIGURE_BLOCK_STRUCTURE_INVALID_CODE)).toHaveLength(1)
+    const multi = structureDiagnostics('a ![](a.png) b ![](b.png) c\n')
+    expect(multi).toHaveLength(1)
+    expect(multi[0].code).toBe(FIGURE_MULTIPLE_SAME_BLOCK_CODE)
   })
 
-  it('the capability matrix exposes a real auto fix for this rule', () => {
-    expect(describeFixCapability(FIGURE_BLOCK_STRUCTURE_INVALID_CODE).capability).toBe('AUTO_SAFE')
-    expect(describeFixCapability(FIGURE_BLOCK_STRUCTURE_INVALID_CODE).actionKind).toBe('source-patches')
+  it('the capability matrix exposes a real auto fix for every repairable class', () => {
+    for (const code of [
+      FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
+      FIGURE_MULTIPLE_SAME_BLOCK_CODE,
+      FIGURE_TEXT_MIXED_CODE,
+      FIGURE_IN_LIST_CODE,
+      FIGURE_IN_QUOTE_CODE,
+      FIGURE_INLINE_FORMAT_CODE,
+    ]) {
+      expect(describeFixCapability(code).capability, code).toBe('AUTO_SAFE')
+      expect(describeFixCapability(code).actionKind, code).toBe('source-patches')
+    }
+    // a table cell owns no safe fix → the UI must not offer a dead button
+    expect(describeFixCapability(FIGURE_IN_TABLE_CODE).capability).toBe('UNAVAILABLE')
   })
 
   it('two images on one line become two standalone image blocks', () => {
@@ -680,28 +719,31 @@ describe('V5.15 §11 — ONE fix entry: FIGURE_BLOCK_STRUCTURE_INVALID', () => {
     expect(structureDiagnostics('before `![](a.png)` after\n')).toEqual([])
   })
 
-  it('a list item / blockquote image is refused with an explicit reason (never rewritten)', () => {
-    for (const markdown of ['- ![](a.png)\n', '> ![](a.png)\n']) {
-      const diagnostic = structureDiagnostics(markdown)[0]
-      expect(diagnostic).toBeTruthy()
-      expect(diagnostic.metadata?.['autoFixable']).toBe(false)
-      const built = FIGURE_BLOCK_STRUCTURE_INVALID_FIX.build(diagnostic, fixCtx(markdown))
-      expect(built.patches ?? []).toEqual([])
-      expect((built.blockers ?? []).map(b => b.code)).toContain('STRUCTURE_NOT_AUTO_FIXABLE')
-    }
+  it('a simple list item image loses its list marker (unordered / ordered / task)', () => {
+    expect(fixMarkdown('- ![](a.png)\n')).toBe('![](a.png)\n')
+    expect(fixMarkdown('1. ![](a.png)\n')).toBe('![](a.png)\n')
+    expect(fixMarkdown('- [ ] ![](a.png)\n')).toBe('![](a.png)\n')
+    expect(fixMarkdown('- [x] ![图](a.png)\n')).toBe('![图](a.png)\n')
+  })
+
+  it('a simple blockquote image loses EVERY quote level', () => {
+    expect(fixMarkdown('> ![](a.png)\n')).toBe('![](a.png)\n')
+    expect(fixMarkdown('>> ![](a.png)\n')).toBe('![](a.png)\n')
+    expect(fixMarkdown('> > ![](a.png)\n')).toBe('![](a.png)\n')
   })
 
   it('a table image is refused so the table structure is never destroyed', () => {
     const markdown = '| 列A | 列B |\n| --- | --- |\n| ![](t.png) | x |\n'
     const diagnostic = structureDiagnostics(markdown)[0]
     expect(diagnostic).toBeTruthy()
+    expect(diagnostic.code).toBe(FIGURE_IN_TABLE_CODE)
     expect(diagnostic.metadata?.['autoFixable']).toBe(false)
     const built = FIGURE_BLOCK_STRUCTURE_INVALID_FIX.build(diagnostic, fixCtx(markdown))
     expect(built.patches ?? []).toEqual([])
     expect((built.blockers ?? []).map(b => b.code)).toContain('STRUCTURE_NOT_AUTO_FIXABLE')
   })
 
-  it('one click fixes every paragraph block, keeps refusals and is idempotent', () => {
+  it('one click fixes every repairable class (paragraph / list / quote) and is idempotent', () => {
     const markdown = '前文 ![](a.png) 后文\n\n![](b.png) ![](c.png)\n\n- ![](d.png)\n\n> ![](e.png)\n'
     const out = diagnosticsOf(markdown, { missing: () => false })
     const snapshot = {
@@ -720,14 +762,11 @@ describe('V5.15 §11 — ONE fix entry: FIGURE_BLOCK_STRUCTURE_INVALID', () => {
       { captionAvailable: true },
     )
     const { accepted, rejected } = selectNonConflictingPlans(plans)
-    expect(accepted).toHaveLength(2)
-    expect(rejected.map(p => (p.blockers[0]?.code ?? ''))).toEqual([
-      'STRUCTURE_NOT_AUTO_FIXABLE',
-      'STRUCTURE_NOT_AUTO_FIXABLE',
-    ])
+    expect(accepted).toHaveLength(4)
+    expect(rejected).toEqual([])
     const { next } = buildFixedMarkdown(markdown, accepted)
-    expect(next).toBe('前文\n\n![](a.png)\n\n后文\n\n![](b.png)\n\n![](c.png)\n\n- ![](d.png)\n\n> ![](e.png)\n')
-    expect(structureDiagnostics(next)).toHaveLength(2)
+    expect(next).toBe('前文\n\n![](a.png)\n\n后文\n\n![](b.png)\n\n![](c.png)\n\n![](d.png)\n\n![](e.png)\n')
+    expect(structureDiagnostics(next)).toHaveLength(0)
     expect(/\n[ \t]*\n[ \t]*\n/.test(next)).toBe(false)
     // idempotent: the already-fixed blocks never yield another patch
     const again = planAllAutoFixesV2(

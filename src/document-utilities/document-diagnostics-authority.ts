@@ -100,7 +100,7 @@ import {
   getFigureBlockStructureV515GateReport,
   getFigureBlockStructureV515CoverageReport,
   getFigureBlockStructureV515GateDecision,
-  FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
+  isFigureStructureBlockRuleCode,
   DOCUMENT_DIAGNOSTIC_STANDALONE_OBJECT_BLOCK_AUDIT,
   type FigureBlockStructureResult,
 } from './document-standalone-object-block-invariant-v515'
@@ -733,7 +733,8 @@ export class DocumentDiagnosticsAuthority {
     const blocked = results
       .filter(r => r.decision !== 'VALID_STANDALONE_FIGURE')
       .map(r => `${r.owningBlockIdentity}:${r.decision}`)
-    const structureDiagnosticCount = diagnostics.filter(d => d.code === FIGURE_BLOCK_STRUCTURE_INVALID_CODE).length
+    const structureDiagnosticCount = diagnostics
+      .filter(d => isFigureStructureBlockRuleCode(d.code)).length
     emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_STANDALONE_OBJECT_BLOCK_AUDIT, {
       documentKey,
       objectKind: 'figure',
@@ -786,7 +787,7 @@ export class DocumentDiagnosticsAuthority {
     const figureDiagnostics = diagnostics.filter(d =>
       d.code === 'FIGURE_MISSING_NAME'
       || d.code === 'FIGURE_LOCAL_IMAGE_MISSING'
-      || d.code === 'FIGURE_BLOCK_STRUCTURE_INVALID').length
+      || isFigureStructureBlockRuleCode(d.code)).length
     const signature = [
       this.ctx.authority.getDocumentKey() ?? '',
       facts.inlineCodeRangeCount, facts.fencedCodeRangeCount, facts.indentedCodeRangeCount,

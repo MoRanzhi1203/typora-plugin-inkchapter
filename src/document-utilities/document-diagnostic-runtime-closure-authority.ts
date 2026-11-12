@@ -200,17 +200,17 @@ export interface DocumentDiagnosticsCapabilityAudit {
 /** §31 — the FROZEN baseline counts the count-authority gate asserts. */
 export const DOCUMENT_DIAGNOSTIC_BASELINE = {
   // Format Integrity V1 (+2 implemented, user-visible source rules):
-  // LIST_EMPTY_ITEM / FORMULA_SINGLE_LINE_BLOCK. The image "standalone block"
-  // defect has exactly ONE entry (FIGURE_BLOCK_STRUCTURE_INVALID, V5.15) — no
-  // second source-level image rule is registered.
-  registeredRuleFamilyCount: 103,
-  resolvedDiagnosticCodeCount: 109,
-  userVisibleDiagnosticTypeCount: 99,
-  implementedFamilyCount: 99,
+  // LIST_EMPTY_ITEM / FORMULA_SINGLE_LINE_BLOCK. V5.15 §8.2 adds the SIX
+  // classified figure-structure families (list / quote / table / multiple /
+  // text-mixed / inline-format) — each with its own real producer + fixer.
+  registeredRuleFamilyCount: 109,
+  resolvedDiagnosticCodeCount: 115,
+  userVisibleDiagnosticTypeCount: 105,
+  implementedFamilyCount: 105,
   deferredFamilyCount: 4,
   plannedFamilyCount: 0,
   stateGuardCodeCount: 5,
-  contentDiagnosticCodeCount: 104,
+  contentDiagnosticCodeCount: 110,
 } as const
 
 // ── Internal authorities ────────────────────────────────────────────────────

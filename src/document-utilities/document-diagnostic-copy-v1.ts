@@ -134,7 +134,14 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   FIGURE_DUPLICATE_NAME: 510,
   FIGURE_LOCAL_IMAGE_MISSING: 520,
   FIGURE_IMAGE_FORMAT_UNSUPPORTED: 525,
-  FIGURE_BLOCK_STRUCTURE_INVALID: 530,
+  // Structure classes: illegal container first, then composition, then inline.
+  FIGURE_IN_LIST: 530,
+  FIGURE_IN_QUOTE: 531,
+  FIGURE_IN_TABLE: 532,
+  FIGURE_MULTIPLE_SAME_BLOCK: 533,
+  FIGURE_TEXT_MIXED: 534,
+  FIGURE_INLINE_FORMAT: 535,
+  FIGURE_BLOCK_STRUCTURE_INVALID: 536,
   // ── table ─────────────────────────────────────────────────────────────────
   TABLE_MISSING_NAME: 600,
   TABLE_DUPLICATE_NAME: 610,
@@ -246,6 +253,12 @@ interface DocumentDiagnosticCopySpec {
   title?: string
   description: string
   suggestion: string
+  /**
+   * §4.1 — prefer the producer's REAL detail (the concrete cause: list kind,
+   * image count, container, …) over the static description. The static text is
+   * only the fallback when the producer emitted no detail.
+   */
+  dynamicDetail?: boolean
 }
 
 /**
@@ -304,7 +317,13 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   FIGURE_DUPLICATE_NAME: { description: '多张图片使用了相同的图名。', suggestion: '修改图名以互相区分。' },
   FIGURE_LOCAL_IMAGE_MISSING: { description: '图片引用的本地文件无法解析。', suggestion: '检查图片路径，或将图片重新插入文档。' },
   FIGURE_IMAGE_FORMAT_UNSUPPORTED: { title: '图片格式不支持', description: '图片语法引用的文件扩展名明确不是图片格式。', suggestion: '改为 png/jpg/gif/svg/webp 等图片文件，或修正引用路径。' },
-  FIGURE_BLOCK_STRUCTURE_INVALID: { title: '图片必须作为独立块插入', description: '图片必须独占一个段落，且每个图片块只能包含一张图片；不能与正文或其他图片同段，也不能放在列表项、引用块或表格中。', suggestion: '将图片拆成独立段落：文字一段、每张图片各一段，前后保留空行。' },
+  FIGURE_BLOCK_STRUCTURE_INVALID: { title: '图片独立块结构异常', description: '图片块不满足独立块结构要求。', suggestion: '将图片拆成独立段落：文字一段、每张图片各一段，前后保留空行。' },
+  FIGURE_MULTIPLE_SAME_BLOCK: { title: '多张图片位于同一段落', description: '同一段落中存在多张图片，图片块只能包含一张图片。', suggestion: '将每张图片拆分为独立的图片段落，按原顺序排列并保留前后空行。', dynamicDetail: true },
+  FIGURE_TEXT_MIXED: { title: '图片与正文位于同一段落', description: '同一段落中同时存在图片和正文内容。', suggestion: '将图片从段落中拆出为独立图片段落，正文保留原位置。', dynamicDetail: true },
+  FIGURE_IN_LIST: { title: '图片被设置为列表项', description: '图片位于列表项中，图片不能作为列表内容。', suggestion: '移除图片所在列表项（含任务列表）的列表标记，使图片成为独立段落。', dynamicDetail: true },
+  FIGURE_IN_QUOTE: { title: '图片被设置为引用块', description: '图片位于引用块中，图片不能作为引用内容。', suggestion: '移除图片所在段落的全部引用层级，使图片成为独立段落。', dynamicDetail: true },
+  FIGURE_IN_TABLE: { title: '图片嵌入表格单元格', description: '图片位于表格单元格中，表格结构不允许独立图片块。', suggestion: '手动将图片移出表格并作为独立段落插入，保持表格其余单元格不变。', dynamicDetail: true },
+  FIGURE_INLINE_FORMAT: { title: '图片包含不允许的行内格式', description: '图片被加粗、斜体或删除线等行内格式包裹。', suggestion: '移除图片外层的行内格式标记，并将图片独立成块。', dynamicDetail: true },
   // ── table ─────────────────────────────────────────────────────────────────
   TABLE_MISSING_NAME: { title: '表格缺少表名', description: '表格没有名称。', suggestion: '为表格补充表名。' },
   TABLE_DUPLICATE_NAME: { description: '多张表格使用了相同的表名。', suggestion: '修改表名以互相区分。' },
@@ -405,9 +424,12 @@ export function resolveDiagnosticCopy(input: ResolveDiagnosticCopyInput): Docume
   const normalizedMessage = normalizeDiagnosticText(input.message)
   const normalizedDetail = normalizeDiagnosticText(input.detail)
   const title = spec?.title ?? (normalizedMessage !== '' ? normalizedMessage : code)
+  const description = spec?.dynamicDetail === true && normalizedDetail !== ''
+    ? normalizedDetail
+    : (spec?.description ?? normalizedDetail)
   return {
     title,
-    description: spec?.description ?? normalizedDetail,
+    description,
     suggestion: spec?.suggestion ?? '',
   }
 }

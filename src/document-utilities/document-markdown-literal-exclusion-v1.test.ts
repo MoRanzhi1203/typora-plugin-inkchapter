@@ -37,7 +37,7 @@ import {
 } from './document-resource-scanner'
 import { computeDocumentDiagnostics, buildFigureSourceOccurrences } from './document-diagnostics'
 import type { DocumentDiagnosticsInput, DiagnosticLinkFact } from './document-diagnostics'
-import { analyzeFigureStandaloneSourceBlocks } from './document-standalone-object-block-invariant-v515'
+import { analyzeFigureStandaloneSourceBlocks, FIGURE_STRUCTURE_BLOCK_RULE_CODES } from './document-standalone-object-block-invariant-v515'
 
 // ── §4/§7/§9/§22 — the literal range authority ─────────────────────────────
 
@@ -279,7 +279,7 @@ describe('LITERAL-DIAGNOSTIC — literal syntax produces no business diagnostic'
   it('same-paragraph literal fake + real figure: only the REAL image counts (§24)', () => {
     const md = 'before `![](fake.png)` ![real](assets/real.png)\n'
     const out = computeDocumentDiagnostics(inputOf(md, () => false))
-    const structure = out.diagnostics.filter(d => d.code === 'FIGURE_BLOCK_STRUCTURE_INVALID')
+    const structure = out.diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
     expect(structure).toHaveLength(1)
     expect(String(structure[0].metadata?.rawObjectCount)).toBe('1')
     expect(String(structure[0].metadata?.violationKinds)).toBe('MIXED_WITH_TEXT')
@@ -348,7 +348,7 @@ describe('LITERAL-GATE — the literal exclusion hard gates', () => {
   it('a LEGITIMATE mixed block owning a real image is never a false positive', () => {
     const md = 'before `![](fake.png)` ![real](assets/real.png)\n'
     const out = computeDocumentDiagnostics(inputOf(md, () => false))
-    const structure = out.diagnostics.filter(d => d.code === 'FIGURE_BLOCK_STRUCTURE_INVALID')
+    const structure = out.diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
     expect(structure).toHaveLength(1)
     const admitted = scanAdmittedReferenceCounts(md)
     const evaluated = evaluateLiteralExclusionAgainstDiagnostics({
@@ -403,7 +403,7 @@ describe('LITERAL-FIXTURE — the runtime fixture and the alt-binding regression
     expect(evaluated.literalFalsePositiveDiagnosticIds).toEqual([])
     expect(evaluateFigureLiteralExclusionV1Gates(evaluated.counters).decision).toBe('PASS')
     // the ONLY figure diagnostic is the legitimate Case G mixed block
-    expect(out.diagnostics.filter(d => d.code === 'FIGURE_BLOCK_STRUCTURE_INVALID')).toHaveLength(1)
+    expect(out.diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))).toHaveLength(1)
     expect(out.diagnostics.filter(d => d.code === 'FIGURE_MISSING_NAME')).toHaveLength(0)
     expect(out.diagnostics.filter(d => d.code === 'FIGURE_LOCAL_IMAGE_MISSING')).toHaveLength(0)
   })
@@ -418,7 +418,7 @@ describe('LITERAL-FIXTURE — the runtime fixture and the alt-binding regression
 
     const out = computeDocumentDiagnostics(inputOf(altFixture, () => false))
     const firstLineStructure = out.diagnostics.filter(d =>
-      d.code === 'FIGURE_BLOCK_STRUCTURE_INVALID'
+      FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code)
       && (d.location as { startLine?: number } | undefined)?.startLine === 2)
     expect(firstLineStructure).toEqual([])
 

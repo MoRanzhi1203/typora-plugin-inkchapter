@@ -24,6 +24,17 @@
  */
 import type { DiagnosticLocation } from './diagnostics-types'
 
+/** §3 — every block-level figure structure rule (kept import-free: no cycle). */
+const BLOCK_LEVEL_FIGURE_RULES: ReadonlySet<string> = new Set([
+  'FIGURE_BLOCK_STRUCTURE_INVALID',
+  'FIGURE_MULTIPLE_SAME_BLOCK',
+  'FIGURE_TEXT_MIXED',
+  'FIGURE_IN_LIST',
+  'FIGURE_IN_QUOTE',
+  'FIGURE_IN_TABLE',
+  'FIGURE_INLINE_FORMAT',
+])
+
 // ── Audit events ─────────────────────────────────────────
 
 /** §26 — the ONE figure locator audit (locator kind + runtime resolve facts). */
@@ -41,14 +52,14 @@ export type FigureDiagnosticLocatorKind = 'source-block' | 'figure-occurrence' |
  * generic inline `source-range` locator.
  */
 export function figureDiagnosticLocatorKindForRule(code: string): FigureDiagnosticLocatorKind {
-  if (code === 'FIGURE_BLOCK_STRUCTURE_INVALID') return 'source-block'
+  if (BLOCK_LEVEL_FIGURE_RULES.has(code)) return 'source-block'
   if (code === 'FIGURE_MISSING_NAME' || code === 'FIGURE_LOCAL_IMAGE_MISSING') return 'figure-occurrence'
   return 'other'
 }
 
 /** True when this code is an image rule that must NEVER use the inline resolver. */
 export function isBlockLevelFigureRule(code: string): boolean {
-  return code === 'FIGURE_BLOCK_STRUCTURE_INVALID'
+  return BLOCK_LEVEL_FIGURE_RULES.has(code)
 }
 
 /** True when the location must never fall back to the inline duplicate resolver. */

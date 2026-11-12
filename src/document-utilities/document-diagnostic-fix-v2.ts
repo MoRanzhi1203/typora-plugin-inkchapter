@@ -23,7 +23,12 @@ import type { DocumentDiagnostic, DocumentDiagnosticsSnapshot } from './diagnost
 import {
   CODE_LANGUAGE_FIX,
   FIGURE_BLOCK_STRUCTURE_INVALID_FIX,
+  FIGURE_INLINE_FORMAT_FIX,
+  FIGURE_IN_LIST_FIX,
+  FIGURE_IN_QUOTE_FIX,
+  FIGURE_MULTIPLE_SAME_BLOCK_FIX,
   FIGURE_NAME_FIX,
+  FIGURE_TEXT_MIXED_FIX,
   FORMULA_SINGLE_LINE_BLOCK_FIX,
   INTERNAL_BLANK_LINES_FIX,
   LIST_EMPTY_ITEM_FIX,
@@ -89,6 +94,37 @@ const CAPABILITY_MATRIX: Readonly<Record<string, FixCapabilityDescriptor>> = Obj
     code: 'FIGURE_BLOCK_STRUCTURE_INVALID',
     capability: 'AUTO_SAFE',
     label: '拆成独立图片块',
+    actionKind: 'source-patches',
+  },
+  // V5.15 §8.2 — each classified structure issue owns its own real action.
+  FIGURE_MULTIPLE_SAME_BLOCK: {
+    code: 'FIGURE_MULTIPLE_SAME_BLOCK',
+    capability: 'AUTO_SAFE',
+    label: '拆分为独立图片段落',
+    actionKind: 'source-patches',
+  },
+  FIGURE_TEXT_MIXED: {
+    code: 'FIGURE_TEXT_MIXED',
+    capability: 'AUTO_SAFE',
+    label: '拆分图片与正文',
+    actionKind: 'source-patches',
+  },
+  FIGURE_IN_LIST: {
+    code: 'FIGURE_IN_LIST',
+    capability: 'AUTO_SAFE',
+    label: '移除图片列表格式',
+    actionKind: 'source-patches',
+  },
+  FIGURE_IN_QUOTE: {
+    code: 'FIGURE_IN_QUOTE',
+    capability: 'AUTO_SAFE',
+    label: '移除图片引用格式',
+    actionKind: 'source-patches',
+  },
+  FIGURE_INLINE_FORMAT: {
+    code: 'FIGURE_INLINE_FORMAT',
+    capability: 'AUTO_SAFE',
+    label: '移除图片行内格式',
     actionKind: 'source-patches',
   },
   CODE_MISSING_LANGUAGE: {
@@ -238,6 +274,11 @@ const V1_FIXERS: Readonly<Record<string, Fixer>> = Object.freeze({
   LIST_EMPTY_ITEM: LIST_EMPTY_ITEM_FIX,
   FORMULA_SINGLE_LINE_BLOCK: FORMULA_SINGLE_LINE_BLOCK_FIX,
   FIGURE_BLOCK_STRUCTURE_INVALID: FIGURE_BLOCK_STRUCTURE_INVALID_FIX,
+  FIGURE_MULTIPLE_SAME_BLOCK: FIGURE_MULTIPLE_SAME_BLOCK_FIX,
+  FIGURE_TEXT_MIXED: FIGURE_TEXT_MIXED_FIX,
+  FIGURE_IN_LIST: FIGURE_IN_LIST_FIX,
+  FIGURE_IN_QUOTE: FIGURE_IN_QUOTE_FIX,
+  FIGURE_INLINE_FORMAT: FIGURE_INLINE_FORMAT_FIX,
   CODE_MISSING_LANGUAGE: CODE_LANGUAGE_FIX,
   FIGURE_MISSING_NAME: FIGURE_NAME_FIX,
 })

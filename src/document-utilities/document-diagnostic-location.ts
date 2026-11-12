@@ -342,6 +342,12 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   HEADING_DUPLICATE_IDENTITY: 'error',
   HEADING_NUMBER_SEQUENCE_INVALID: 'warning',
   FIGURE_BLOCK_STRUCTURE_INVALID: 'error',
+  FIGURE_MULTIPLE_SAME_BLOCK: 'error',
+  FIGURE_TEXT_MIXED: 'warning',
+  FIGURE_IN_LIST: 'error',
+  FIGURE_IN_QUOTE: 'error',
+  FIGURE_IN_TABLE: 'error',
+  FIGURE_INLINE_FORMAT: 'warning',
   TABLE_BLOCK_STRUCTURE_INVALID: 'error',
   FORMULA_BLOCK_STRUCTURE_INVALID: 'error',
   HEADING_AUTO_NUMBER_CONFLICT: 'error',
@@ -692,6 +698,15 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   // locator: the target is the WHOLE owning block (never one image token) and
   // the rule never enters the inline occurrence / duplicate-range resolver.
   FIGURE_BLOCK_STRUCTURE_INVALID: rule('FIGURE_BLOCK_STRUCTURE_INVALID', 'figure', 'source-block'),
+  // V5.15 §8.2 — ONE primary issue per owning block, each with its own real
+  // name / severity. All share the block-level `source-block` locator (never the
+  // inline occurrence resolver).
+  FIGURE_MULTIPLE_SAME_BLOCK: rule('FIGURE_MULTIPLE_SAME_BLOCK', 'figure', 'source-block'),
+  FIGURE_TEXT_MIXED: rule('FIGURE_TEXT_MIXED', 'figure', 'source-block'),
+  FIGURE_IN_LIST: rule('FIGURE_IN_LIST', 'figure', 'source-block'),
+  FIGURE_IN_QUOTE: rule('FIGURE_IN_QUOTE', 'figure', 'source-block'),
+  FIGURE_IN_TABLE: rule('FIGURE_IN_TABLE', 'figure', 'source-block'),
+  FIGURE_INLINE_FORMAT: rule('FIGURE_INLINE_FORMAT', 'figure', 'source-block'),
   FIGURE_MANUAL_NUMBER_PREFIX: rule('FIGURE_MANUAL_NUMBER_PREFIX', 'figure', 'figure-occurrence', { area: 'caption-numbering', scope: 'object' }),
   // B2c — an image token whose destination PROVABLY points at a non-image file.
   FIGURE_IMAGE_FORMAT_UNSUPPORTED: rule('FIGURE_IMAGE_FORMAT_UNSUPPORTED', 'figure', 'source-range', {

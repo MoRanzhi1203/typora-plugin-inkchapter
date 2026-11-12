@@ -410,7 +410,13 @@ B1 后注册表与生产器一致；对应的 target-group / block-node 行为�
 | FIGURE_MISSING_NAME | 图片缺少图名 | 警告 | 统一图片源码 occurrence 的 alt 文本 trim 后为空（source-first；坏图也可命中） | 单目标·图片出现位置 | 已注册·执行 | document-diagnostics.ts:3004-3097 | document-diagnostics-v4-missing-image-source-first-7r3-11-8b80.test.ts |
 | FIGURE_DUPLICATE_NAME | 重复的图名「…」 | 警告 | 两个及以上图片的图名（alt）相同（空名不参与） | 多目标（1…N） | 已注册·执行 | document-diagnostics.ts:2837-2850 | NONE（仅文案 / 排序测试） |
 | FIGURE_LOCAL_IMAGE_MISSING | 本地图片不存在：<路径> | 警告 | 图片目标是本地相对路径且文件不存在（远程 / data URL 不参与；source-first + DOM fallback 去重） | 单目标·图片出现位置 | 已注册·执行 | document-diagnostics.ts:2860-2994, 3213-3257 | document-diagnostics-v4-missing-image-source-first-7r3-11-8b80.test.ts |
-| FIGURE_BLOCK_STRUCTURE_INVALID | 图片必须作为独立块插入 | 错误 | 图片 owning block 不满足独立块不变量（与文字混排、同块多图、列表/引用容器等）；命中后抑制该块的普通图片规则 | 单目标·整个违规块 | 已注册·执行 | document-diagnostics.ts:2599-2674 | document-diagnostic-fixture-resource-preflight-v1.test.ts:645 |
+| FIGURE_BLOCK_STRUCTURE_INVALID | 图片独立块结构异常 | 错误 | 图片 owning block 不满足独立块不变量，且未命中更具体的分类（通用兜底）；命中后抑制该块的普通图片规则 | 单目标·整个违规块 | 已注册·执行 | document-diagnostics.ts:3017-3105 | document-standalone-object-block-invariant-v515.test.ts |
+| FIGURE_IN_LIST | 图片被设置为列表项 | 错误 | 图片位于（无序 / 有序 / 任务）列表项中 | 单目标·整个列表 owning block | 已注册·执行 | document-diagnostics.ts:3017-3105 | document-figure-issue-classification-v1.test.ts |
+| FIGURE_IN_QUOTE | 图片被设置为引用块 | 错误 | 图片位于（多层）引用块中 | 单目标·整个引用 owning block | 已注册·执行 | document-diagnostics.ts:3017-3105 | document-figure-issue-classification-v1.test.ts |
+| FIGURE_IN_TABLE | 图片嵌入表格单元格 | 错误 | 图片 token 位于 GFM 表格行内（无法无损拆分） | 单目标·整个表格 owning block | 已注册·执行 | document-diagnostics.ts:3017-3105 | document-figure-issue-classification-v1.test.ts |
+| FIGURE_MULTIPLE_SAME_BLOCK | 多张图片位于同一段落 | 错误 | 同一段落 owning block 内 ≥2 张图片 | 单目标·整个违规块 | 已注册·执行 | document-diagnostics.ts:3017-3105 | document-figure-issue-classification-v1.test.ts |
+| FIGURE_TEXT_MIXED | 图片与正文位于同一段落 | 警告 | 同一段落 owning block 内图片与真实正文共存 | 单目标·整个违规块 | 已注册·执行 | document-diagnostics.ts:3017-3105 | document-figure-issue-classification-v1.test.ts |
+| FIGURE_INLINE_FORMAT | 图片包含不允许的行内格式 | 警告 | 图片被 `**` / `*` / `__` / `_` / `~~` 直接包裹 | 单目标·整个违规块 | 已注册·执行 | document-diagnostics.ts:3017-3105 | document-figure-issue-classification-v1.test.ts |
 | FIGURE_MANUAL_NUMBER_PREFIX | 图名包含手工编号 | 警告 | 图片自动编号开启 + 图片 alt 带手工编号 | 单目标·图片出现位置 | 已注册·条件启用 | document-diagnostics.ts:3103-3195 | document-diagnostics-numbering-anchor-integrity-v1.test.ts:8 |
 | FIGURE_ORPHAN_CAPTION | 图片题注没有对应对象 | 警告 | 图片题注投影存在，但无法通过 canonical owner map 绑定到图片对象 | 单目标·题注投影 | 已注册·执行 | document-diagnostics-caption-integrity-v1.ts:152-166 | document-diagnostics-caption-integrity-v1.test.ts:22 |
 | FIGURE_MULTIPLE_CAPTIONS | 图片存在多个题注 | 警告 | 同一图片 owner 绑定了多于 1 个题注（1 条诊断 / N 个成员） | 目标组（1 行 / N 成员） | 已注册·执行 | document-diagnostics-caption-integrity-v1.ts:198-223 | document-diagnostics-caption-integrity-v1.test.ts:21 |

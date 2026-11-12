@@ -43,6 +43,7 @@ import { DocumentUtilityOverlayHost } from './document-utility-overlay-host'
 import type { DocumentDiagnosticsProviders } from './document-diagnostics-authority'
 import type { DocumentUtilitiesContext } from './document-utilities-context'
 import type { DocumentDiagnosticsSnapshot } from './diagnostics-types'
+import { FIGURE_STRUCTURE_BLOCK_RULE_CODES } from './document-standalone-object-block-invariant-v515'
 
 const VAULT_ROOT = resolve(process.cwd(), 'test/vault')
 const FIXTURE_ABS = join(VAULT_ROOT, FIGURE_LOCATOR_V1_FIXTURE_RELATIVE_PATH)
@@ -642,7 +643,7 @@ describe('FIXTURE-HOST — the REAL runtime resource + locator matrix', () => {
     stubRangeRectsByOffset(() => [{ left: 300, top: 100, right: 700, bottom: 124 }])
     runPreflight(h, snapshot)
 
-    const structure = snapshot.diagnostics.filter(d => d.code === 'FIGURE_BLOCK_STRUCTURE_INVALID')
+    const structure = snapshot.diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
     expect(structure).toHaveLength(6)
     for (let i = 0; i < structure.length; i++) {
       await locate(h, structure[i].id)

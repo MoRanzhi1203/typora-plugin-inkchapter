@@ -22,6 +22,17 @@
  * Pure: no DOM access, no filesystem access, no host state.
  */
 
+/** The block-level figure structure rules (local: avoids a load-time cycle). */
+const BLOCK_LEVEL_FIGURE_STRUCTURE_RULES: ReadonlySet<string> = new Set([
+  'FIGURE_BLOCK_STRUCTURE_INVALID',
+  'FIGURE_MULTIPLE_SAME_BLOCK',
+  'FIGURE_TEXT_MIXED',
+  'FIGURE_IN_LIST',
+  'FIGURE_IN_QUOTE',
+  'FIGURE_IN_TABLE',
+  'FIGURE_INLINE_FORMAT',
+])
+
 // ── Audit contracts (§18/§19) ─────────────────────────────
 
 export const FIGURE_DIAGNOSTIC_FIXTURE_RESOURCE_PREFLIGHT = 'FIGURE-DIAGNOSTIC-FIXTURE-RESOURCE-PREFLIGHT'
@@ -440,6 +451,6 @@ export function classifyFigureLocateKind(input: {
   ruleCode: string
   usedSourceBlockFallback: boolean
 }): RenderedOccurrenceLocateKind {
-  if (input.ruleCode === 'FIGURE_BLOCK_STRUCTURE_INVALID') return 'SOURCE_BLOCK_STRUCTURE'
+  if (BLOCK_LEVEL_FIGURE_STRUCTURE_RULES.has(input.ruleCode)) return 'SOURCE_BLOCK_STRUCTURE'
   return input.usedSourceBlockFallback ? 'MISSING_IMAGE_FALLBACK' : 'RENDERED_OCCURRENCE'
 }

@@ -29,6 +29,21 @@
  */
 import type { DiagnosticLocation, DocumentDiagnostic } from './diagnostics-types'
 
+/**
+ * §10 — every block-level figure structure rule. Kept LOCAL (no import from the
+ * figure structure module) because that module imports the resource scanner,
+ * which imports this module: a cross-import here would create a load-time cycle.
+ */
+const FIGURE_STRUCTURE_RULE_CODES: ReadonlySet<string> = new Set([
+  'FIGURE_BLOCK_STRUCTURE_INVALID',
+  'FIGURE_MULTIPLE_SAME_BLOCK',
+  'FIGURE_TEXT_MIXED',
+  'FIGURE_IN_LIST',
+  'FIGURE_IN_QUOTE',
+  'FIGURE_IN_TABLE',
+  'FIGURE_INLINE_FORMAT',
+])
+
 // ── §11 — the literal range model ─────────────────────────
 
 export type MarkdownLiteralKind = 'inline-code' | 'fenced-code' | 'indented-code'
@@ -431,7 +446,7 @@ export function evaluateLiteralExclusionAgainstDiagnostics(input: {
   for (const d of input.diagnostics) {
     const rangesOf = diagnosticSourceRanges(d)
     if (!rangesOf.some(r => isSourceRangeLiteral(ranges, r.start, r.end))) continue
-    if (d.code === 'FIGURE_BLOCK_STRUCTURE_INVALID') {
+    if (FIGURE_STRUCTURE_RULE_CODES.has(d.code)) {
       // §10/§24 — a block whose owning span CONTAINS an admitted real image is a
       // legitimate mixed block (the literal range merely sits inside it). Only a
       // block that owns NO real image at all is a literal false positive.
@@ -457,6 +472,12 @@ export function evaluateLiteralExclusionAgainstDiagnostics(input: {
         counters.inlineCodeImageFalsePositive++
         break
       case 'FIGURE_BLOCK_STRUCTURE_INVALID':
+      case 'FIGURE_MULTIPLE_SAME_BLOCK':
+      case 'FIGURE_TEXT_MIXED':
+      case 'FIGURE_IN_LIST':
+      case 'FIGURE_IN_QUOTE':
+      case 'FIGURE_IN_TABLE':
+      case 'FIGURE_INLINE_FORMAT':
         counters.codeLiteralFigureStructureInvalid++
         counters.literalFigureDiagnosticFalsePositive++
         counters.codeLiteralImageMixedWithText++

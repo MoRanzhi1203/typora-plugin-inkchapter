@@ -10,11 +10,11 @@ const audit = computeDocumentDiagnosticCodeSetAudit()
 
 describe('B1 §B1-01 — diagnostic code-set authority', () => {
   it('keeps families, resolved keys, expanded codes and producer codes separate', () => {
-    expect(audit.counts.registeredFamilyCount).toBe(103)
-    expect(audit.counts.registryResolvedKeyCount).toBe(109)
-    expect(audit.counts.expandedRuntimeCodeCount).toBe(114)
-    expect(audit.counts.producerSupportedCodeCount).toBe(110)
-    expect(audit.counts.runtimeReachableCodeCount).toBe(105)
+    expect(audit.counts.registeredFamilyCount).toBe(109)
+    expect(audit.counts.registryResolvedKeyCount).toBe(115)
+    expect(audit.counts.expandedRuntimeCodeCount).toBe(120)
+    expect(audit.counts.producerSupportedCodeCount).toBe(116)
+    expect(audit.counts.runtimeReachableCodeCount).toBe(111)
   })
 
   it('expands LATENT to six concrete codes but keeps one registry sentinel', () => {
@@ -27,9 +27,9 @@ describe('B1 §B1-01 — diagnostic code-set authority', () => {
     expect(audit.differences.registryResolvedNotExpanded).toEqual(['LATENT_ATX_HEADING_MARKER_*'])
   })
 
-  it('producer 110 and registry 109 differ in BOTH size and set', () => {
-    expect(audit.counts.producerSupportedCodeCount).toBe(110)
-    expect(audit.counts.registryResolvedKeyCount).toBe(109)
+  it('producer 116 and registry 115 differ in BOTH size and set', () => {
+    expect(audit.counts.producerSupportedCodeCount).toBe(116)
+    expect(audit.counts.registryResolvedKeyCount).toBe(115)
     expect(audit.differences.producerNotRegistryResolved).toEqual([...LATENT_ATX_LEVEL_CODES].sort())
     expect(audit.differences.registryResolvedNotProducer).toEqual(
       [
@@ -82,23 +82,23 @@ describe('B1 §B1-01 — diagnostic code-set authority', () => {
     expect(audit.runtimeReachableCodes).not.toContain('FORMULA_SOURCE_LENGTH_EXCEEDING')
     expect(audit.runtimeReachableCodes).not.toContain('FORMULA_SOURCE_LINE_TOO_LONG')
     expect(audit.invariants.reachablePlusUnreachableEqualsProducer).toBe(true)
-    expect(audit.counts.runtimeReachableCodeCount).toBe(105)
+    expect(audit.counts.runtimeReachableCodeCount).toBe(111)
   })
 
   it('severity counts are conserved in baseline and strict modes', () => {
-    expect(audit.counts.expandedBySeverity).toEqual({ error: 13, warning: 72, hint: 29 })
-    expect(audit.counts.expandedBySeverityStrict).toEqual({ error: 15, warning: 76, hint: 23 })
-    expect(audit.counts.producerBySeverity).toEqual({ error: 13, warning: 68, hint: 29 })
-    expect(audit.counts.producerBySeverityStrict).toEqual({ error: 15, warning: 72, hint: 23 })
-    expect(audit.counts.reachableBySeverity).toEqual({ error: 13, warning: 65, hint: 27 })
-    expect(audit.counts.reachableBySeverityStrict).toEqual({ error: 15, warning: 69, hint: 21 })
+    expect(audit.counts.expandedBySeverity).toEqual({ error: 17, warning: 74, hint: 29 })
+    expect(audit.counts.expandedBySeverityStrict).toEqual({ error: 19, warning: 78, hint: 23 })
+    expect(audit.counts.producerBySeverity).toEqual({ error: 17, warning: 70, hint: 29 })
+    expect(audit.counts.producerBySeverityStrict).toEqual({ error: 19, warning: 74, hint: 23 })
+    expect(audit.counts.reachableBySeverity).toEqual({ error: 17, warning: 67, hint: 27 })
+    expect(audit.counts.reachableBySeverityStrict).toEqual({ error: 19, warning: 71, hint: 21 })
     for (const [counts, total] of [
-      [audit.counts.expandedBySeverity, 114],
-      [audit.counts.expandedBySeverityStrict, 114],
-      [audit.counts.producerBySeverity, 110],
-      [audit.counts.producerBySeverityStrict, 110],
-      [audit.counts.reachableBySeverity, 105],
-      [audit.counts.reachableBySeverityStrict, 105],
+      [audit.counts.expandedBySeverity, 120],
+      [audit.counts.expandedBySeverityStrict, 120],
+      [audit.counts.producerBySeverity, 116],
+      [audit.counts.producerBySeverityStrict, 116],
+      [audit.counts.reachableBySeverity, 111],
+      [audit.counts.reachableBySeverityStrict, 111],
     ] as const) {
       expect(counts.error + counts.warning + counts.hint).toBe(total)
     }

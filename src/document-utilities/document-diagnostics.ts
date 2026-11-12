@@ -26,10 +26,10 @@ import { DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS } from './document-diagnostic-do
 import {
   analyzeFigureStandaloneSourceBlocks,
   beginFigureStructureDiagnosticPass,
-  figureStructureUserCopy,
+  classifyFigureStructureIssue,
   isFigureBlockAutoFixable,
   noteFigureStructureDiagnosticPublished,
-  FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
+  FIGURE_STRUCTURE_BLOCK_RULE_CODES,
   type FigureStandaloneSourceBlock,
 } from './document-standalone-object-block-invariant-v515'
 import type {
@@ -351,8 +351,17 @@ export function resolveDocumentDiagnosticSeverity(
     // V5.15 §26 — a structurally invalid picture block breaks the Figure
     // business model itself (occurrence identity / numbering / caption /
     // locate / visual target), so it is an ERROR, never a Warning.
+    // The container / multi-image classes are structural ERRORS; a mixed-text
+    // or inline-format wrapper is a WARNING (the document still renders).
+    case 'FIGURE_IN_LIST':
+    case 'FIGURE_IN_QUOTE':
+    case 'FIGURE_IN_TABLE':
+    case 'FIGURE_MULTIPLE_SAME_BLOCK':
     case 'FIGURE_BLOCK_STRUCTURE_INVALID':
       return 'error'
+    case 'FIGURE_TEXT_MIXED':
+    case 'FIGURE_INLINE_FORMAT':
+      return 'warning'
     // VNext §18/§19 — a table / display formula that is NOT a standalone block
     // breaks the object model the same way an invalid picture block does.
     case 'TABLE_BLOCK_STRUCTURE_INVALID':
@@ -818,7 +827,8 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   'HEADING_EMPTY_TEXT',
   'HEADING_LEVEL_GAP',
   // figure
-  FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
+  // figure structure (ONE primary issue per owning block)
+  ...FIGURE_STRUCTURE_BLOCK_RULE_CODES,
   'FIGURE_DUPLICATE_NAME',
   'FIGURE_LOCAL_IMAGE_MISSING',
   'FIGURE_MISSING_NAME',
@@ -3050,16 +3060,17 @@ export function computeDocumentDiagnostics(
       const dest = normalizeResourceToken(occ.canonicalDestination || occ.rawDestination)
       if (dest) invalidFigureDestinations.add(dest)
     }
-    const copy = figureStructureUserCopy(block.result)
+    const issue = classifyFigureStructureIssue(block)
     push(
-      makeDiagnostic(input, 'figure', FIGURE_BLOCK_STRUCTURE_INVALID_CODE, copy.title, {
-        detail: copy.detail,
+      makeDiagnostic(input, 'figure', issue.code, issue.title, {
+        detail: issue.detail,
         targetIdentity: `structure:${block.owningBlockIdentity}`,
         kind: 'object',
         metadata: {
-          ruleId: 'FIGURE-BLOCK-STRUCTURE-INVALID',
+          ruleId: issue.code,
           resourceKind: 'image',
           // §16/§17 — the standalone-object audit fields.
+          issueCode: issue.code,
           owningBlockIdentity: block.owningBlockIdentity,
           sourceBlockIdentity: block.owningBlockIdentity,
           sourceBlockOrdinal: blockOrdinal,
@@ -3071,9 +3082,10 @@ export function computeDocumentDiagnostics(
           violationKinds: block.result.violations.join('|'),
           normalBusinessTargetAdmitted: false,
           structuralDiagnosticPublished: true,
-          // The ONE honest auto-fix admission: only a paragraph block can be
-          // split without inventing container semantics. The UI must not offer a
-          // fix button when this is false.
+          // The ONE honest auto-fix admission: only a paragraph block, a
+          // top-level list item or a blockquote can be repaired without
+          // inventing container semantics. The UI must not offer a fix button
+          // when this is false.
           autoFixable: isFigureBlockAutoFixable(block),
           sourceStart: block.blockStart,
           sourceEnd: block.blockEnd,
