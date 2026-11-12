@@ -32,6 +32,13 @@ import {
   FIGURE_STRUCTURE_BLOCK_RULE_CODES,
   type FigureStandaloneSourceBlock,
 } from './document-standalone-object-block-invariant-v515'
+// V1 — Figure-in-heading invariant (H1–H6) + empty-source image tokens.
+import {
+  analyzeHeadingImages,
+  scanSourceImageTokens,
+  FIGURE_IN_HEADING_CODE,
+  FIGURE_EMPTY_SOURCE_CODE,
+} from './document-figure-heading-invariant-v1'
 import type {
   DiagnosticFigureOccurrenceIdentity,
   DiagnosticLocation,
@@ -358,6 +365,8 @@ export function resolveDocumentDiagnosticSeverity(
     case 'FIGURE_IN_TABLE':
     case 'FIGURE_MULTIPLE_SAME_BLOCK':
     case 'FIGURE_BLOCK_STRUCTURE_INVALID':
+    case 'FIGURE_IN_HEADING':
+    case 'FIGURE_EMPTY_SOURCE':
       return 'error'
     case 'FIGURE_TEXT_MIXED':
     case 'FIGURE_INLINE_FORMAT':
@@ -829,6 +838,8 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   // figure
   // figure structure (ONE primary issue per owning block)
   ...FIGURE_STRUCTURE_BLOCK_RULE_CODES,
+  FIGURE_IN_HEADING_CODE,
+  FIGURE_EMPTY_SOURCE_CODE,
   'FIGURE_DUPLICATE_NAME',
   'FIGURE_LOCAL_IMAGE_MISSING',
   'FIGURE_MISSING_NAME',
@@ -3045,7 +3056,115 @@ export function computeDocumentDiagnostics(
   // §9 — 0-based ordinal among owning blocks carrying the SAME raw block text,
   // so two byte-identical invalid blocks never share a binding identity.
   const structureBlockOrdinalByText = new Map<string, number>()
+
+  // ── V1 — FIGURE IN HEADING (H1–H6) ────────────────────────────────────────
+  // A heading image is structurally invalid in EVERY variant (text before /
+  // after / between / multiple / image-only). It owns its own block-level rule
+  // and takes priority over FIGURE_MULTIPLE_SAME_BLOCK / FIGURE_TEXT_MIXED: the
+  // heading line is never re-classified as a mixed paragraph.
+  const headingImageEntries = structureSourceText != null ? analyzeHeadingImages(structureSourceText) : []
+  const headingLineIndexes = new Set(headingImageEntries.map(entry => entry.lineIndex))
+  for (const entry of headingImageEntries) {
+    const rawHeading = structureSourceText == null
+      ? ''
+      : structureSourceText.slice(entry.lineStart, entry.lineEnd)
+    const headingOrdinal = structureBlockOrdinalByText.get(rawHeading) ?? 0
+    structureBlockOrdinalByText.set(rawHeading, headingOrdinal + 1)
+    for (const token of entry.images) {
+      invalidFigureTokenStarts.add(token.tokenStart)
+      if (!token.emptyDestination) {
+        const destination = normalizeResourceToken(token.destination)
+        if (destination) invalidFigureDestinations.add(destination)
+      }
+    }
+    const emptySourceCount = entry.images.filter(token => token.emptyDestination).length
+    push(
+      makeDiagnostic(input, 'figure', FIGURE_IN_HEADING_CODE, '图片被插入标题', {
+        detail: `标题中包含图片，图片必须移出标题并作为独立段落。当前 H${entry.level} 标题包含 ${entry.images.length} 张图片。`,
+        kind: 'object',
+        targetIdentity: `heading-image:src-block:${entry.lineIndex}`,
+        metadata: {
+          ruleId: 'FIGURE-IN-HEADING',
+          resourceKind: 'image',
+          issueCode: FIGURE_IN_HEADING_CODE,
+          headingLevel: entry.level,
+          imageCount: entry.images.length,
+          emptySourceCount,
+          headingText: entry.textWithoutImages,
+          owningBlockIdentity: `src-block:${entry.lineIndex}`,
+          sourceBlockIdentity: `src-block:${entry.lineIndex}`,
+          sourceBlockOrdinal: headingOrdinal,
+          containerKind: 'heading',
+          rawObjectCount: entry.images.length,
+          canonicalObjectCount: 0,
+          normalBusinessTargetAdmitted: false,
+          structuralDiagnosticPublished: true,
+          autoFixable: true,
+          sourceStart: entry.lineStart,
+          sourceEnd: entry.lineEnd,
+          startLine: entry.lineIndex,
+          endLine: entry.lineIndex,
+        },
+        location: {
+          kind: 'source-block',
+          objectKind: 'figure',
+          sourceBlockIdentity: `src-block:${entry.lineIndex}`,
+          sourceBlockOrdinal: headingOrdinal,
+          sourceStart: entry.lineStart,
+          sourceEnd: entry.lineEnd,
+          startLine: entry.lineIndex,
+          endLine: entry.lineIndex,
+          sourceRevision: input.sourceRevision ?? null,
+          locatorStrategy: 'OWNING_BLOCK',
+        },
+      }),
+    )
+    noteFigureStructureDiagnosticPublished({
+      owningBlockIdentity: `src-block:${entry.lineIndex}`,
+      violationCount: 1,
+      locatable: true,
+    })
+  }
+
+  // ── V1 — FIGURE_EMPTY_SOURCE (independent resource dimension) ─────────────
+  // `![]()` / `![alt]()` / `![alt](   )` are REAL image tokens with an empty
+  // destination. They are reported independently of the structure repair and
+  // survive it (the repair never deletes or invents a path).
+  const allImageTokens = structureSourceText != null ? scanSourceImageTokens(structureSourceText) : []
+  for (const token of allImageTokens) {
+    if (!token.emptyDestination) continue
+    push(
+      makeDiagnostic(input, 'figure', FIGURE_EMPTY_SOURCE_CODE, '图片路径为空', {
+        detail: `图片语法「${token.rawToken}」没有目标路径，无法解析为图片。`,
+        kind: 'object',
+        targetIdentity: `empty-source:${token.tokenStart}`,
+        metadata: {
+          ruleId: 'FIGURE-EMPTY-SOURCE',
+          resourceKind: 'image',
+          reason: 'EMPTY_IMAGE_DESTINATION',
+          rawToken: token.rawToken,
+          startLine: token.lineIndex,
+        },
+        location: {
+          kind: 'source-range',
+          startLine: token.lineIndex,
+          startColumn: token.tokenStart - (structureSourceText ?? '').lastIndexOf('\n', token.tokenStart - 1) - 1,
+          endLine: token.lineIndex,
+          endColumn: token.tokenStart - (structureSourceText ?? '').lastIndexOf('\n', token.tokenStart - 1) - 1
+            + token.rawToken.length,
+          sourceStart: token.tokenStart,
+          sourceEnd: token.tokenEnd,
+          sourceFingerprint: `empty-source:${token.tokenStart}`,
+          rawText: token.rawToken,
+        },
+      }),
+    )
+  }
+
   for (const block of figureStructureBlocks) {
+    // A heading line owns the dedicated FIGURE_IN_HEADING diagnostic; never
+    // classify the same heading as a paragraph mixed/multi block.
+    if (headingLineIndexes.has(block.startLine)) continue
     // §14 — an image token inside a fenced / indented code block is NOT an image
     // object at all: it sits outside the figure business model, so the standalone
     // structure gate never fires there (the DOM caption chain excludes code

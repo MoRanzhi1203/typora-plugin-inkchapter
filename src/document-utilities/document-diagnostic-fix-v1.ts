@@ -34,6 +34,12 @@ import {
 } from './document-standalone-object-block-invariant-v515'
 import { parseImageSourceOccurrences, type ImageSourceOccurrence } from './document-resource-scanner'
 import {
+  analyzeHeadingImages,
+  buildHeadingImageFix,
+  FIGURE_IN_HEADING_CODE,
+  type HeadingImageEntry,
+} from './document-figure-heading-invariant-v1'
+import {
   FORMULA_SINGLE_LINE_BLOCK_CODE,
   LIST_EMPTY_ITEM_CODE,
   isEmptyListMarker,
@@ -482,6 +488,71 @@ export const FIGURE_INLINE_FORMAT_FIX = figureStructureFixer(
   '移除图片行内格式',
 )
 
+/** Locate the heading entry described by a FIGURE_IN_HEADING diagnostic. */
+function locateHeadingEntry(
+  diagnostic: DocumentDiagnostic,
+  markdown: string,
+): HeadingImageEntry | null {
+  const meta = diagnostic.metadata ?? {}
+  const sourceStart = asNumber(meta.sourceStart)
+  const sourceEnd = asNumber(meta.sourceEnd)
+  const startLine = asNumber(meta.startLine)
+  const entries = analyzeHeadingImages(markdown)
+  if (sourceStart != null && sourceEnd != null) {
+    const exact = entries.find(entry => entry.lineStart === sourceStart && entry.lineEnd === sourceEnd)
+    if (exact) return exact
+  }
+  if (startLine != null) {
+    const byLine = entries.filter(entry => entry.lineIndex === startLine)
+    if (byLine.length === 1) return byLine[0]
+  }
+  const identity = typeof meta.owningBlockIdentity === 'string' ? meta.owningBlockIdentity : ''
+  const match = /^src-block:(\d+)$/.exec(identity)
+  if (match) {
+    const byIdentity = entries.filter(entry => entry.lineIndex === Number.parseInt(match[1], 10))
+    if (byIdentity.length === 1) return byIdentity[0]
+  }
+  return null
+}
+
+/**
+ * `FIGURE_IN_HEADING` — move every image out of an H1–H6 heading:
+ *   - text remains, the heading level is unchanged;
+ *   - every image token (including an empty-path `![]()`) is preserved verbatim
+ *     and becomes a standalone paragraph in its original order;
+ *   - an image-only heading loses the heading marker, images stay.
+ */
+export const FIGURE_IN_HEADING_FIX: Fixer = {
+  code: FIGURE_IN_HEADING_CODE,
+  support: 'AUTO',
+  label: '将图片移出标题',
+  build(diagnostic, ctx) {
+    const entry = locateHeadingEntry(diagnostic, ctx.markdown)
+    if (entry == null) {
+      return { blockers: [blocker('STALE_DIAGNOSTIC', '目标标题已变化，请重新检测后再修复。')] }
+    }
+    const outcome = buildHeadingImageFix(ctx.markdown, entry)
+    if (outcome.refusal != null) {
+      return { blockers: [blocker('STRUCTURE_NOT_AUTO_FIXABLE', outcome.refusal)] }
+    }
+    const before = ctx.markdown.slice(entry.lineStart, entry.lineEnd)
+    if (outcome.changed === false || outcome.text === before) {
+      return { blockers: [blocker('NOT_APPLICABLE', '该标题无需修复。')] }
+    }
+    return {
+      patches: [{
+        start: entry.lineStart,
+        end: entry.lineEnd,
+        before,
+        after: outcome.text,
+        lineStart: entry.lineIndex,
+        lineEnd: entry.lineIndex,
+        kind: 'replace-block',
+      }],
+    }
+  },
+}
+
 function parseCodeOrdinal(diagnostic: DocumentDiagnostic): number | null {
   const location = locationOf(diagnostic)
   const stable = location && 'stableIdentity' in location ? String(location.stableIdentity ?? '') : ''
@@ -620,6 +691,7 @@ export function createDefaultDiagnosticFixRegistry(): DiagnosticFixRegistry {
     .register(FIGURE_IN_LIST_FIX)
     .register(FIGURE_IN_QUOTE_FIX)
     .register(FIGURE_INLINE_FORMAT_FIX)
+    .register(FIGURE_IN_HEADING_FIX)
     .register(CODE_LANGUAGE_FIX)
     .register(FIGURE_NAME_FIX)
     .register(CODE_NAME_FIX)

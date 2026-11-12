@@ -31,6 +31,7 @@ const BLOCK_LEVEL_FIGURE_STRUCTURE_RULES: ReadonlySet<string> = new Set([
   'FIGURE_IN_QUOTE',
   'FIGURE_IN_TABLE',
   'FIGURE_INLINE_FORMAT',
+  'FIGURE_IN_HEADING',
 ])
 
 // ── Audit contracts (§18/§19) ─────────────────────────────

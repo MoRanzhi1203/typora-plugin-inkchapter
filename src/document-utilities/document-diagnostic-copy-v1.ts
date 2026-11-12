@@ -134,6 +134,8 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   FIGURE_DUPLICATE_NAME: 510,
   FIGURE_LOCAL_IMAGE_MISSING: 520,
   FIGURE_IMAGE_FORMAT_UNSUPPORTED: 525,
+  FIGURE_EMPTY_SOURCE: 526,
+  FIGURE_IN_HEADING: 529,
   // Structure classes: illegal container first, then composition, then inline.
   FIGURE_IN_LIST: 530,
   FIGURE_IN_QUOTE: 531,
@@ -317,6 +319,8 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   FIGURE_DUPLICATE_NAME: { description: '多张图片使用了相同的图名。', suggestion: '修改图名以互相区分。' },
   FIGURE_LOCAL_IMAGE_MISSING: { description: '图片引用的本地文件无法解析。', suggestion: '检查图片路径，或将图片重新插入文档。' },
   FIGURE_IMAGE_FORMAT_UNSUPPORTED: { title: '图片格式不支持', description: '图片语法引用的文件扩展名明确不是图片格式。', suggestion: '改为 png/jpg/gif/svg/webp 等图片文件，或修正引用路径。' },
+  FIGURE_IN_HEADING: { title: '图片被插入标题', description: '标题中包含图片，图片必须移出标题并作为独立段落。', suggestion: '将图片移出标题后作为独立图片段落，保留标题层级与原有文字。', dynamicDetail: true },
+  FIGURE_EMPTY_SOURCE: { title: '图片路径为空', description: '图片语法没有目标路径，无法解析为图片。', suggestion: '补充图片路径，或删除该空图片节点。' },
   FIGURE_BLOCK_STRUCTURE_INVALID: { title: '图片独立块结构异常', description: '图片块不满足独立块结构要求。', suggestion: '将图片拆成独立段落：文字一段、每张图片各一段，前后保留空行。' },
   FIGURE_MULTIPLE_SAME_BLOCK: { title: '多张图片位于同一段落', description: '同一段落中存在多张图片，图片块只能包含一张图片。', suggestion: '将每张图片拆分为独立的图片段落，按原顺序排列并保留前后空行。', dynamicDetail: true },
   FIGURE_TEXT_MIXED: { title: '图片与正文位于同一段落', description: '同一段落中同时存在图片和正文内容。', suggestion: '将图片从段落中拆出为独立图片段落，正文保留原位置。', dynamicDetail: true },

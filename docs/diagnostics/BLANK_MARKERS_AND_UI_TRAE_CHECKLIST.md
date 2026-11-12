@@ -276,3 +276,38 @@ console.log({
 1. `Ctrl+Y`（redo）在 `reloadContent` 事务后的行为——本轮只验证了 `editor.undo.undo()` 的撤销。
 2. 列表 / 引用 / 表格图片的"手动修复"路径（本轮按规范明确拒绝自动修复，未提供引导式交互）。
 3. 与上一节相同的 DPI / 主题 / 极窄窗、多文档快速切换等既有未验收项。
+
+---
+
+## 追加：标题内图片检测与修复（V1）
+
+### A. 规则
+
+- 新增 `FIGURE_IN_HEADING`（错误，`source-block`）：「图片被插入标题」。
+  覆盖 H1–H6 的文字前 / 中 / 后、多图、仅图片、空路径图片；优先级高于
+  `FIGURE_MULTIPLE_SAME_BLOCK` / `FIGURE_TEXT_MIXED`，同一标题只发布 1 条结构诊断。
+- 新增 `FIGURE_EMPTY_SOURCE`（错误，`source-range`）：「图片路径为空」。
+  `![]()` / `![alt]()` / `![alt](   )` 作为独立资源维度报告；结构修复后仍保留。
+- 检测权威是 Markdown 源码（`document-figure-heading-invariant-v1.ts`），
+  不是渲染后的 `<img>`；行内代码、代码围栏、转义 `\![...]` 一律排除。
+
+### B. 修复
+
+- 有文字标题：保留 H1–H6 层级与文字，图片按原顺序移到标题后的独立段落。
+- 仅图片标题：移除标题结构，图片节点原样保留。
+- 空路径图片：原样保留（`![]()` 仍是 `![]()`），不伪造路径、不自动上传/下载。
+- 单一修复与一键修复走同一 `replace-block` 源补丁；修复后重新解析文档刷新诊断。
+
+### C. 自动化回归
+
+- `document-figure-heading-invariant-v1.test.ts`：20 条用例（H1–H6、前/中/后、
+  多图、仅图片、三种空路径、行内代码/转义/围栏排除、标题层级保持、图片 token 保持、
+  空路径错误残留、单项与一键一致性、幂等、抽屉文案）。
+- 全量 Vitest：349 文件 / 6071 测试通过；`tsc --noEmit` PASS；`pnpm build` PASS。
+
+### D. GUI 验收
+
+夹具：`test/vault/runtime/smoke/Figure-Heading-Image-Test.md`。
+运行时回执确认新构建已由 Typora 加载（`mainJsSha256=D401F011…`，`loadSource=vault`）。
+面板点击 / Ctrl+Z / Ctrl+Y 的交互验收仍 NEEDS_MANUAL：Typora 1.6.7 拒绝远程调试、
+无可访问性树，插件浮层无法被窗口截图捕获。

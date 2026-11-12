@@ -1,0 +1,274 @@
+// @vitest-environment jsdom
+/**
+ * V1 — Figure-in-heading (H1–H6) + empty image source.
+ *
+ * Every case asserts the REAL Markdown input, the classified rule/severity and
+ * the EXACT repaired Markdown.
+ */
+import { describe, it, expect, beforeEach } from 'vitest'
+import { computeDocumentDiagnostics, buildFigureSourceOccurrences } from './document-diagnostics'
+import type { DocumentDiagnosticsInput, DiagnosticLinkFact } from './document-diagnostics'
+import { parseImageSourceOccurrences } from './document-resource-scanner'
+import {
+  analyzeHeadingImages,
+  scanSourceImageTokens,
+  FIGURE_IN_HEADING_CODE,
+  FIGURE_EMPTY_SOURCE_CODE,
+} from './document-figure-heading-invariant-v1'
+import { resetFigureBlockStructureV515State } from './document-standalone-object-block-invariant-v515'
+import {
+  applyPatchesToMarkdown,
+  createDefaultDiagnosticFixRegistry,
+  type FixContext,
+} from './document-diagnostic-fix-v1'
+import {
+  buildFixedMarkdown,
+  describeFixCapability,
+  planAllAutoFixesV2,
+  selectNonConflictingPlans,
+} from './document-diagnostic-fix-v2'
+import { resolveDiagnosticCopy } from './document-diagnostic-copy-v1'
+
+const DOC_KEY = 'doc:figure-heading'
+
+function inputOf(markdown: string): DocumentDiagnosticsInput {
+  const links: DiagnosticLinkFact[] = []
+  const figureSourceOccurrences = buildFigureSourceOccurrences({
+    scanned: parseImageSourceOccurrences(markdown),
+    documentKey: DOC_KEY,
+    resolveCanonicalDestination: d => d,
+    isLocalFileMissing: () => false,
+  })
+  return {
+    documentKey: DOC_KEY,
+    markdown,
+    strictMode: false,
+    vaultRoot: 'D:/vault',
+    headings: [],
+    figures: [],
+    figureSourceOccurrences,
+    tables: [],
+    codes: [],
+    formulas: [],
+    links,
+    canonicalDuplicateIdentities: [],
+    captionDuplicateNames: [],
+  }
+}
+
+function diagnosticsOf(markdown: string) {
+  return computeDocumentDiagnostics(inputOf(markdown)).diagnostics
+}
+
+function headingDiagnostics(markdown: string) {
+  return diagnosticsOf(markdown).filter(d => d.code === FIGURE_IN_HEADING_CODE)
+}
+
+function emptySourceDiagnostics(markdown: string) {
+  return diagnosticsOf(markdown).filter(d => d.code === FIGURE_EMPTY_SOURCE_CODE)
+}
+
+function fixCtx(markdown: string): FixContext {
+  return { markdown, snapshotMarkdown: markdown, documentKey: DOC_KEY, snapshot: null, locked: false }
+}
+
+function fixFirstHeading(markdown: string): string {
+  const diagnostic = headingDiagnostics(markdown)[0]
+  expect(diagnostic, 'expected a FIGURE_IN_HEADING diagnostic').toBeTruthy()
+  const fixer = createDefaultDiagnosticFixRegistry().get(FIGURE_IN_HEADING_CODE)
+  expect(fixer).toBeTruthy()
+  const built = fixer!.build(diagnostic, fixCtx(markdown))
+  expect(built.blockers ?? []).toEqual([])
+  return applyPatchesToMarkdown(markdown, built.patches ?? [])
+}
+
+beforeEach(() => {
+  resetFigureBlockStructureV515State()
+})
+
+describe('H1–H6 — every heading level with a real image', () => {
+  it('reports the dedicated rule and keeps the heading level', () => {
+    for (let level = 1; level <= 6; level++) {
+      const marker = '#'.repeat(level)
+      const md = `${marker} 标题 ![图](a.png)\n`
+      const diag = headingDiagnostics(md)[0]
+      expect(diag, marker).toBeTruthy()
+      expect(diag.code).toBe(FIGURE_IN_HEADING_CODE)
+      expect(diag.severity).toBe('error')
+      expect(diag.message).toBe('图片被插入标题')
+      expect(fixFirstHeading(md)).toBe(`${marker} 标题\n\n![图](a.png)\n`)
+      expect(headingDiagnostics(`${marker} 标题\n\n![图](a.png)\n`)).toEqual([])
+    }
+  })
+})
+
+describe('图片位于标题文字前 / 中 / 后', () => {
+  it('text after the image', () => {
+    const md = '## ![图](a.png) 标题\n'
+    expect(headingDiagnostics(md)[0].code).toBe(FIGURE_IN_HEADING_CODE)
+    expect(fixFirstHeading(md)).toBe('## 标题\n\n![图](a.png)\n')
+  })
+
+  it('image between text', () => {
+    const md = '### 前文 ![图](a.png) 后文\n'
+    expect(fixFirstHeading(md)).toBe('### 前文 后文\n\n![图](a.png)\n')
+  })
+
+  it('text before the image', () => {
+    const md = '# 标题 ![图](a.png)\n'
+    expect(fixFirstHeading(md)).toBe('# 标题\n\n![图](a.png)\n')
+  })
+
+  it('a closing ATX sequence is syntax, not heading text', () => {
+    const md = '## 标题 ![图](a.png) ##\n'
+    expect(fixFirstHeading(md)).toBe('## 标题\n\n![图](a.png)\n')
+  })
+})
+
+describe('多图与仅图片标题', () => {
+  it('multiple images produce ONE heading error and all images are extracted in order', () => {
+    const md = '## 前文 ![A](a.png) 中段 ![B](b.png) 后文\n'
+    const diagnostics = headingDiagnostics(md)
+    expect(diagnostics).toHaveLength(1)
+    expect(fixFirstHeading(md)).toBe('## 前文 中段 后文\n\n![A](a.png)\n\n![B](b.png)\n')
+  })
+
+  it('an image-only heading loses the heading marker and keeps its images', () => {
+    expect(fixFirstHeading('## ![图](a.png)\n')).toBe('![图](a.png)\n')
+    expect(fixFirstHeading('## ![A](a.png) ![B](b.png)\n')).toBe('![A](a.png)\n\n![B](b.png)\n')
+    expect(fixFirstHeading('###### ![图](a.png)\n')).toBe('![图](a.png)\n')
+  })
+})
+
+describe('空路径图片（未完成图片节点）', () => {
+  it('![]( ) / ![alt]() / ![](   ) are reported and preserved verbatim', () => {
+    for (const raw of ['![]()', '![alt]()', '![](   )']) {
+      const md = `## 标题 ${raw}\n`
+      expect(headingDiagnostics(md), raw).toHaveLength(1)
+      const empty = emptySourceDiagnostics(md)
+      expect(empty, raw).toHaveLength(1)
+      expect(empty[0].message).toBe('图片路径为空')
+      const fixed = fixFirstHeading(md)
+      expect(fixed).toBe(`## 标题\n\n${raw}\n`)
+      // the structure error is gone, the empty-source error stays
+      expect(headingDiagnostics(fixed)).toEqual([])
+      expect(emptySourceDiagnostics(fixed)).toHaveLength(1)
+      expect(headingDiagnostics(fixed).map(d => d.code)).not.toContain(FIGURE_IN_HEADING_CODE)
+    }
+  })
+
+  it('an image-only heading with an empty path keeps the empty token', () => {
+    const fixed = fixFirstHeading('## ![]()\n')
+    expect(fixed).toBe('![]()\n')
+    expect(emptySourceDiagnostics(fixed)).toHaveLength(1)
+  })
+})
+
+describe('优先级与去重', () => {
+  it('a heading with text + two images reports ONLY FIGURE_IN_HEADING', () => {
+    const md = '## 前文 ![A](a.png) 后文 ![B](b.png)\n'
+    const codes = diagnosticsOf(md).map(d => d.code)
+    expect(codes.filter(c => c === FIGURE_IN_HEADING_CODE)).toHaveLength(1)
+    expect(codes).not.toContain('FIGURE_TEXT_MIXED')
+    expect(codes).not.toContain('FIGURE_MULTIPLE_SAME_BLOCK')
+  })
+
+  it('images inside a heading never reach normal figure naming rules', () => {
+    const md = '## 标题 ![图](a.png)\n'
+    const codes = diagnosticsOf(md).map(d => d.code)
+    expect(codes).not.toContain('FIGURE_MISSING_NAME')
+    expect(codes).not.toContain('FIGURE_LOCAL_IMAGE_MISSING')
+  })
+})
+
+describe('行内代码 / 转义 / 代码围栏不误报', () => {
+  it('inline code image syntax is literal text', () => {
+    expect(headingDiagnostics('## 标题 `![图](a.png)`\n')).toEqual([])
+    expect(emptySourceDiagnostics('## 标题 `![]()`\n')).toEqual([])
+  })
+
+  it('an escaped image marker is literal text', () => {
+    expect(headingDiagnostics('## 标题 \\![图](a.png)\n')).toEqual([])
+    expect(emptySourceDiagnostics('## 标题 \\![]()\n')).toEqual([])
+  })
+
+  it('a heading-like line inside a fenced code block is not a heading', () => {
+    expect(headingDiagnostics('```md\n## 标题 ![图](a.png)\n```\n')).toEqual([])
+    expect(emptySourceDiagnostics('```md\n## 标题 ![]()\n```\n')).toEqual([])
+  })
+})
+
+describe('修复完整性', () => {
+  it('preserves heading text formatting and image attributes', () => {
+    const md = '### **重点** ![中文图](assets/图片 名.png "标题") 结尾\n'
+    expect(fixFirstHeading(md)).toBe('### **重点** 结尾\n\n![中文图](assets/图片 名.png "标题")\n')
+  })
+
+  it('is idempotent and keeps every image token', () => {
+    const md = '## 标题 ![A](a.png) ![B](b.png)\n'
+    const once = fixFirstHeading(md)
+    expect(headingDiagnostics(once)).toEqual([])
+    expect((once.match(/!\[[^\]]*\]\([^)]*\)/g) ?? [])).toEqual(['![A](a.png)', '![B](b.png)'])
+  })
+
+  it('one-click and single-item repair produce the same document', () => {
+    const md = '## 标题 ![A](a.png)\n\n### 另一个 ![B](b.png)\n'
+    const single = applyPatchesToMarkdown(md, (() => {
+      const diagnostics = headingDiagnostics(md)
+      const fixer = createDefaultDiagnosticFixRegistry().get(FIGURE_IN_HEADING_CODE)!
+      const patches = diagnostics.flatMap(d => fixer.build(d, fixCtx(md)).patches ?? [])
+      return patches
+    })())
+    const out = computeDocumentDiagnostics(inputOf(md))
+    const snapshot = {
+      documentKey: DOC_KEY,
+      revision: 1,
+      sourceRevision: 1,
+      generatedAt: 1,
+      diagnostics: out.diagnostics,
+      errorCount: out.errorCount,
+      warningCount: out.warningCount,
+      infoCount: out.infoCount,
+      structuralVerified: true,
+    }
+    const plans = planAllAutoFixesV2(
+      { markdown: md, snapshotMarkdown: md, documentKey: DOC_KEY, snapshot, locked: false },
+      { captionAvailable: true },
+    )
+    const { accepted } = selectNonConflictingPlans(plans)
+    const { next } = buildFixedMarkdown(md, accepted)
+    expect(next).toBe(single)
+    expect(next).toBe('## 标题\n\n![A](a.png)\n\n### 另一个\n\n![B](b.png)\n')
+  })
+
+  it('the drawer copy uses the required name and explanation', () => {
+    const diagnostic = headingDiagnostics('## 标题 ![图](a.png)\n')[0]
+    const copy = resolveDiagnosticCopy({
+      code: diagnostic.code,
+      message: diagnostic.message,
+      detail: diagnostic.detail,
+      severity: diagnostic.severity,
+    })
+    expect(copy.title).toBe('图片被插入标题')
+    expect(copy.description).toContain('标题中包含图片')
+    expect(copy.description).toContain('独立段落')
+    expect(describeFixCapability(FIGURE_IN_HEADING_CODE).capability).toBe('AUTO_SAFE')
+    expect(describeFixCapability(FIGURE_EMPTY_SOURCE_CODE).capability).toBe('UNAVAILABLE')
+  })
+})
+
+describe('pure source authority', () => {
+  it('analyzeHeadingImages emits one entry per heading with all tokens', () => {
+    const entries = analyzeHeadingImages('# A ![1](a.png)\n\n## ![2](b.png) B ![3](c.png)\n')
+    expect(entries.map(e => e.level)).toEqual([1, 2])
+    expect(entries[0].images).toHaveLength(1)
+    expect(entries[1].images).toHaveLength(2)
+    expect(entries[0].imageOnly).toBe(false)
+  })
+
+  it('scanSourceImageTokens includes empty destinations but excludes literals', () => {
+    const tokens = scanSourceImageTokens('![a](x.png) ![]() `![b](y.png)` \\![c](z.png)\n')
+    expect(tokens.map(t => t.rawToken)).toEqual(['![a](x.png)', '![]()'])
+    expect(tokens.filter(t => t.emptyDestination)).toHaveLength(1)
+  })
+})

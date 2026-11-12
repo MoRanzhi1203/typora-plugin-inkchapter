@@ -54,6 +54,8 @@ HINT_FAMILY_COUNT=24
 | `DOCUMENT_TERMINAL_NEWLINE_MISSING` | DOCUMENT_TERMINAL_NEWLINE_MISSING | 警告 | 是 | document-end | SINGLE_TARGET | 末尾缺少换行 | 文档末尾缺少换行符 | Markdown 文档应以一个换行符结束。 | 在文档末尾补充一个换行符。 |
 | `DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE` | DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE | 警告 | 是 | document-end | SINGLE_TARGET | 尾部空行过多 | 文档末尾空行过多 | 文档末尾存在多个连续空行。 | 删除文档末尾多余的空行，仅保留一个换行符。 |
 | `EXCESSIVE_INTERNAL_BLANK_LINES` | EXCESSIVE_INTERNAL_BLANK_LINES | 警告 | 是 | source-range | SINGLE_TARGET | 连续空行过多 | 连续空行过多 | 两个内容块之间存在 2 个及以上连续空行。 | 删除多余的连续空行，块之间保留一个空行即可。 |
+| `FIGURE_IN_HEADING` | FIGURE_IN_HEADING | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片被插入标题 | 标题中包含图片，图片必须移出标题并作为独立段落。 | 将图片移出标题后作为独立图片段落，保留标题层级与原有文字。 |
+| `FIGURE_EMPTY_SOURCE` | FIGURE_EMPTY_SOURCE | 错误 | 是 | source-range | SINGLE_TARGET | （无映射/动态） | 图片路径为空 | 图片语法没有目标路径，无法解析为图片。 | 补充图片路径，或删除该空图片节点。 |
 | `FIGURE_BLOCK_STRUCTURE_INVALID` | FIGURE_BLOCK_STRUCTURE_INVALID | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片独立块结构异常 | 图片块不满足独立块结构要求。 | 将图片拆成独立段落：文字一段、每张图片各一段，前后保留空行。 |
 | `FIGURE_MULTIPLE_SAME_BLOCK` | FIGURE_MULTIPLE_SAME_BLOCK | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 多张图片位于同一段落 | 同一段落中存在多张图片，图片块只能包含一张图片。 | 将每张图片拆分为独立的图片段落，按原顺序排列并保留前后空行。 |
 | `FIGURE_TEXT_MIXED` | FIGURE_TEXT_MIXED | 警告 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片与正文位于同一段落 | 同一段落中同时存在图片和正文内容。 | 将图片从段落中拆出为独立图片段落，正文保留原位置。 |

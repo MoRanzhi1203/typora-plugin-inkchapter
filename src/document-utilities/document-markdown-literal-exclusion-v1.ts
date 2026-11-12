@@ -42,6 +42,7 @@ const FIGURE_STRUCTURE_RULE_CODES: ReadonlySet<string> = new Set([
   'FIGURE_IN_QUOTE',
   'FIGURE_IN_TABLE',
   'FIGURE_INLINE_FORMAT',
+  'FIGURE_IN_HEADING',
 ])
 
 // ── §11 — the literal range model ─────────────────────────

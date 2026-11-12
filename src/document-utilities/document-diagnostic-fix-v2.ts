@@ -24,6 +24,7 @@ import {
   CODE_LANGUAGE_FIX,
   FIGURE_BLOCK_STRUCTURE_INVALID_FIX,
   FIGURE_INLINE_FORMAT_FIX,
+  FIGURE_IN_HEADING_FIX,
   FIGURE_IN_LIST_FIX,
   FIGURE_IN_QUOTE_FIX,
   FIGURE_MULTIPLE_SAME_BLOCK_FIX,
@@ -125,6 +126,12 @@ const CAPABILITY_MATRIX: Readonly<Record<string, FixCapabilityDescriptor>> = Obj
     code: 'FIGURE_INLINE_FORMAT',
     capability: 'AUTO_SAFE',
     label: '移除图片行内格式',
+    actionKind: 'source-patches',
+  },
+  FIGURE_IN_HEADING: {
+    code: 'FIGURE_IN_HEADING',
+    capability: 'AUTO_SAFE',
+    label: '将图片移出标题',
     actionKind: 'source-patches',
   },
   CODE_MISSING_LANGUAGE: {
@@ -279,6 +286,7 @@ const V1_FIXERS: Readonly<Record<string, Fixer>> = Object.freeze({
   FIGURE_IN_LIST: FIGURE_IN_LIST_FIX,
   FIGURE_IN_QUOTE: FIGURE_IN_QUOTE_FIX,
   FIGURE_INLINE_FORMAT: FIGURE_INLINE_FORMAT_FIX,
+  FIGURE_IN_HEADING: FIGURE_IN_HEADING_FIX,
   CODE_MISSING_LANGUAGE: CODE_LANGUAGE_FIX,
   FIGURE_MISSING_NAME: FIGURE_NAME_FIX,
 })

@@ -203,14 +203,14 @@ export const DOCUMENT_DIAGNOSTIC_BASELINE = {
   // LIST_EMPTY_ITEM / FORMULA_SINGLE_LINE_BLOCK. V5.15 §8.2 adds the SIX
   // classified figure-structure families (list / quote / table / multiple /
   // text-mixed / inline-format) — each with its own real producer + fixer.
-  registeredRuleFamilyCount: 109,
-  resolvedDiagnosticCodeCount: 115,
-  userVisibleDiagnosticTypeCount: 105,
-  implementedFamilyCount: 105,
+  registeredRuleFamilyCount: 111,
+  resolvedDiagnosticCodeCount: 117,
+  userVisibleDiagnosticTypeCount: 107,
+  implementedFamilyCount: 107,
   deferredFamilyCount: 4,
   plannedFamilyCount: 0,
   stateGuardCodeCount: 5,
-  contentDiagnosticCodeCount: 110,
+  contentDiagnosticCodeCount: 112,
 } as const
 
 // ── Internal authorities ────────────────────────────────────────────────────

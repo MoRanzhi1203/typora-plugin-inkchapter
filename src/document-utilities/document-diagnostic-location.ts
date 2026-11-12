@@ -342,6 +342,8 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   HEADING_DUPLICATE_IDENTITY: 'error',
   HEADING_NUMBER_SEQUENCE_INVALID: 'warning',
   FIGURE_BLOCK_STRUCTURE_INVALID: 'error',
+  FIGURE_IN_HEADING: 'error',
+  FIGURE_EMPTY_SOURCE: 'error',
   FIGURE_MULTIPLE_SAME_BLOCK: 'error',
   FIGURE_TEXT_MIXED: 'warning',
   FIGURE_IN_LIST: 'error',
@@ -707,6 +709,15 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   FIGURE_IN_QUOTE: rule('FIGURE_IN_QUOTE', 'figure', 'source-block'),
   FIGURE_IN_TABLE: rule('FIGURE_IN_TABLE', 'figure', 'source-block'),
   FIGURE_INLINE_FORMAT: rule('FIGURE_INLINE_FORMAT', 'figure', 'source-block'),
+  // V1 — an image inside an H1–H6 heading is its own block-level structure rule
+  // (higher priority than the paragraph mixed / multi classes).
+  FIGURE_IN_HEADING: rule('FIGURE_IN_HEADING', 'figure', 'source-block'),
+  // V1 — an image token with an EMPTY destination is an independent resource
+  // error, reported at the exact token (never as a structure warning).
+  FIGURE_EMPTY_SOURCE: rule('FIGURE_EMPTY_SOURCE', 'figure', 'source-range', {
+    area: 'figure', capabilityCategory: 'figure', scope: 'object',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
   FIGURE_MANUAL_NUMBER_PREFIX: rule('FIGURE_MANUAL_NUMBER_PREFIX', 'figure', 'figure-occurrence', { area: 'caption-numbering', scope: 'object' }),
   // B2c — an image token whose destination PROVABLY points at a non-image file.
   FIGURE_IMAGE_FORMAT_UNSUPPORTED: rule('FIGURE_IMAGE_FORMAT_UNSUPPORTED', 'figure', 'source-range', {

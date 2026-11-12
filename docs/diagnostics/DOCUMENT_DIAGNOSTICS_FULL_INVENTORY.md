@@ -410,6 +410,8 @@ B1 后注册表与生产器一致；对应的 target-group / block-node 行为�
 | FIGURE_MISSING_NAME | 图片缺少图名 | 警告 | 统一图片源码 occurrence 的 alt 文本 trim 后为空（source-first；坏图也可命中） | 单目标·图片出现位置 | 已注册·执行 | document-diagnostics.ts:3004-3097 | document-diagnostics-v4-missing-image-source-first-7r3-11-8b80.test.ts |
 | FIGURE_DUPLICATE_NAME | 重复的图名「…」 | 警告 | 两个及以上图片的图名（alt）相同（空名不参与） | 多目标（1…N） | 已注册·执行 | document-diagnostics.ts:2837-2850 | NONE（仅文案 / 排序测试） |
 | FIGURE_LOCAL_IMAGE_MISSING | 本地图片不存在：<路径> | 警告 | 图片目标是本地相对路径且文件不存在（远程 / data URL 不参与；source-first + DOM fallback 去重） | 单目标·图片出现位置 | 已注册·执行 | document-diagnostics.ts:2860-2994, 3213-3257 | document-diagnostics-v4-missing-image-source-first-7r3-11-8b80.test.ts |
+| FIGURE_IN_HEADING | 图片被插入标题 | 错误 | H1–H6 标题源码中存在真实图片 token（文字前/中/后、多图、仅图片、空路径）；优先级高于图文/多图混排 | 单目标·整个标题行 | 已注册·执行 | document-diagnostics.ts:3056-3123 | document-figure-heading-invariant-v1.test.ts |
+| FIGURE_EMPTY_SOURCE | 图片路径为空 | 错误 | 图片 token 的目标为空 / 纯空白（`![]()` / `![alt]()` / `![alt](   )`），独立于结构修复 | 单目标·图片 token | 已注册·执行 | document-diagnostics.ts:3125-3158 | document-figure-heading-invariant-v1.test.ts |
 | FIGURE_BLOCK_STRUCTURE_INVALID | 图片独立块结构异常 | 错误 | 图片 owning block 不满足独立块不变量，且未命中更具体的分类（通用兜底）；命中后抑制该块的普通图片规则 | 单目标·整个违规块 | 已注册·执行 | document-diagnostics.ts:3017-3105 | document-standalone-object-block-invariant-v515.test.ts |
 | FIGURE_IN_LIST | 图片被设置为列表项 | 错误 | 图片位于（无序 / 有序 / 任务）列表项中 | 单目标·整个列表 owning block | 已注册·执行 | document-diagnostics.ts:3017-3105 | document-figure-issue-classification-v1.test.ts |
 | FIGURE_IN_QUOTE | 图片被设置为引用块 | 错误 | 图片位于（多层）引用块中 | 单目标·整个引用 owning block | 已注册·执行 | document-diagnostics.ts:3017-3105 | document-figure-issue-classification-v1.test.ts |

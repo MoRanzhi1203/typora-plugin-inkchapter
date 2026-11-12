@@ -104,6 +104,7 @@ import {
   DOCUMENT_DIAGNOSTIC_STANDALONE_OBJECT_BLOCK_AUDIT,
   type FigureBlockStructureResult,
 } from './document-standalone-object-block-invariant-v515'
+import { FIGURE_IN_HEADING_CODE } from './document-figure-heading-invariant-v1'
 import {
   computeDiagnosticLocationContract,
   getRuleMeta,
@@ -734,7 +735,7 @@ export class DocumentDiagnosticsAuthority {
       .filter(r => r.decision !== 'VALID_STANDALONE_FIGURE')
       .map(r => `${r.owningBlockIdentity}:${r.decision}`)
     const structureDiagnosticCount = diagnostics
-      .filter(d => isFigureStructureBlockRuleCode(d.code)).length
+      .filter(d => isFigureStructureBlockRuleCode(d.code) || d.code === FIGURE_IN_HEADING_CODE).length
     emitRuntimeAudit(DOCUMENT_DIAGNOSTIC_STANDALONE_OBJECT_BLOCK_AUDIT, {
       documentKey,
       objectKind: 'figure',
@@ -787,7 +788,8 @@ export class DocumentDiagnosticsAuthority {
     const figureDiagnostics = diagnostics.filter(d =>
       d.code === 'FIGURE_MISSING_NAME'
       || d.code === 'FIGURE_LOCAL_IMAGE_MISSING'
-      || isFigureStructureBlockRuleCode(d.code)).length
+      || isFigureStructureBlockRuleCode(d.code)
+      || d.code === FIGURE_IN_HEADING_CODE).length
     const signature = [
       this.ctx.authority.getDocumentKey() ?? '',
       facts.inlineCodeRangeCount, facts.fencedCodeRangeCount, facts.indentedCodeRangeCount,
