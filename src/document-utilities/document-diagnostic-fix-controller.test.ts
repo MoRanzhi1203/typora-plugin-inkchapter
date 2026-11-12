@@ -131,7 +131,7 @@ function confirmPreview(harness: Harness): void {
 }
 
 describe('fix controller — auto-safe one-click flow', () => {
-  it('shows the REAL diff first, writes nothing until confirm, then verifies the new snapshot', () => {
+  it('applies immediately without any intermediate panel, then verifies the new snapshot', () => {
     const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', blankMeta, blankLocation)
     const h = createHarness({
       markdown: '# H1\n\n\n\n\nBody\n',
@@ -142,17 +142,14 @@ describe('fix controller — auto-safe one-click flow', () => {
       },
     })
     h.controller.startAllAuto()
-    expect(h.ui.state?.phase).toBe('preview')
-    expect((h.ui.state as FixPanelPreviewState).hunks.length).toBeGreaterThan(0)
-    expect(h.state.writes).toEqual([])
-
-    confirmPreview(h)
+    // 直接修复：点击后立即写回，绝不弹出预览中间界面。
+    expect(h.ui.state).toBeNull()
     expect(h.state.writes).toEqual(['# H1\n\nBody\n'])
     expect(h.notify).toHaveBeenLastCalledWith('已修复 1 项（Ctrl+Z 可撤销）', 'info')
     expect(h.ui.state).toBeNull()
   })
 
-  it('states the PLANNED EOF deletion and its REAL source range in the preview', () => {
+  it('applies the EOF tail repair directly (no panel) and stops exactly one transaction', () => {
     const d = diag('DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE', { extraTrailingBlankLineCount: 3 })
     const h = createHarness({
       markdown: '# 标题\n\n最后一段。\n\n\n\n',
@@ -163,20 +160,24 @@ describe('fix controller — auto-safe one-click flow', () => {
       },
     })
     h.controller.startAllAuto()
-    const state = h.ui.state as FixPanelPreviewState
-    expect(state.phase).toBe('preview')
-    // Content ends on line 3; the removed source blank lines are 4–6.
-    expect(state.summary).toContain('将删除 3 行源码空行（源码第 4–6 行）')
-    expect(h.state.writes).toEqual([])
+    expect(h.ui.state).toBeNull()
+    expect(h.state.writes).toEqual(['# 标题\n\n最后一段。\n'])
   })
 
-  it('cancel performs ZERO writes', () => {
+  it('a late cancel after the direct fix performs ZERO extra writes', () => {
     const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', blankMeta, blankLocation)
-    const h = createHarness({ markdown: '# H1\n\n\n\n\nBody\n', diagnostics: [d] })
+    const h = createHarness({
+      markdown: '# H1\n\n\n\n\nBody\n',
+      diagnostics: [d],
+      onRecheck: (state) => {
+        state.markdown = '# H1\n\nBody\n'
+        state.snapshot = snapshot([])
+      },
+    })
     h.controller.startDiagnostic(d.id)
-    expect(h.ui.state?.phase).toBe('preview')
-    h.ui.handlers?.onCancel()
-    expect(h.state.writes).toEqual([])
+    expect(h.state.writes).toHaveLength(1)
+    h.controller.cancel()
+    expect(h.state.writes).toHaveLength(1)
     expect(h.ui.state).toBeNull()
   })
 
@@ -222,10 +223,12 @@ describe('fix controller — auto-safe one-click flow', () => {
     expect(h.notify).toHaveBeenLastCalledWith('当前文档结构读取未验证，已取消自动修复；请稍后重试。', 'error')
   })
 
-  it('rejects the plan when the document switched while the preview was open', () => {
-    const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', blankMeta, blankLocation)
-    const h = createHarness({ markdown: '# H1\n\n\n\n\nBody\n', diagnostics: [d] })
-    h.controller.startAllAuto()
+  it('rejects the plan when the document switched before the input fix confirmed', () => {
+    const d = diag('CODE_MISSING_LANGUAGE', {}, { kind: 'block-node', blockKind: 'code', stableIdentity: 'block:code:0' })
+    const h = createHarness({ markdown: '```\na\n```\n', diagnostics: [d] })
+    h.controller.startDiagnostic(d.id)
+    h.ui.handlers?.onConfirm('ts')
+    expect(h.ui.state?.phase).toBe('preview')
     h.state.docKey = 'doc:other'
     confirmPreview(h)
     expect(h.state.writes).toEqual([])
@@ -278,7 +281,7 @@ describe('fix controller — interactive input fixes', () => {
     expect(h.notify).toHaveBeenLastCalledWith('已修复 1 项', 'info')
   })
 
-  it('switches a single preview to the same-rule batch and applies it in ONE write', () => {
+  it('同类修复 applies every instance of the rule in ONE direct write', () => {
     const d1 = diag('EXCESSIVE_INTERNAL_BLANK_LINES', blankMeta, blankLocation, 'b1')
     const d2 = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
       firstBlankLine: 6, lastBlankLine: 8, actualBlankLines: 3, passMaxBlankLines: 1,
@@ -288,14 +291,8 @@ describe('fix controller — interactive input fixes', () => {
       diagnostics: [d1, d2],
       onRecheck: (state) => { state.snapshot = snapshot([]) },
     })
-    h.controller.startDiagnostic('b1')
-    expect((h.ui.state as FixPanelPreviewState).sameRule).toEqual({ count: 2 })
-    h.ui.handlers?.onSameRule?.()
-    const preview = h.ui.state as FixPanelPreviewState
-    expect(preview.title).toBe('同类修复')
-    expect(preview.summary).toContain('将修改源码 2 处')
-    expect(h.state.writes).toEqual([])
-    confirmPreview(h)
+    h.controller.startRule('EXCESSIVE_INTERNAL_BLANK_LINES')
+    expect(h.ui.state).toBeNull()
     expect(h.state.writes).toEqual(['# A\n\nB\n\nC\n'])
     expect(h.notify).toHaveBeenLastCalledWith('已修复 2 项（Ctrl+Z 可撤销）', 'info')
   })

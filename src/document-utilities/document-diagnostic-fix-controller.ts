@@ -242,7 +242,7 @@ export class DiagnosticFixController {
           return
         }
         if (this.prepared) this.prepared.inputValue = trimmed
-        this.planAndPreview()
+        this.planAndPreview(true)
       },
       onCancel: () => this.cancel(),
     })
@@ -299,7 +299,12 @@ export class DiagnosticFixController {
     return planAllAutoFixesV2(ctx, options)
   }
 
-  private planAndPreview(): void {
+  /**
+   * @param previewRequired `true` only for the naming/language input flow, where
+   * the user still confirms a written preview. Plain 修复 requests apply directly
+   * (no intermediate panel); every safety check is re-run inside confirmAndApply.
+   */
+  private planAndPreview(previewRequired = false): void {
     const prepared = this.prepared
     if (!prepared) return
     const documentKey = this.env.getDocumentKey()
@@ -327,6 +332,11 @@ export class DiagnosticFixController {
         this.env.notify(reason, 'error')
         this.cancel()
       }
+      return
+    }
+    if (!previewRequired) {
+      // 直接修复 — 点击「修复」立即写回，不再弹出预览中间界面。
+      void this.confirmAndApply(accepted, [], false)
       return
     }
     this.renderPreview(accepted, rejected, false, null)
@@ -428,6 +438,7 @@ export class DiagnosticFixController {
   private async confirmAndApply(
     previewedPlans: readonly FixPlanV2[],
     captionNames: readonly string[],
+    showPreview = true,
   ): Promise<void> {
     const prepared = this.prepared
     if (!prepared || this.busy) return
@@ -457,22 +468,18 @@ export class DiagnosticFixController {
     const plans = this.planAll(markdown, snapshot, documentKey)
     const { accepted } = selectNonConflictingPlans(plans)
     if (accepted.length === 0) {
-      this.busy = false
       const reason = plans.flatMap(p => p.blockers).map(b => b.message)[0] ?? '修复计划已失效，请重新检测。'
-      this.renderPreview(previewedPlans, [], false, reason)
+      this.reportApplyFailure(reason, previewedPlans, showPreview)
       return
     }
-    this.renderPreview(accepted, [], true, null)
+    if (showPreview) this.renderPreview(accepted, [], true, null)
 
     const captionPlans = accepted.filter(p => p.captionName != null)
     const patchPlans = accepted.filter(p => p.captionName == null)
     let sourceApplied = false
 
     if (patchPlans.length > 0 && !this.sourceVerified()) {
-      this.busy = false
-      const reason = '当前文档结构读取未验证，已取消修复；请稍后重试。'
-      this.renderPreview(accepted, [], false, reason)
-      this.env.notify(reason, 'error')
+      this.reportApplyFailure('当前文档结构读取未验证，已取消修复；请稍后重试。', accepted, showPreview)
       return
     }
 
@@ -484,10 +491,7 @@ export class DiagnosticFixController {
         afterMarkdown: next,
       })
       if (!result.ok) {
-        this.busy = false
-        const reason = REASON_TEXT[result.reason] ?? '修复未能写回编辑器。'
-        this.renderPreview(accepted, [], false, reason)
-        this.env.notify(reason, 'error')
+        this.reportApplyFailure(REASON_TEXT[result.reason] ?? '修复未能写回编辑器。', accepted, showPreview)
         return
       }
       sourceApplied = true
@@ -507,15 +511,13 @@ export class DiagnosticFixController {
       })
       if (outcome.ok) captionApplied = true
       else if (!outcome.reason?.startsWith('NO_')) {
-        this.busy = false
-        this.renderPreview(accepted, [], false, `题注名称写入失败：${outcome.reason ?? 'UNKNOWN'}`)
+        this.reportApplyFailure(`题注名称写入失败：${outcome.reason ?? 'UNKNOWN'}`, accepted, showPreview)
         return
       }
     }
 
     if (!sourceApplied && !captionApplied) {
-      this.busy = false
-      this.renderPreview(accepted, [], false, '没有任何修复被实际应用。')
+      this.reportApplyFailure('没有任何修复被实际应用。', accepted, showPreview)
       return
     }
 
@@ -554,6 +556,26 @@ export class DiagnosticFixController {
         : report,
       outcome.status === 'VERIFIED_FIXED' ? 'info' : 'error',
     )
+    this.prepared = null
+    this.ui.closeFixPanel()
+  }
+
+  /**
+   * 写回失败 — the preview flow keeps the panel and shows the reason in place;
+   * the DIRECT flow (no intermediate panel) only notifies and closes, otherwise
+   * the user would suddenly see the panel the direct flow is meant to skip.
+   */
+  private reportApplyFailure(
+    message: string,
+    accepted: readonly FixPlanV2[],
+    showPreview: boolean,
+  ): void {
+    this.busy = false
+    this.env.notify(message, 'error')
+    if (showPreview) {
+      this.renderPreview(accepted, [], false, message)
+      return
+    }
     this.prepared = null
     this.ui.closeFixPanel()
   }

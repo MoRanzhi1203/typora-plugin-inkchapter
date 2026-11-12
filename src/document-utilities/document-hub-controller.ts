@@ -1055,7 +1055,8 @@ export class DocumentHubController {
   }
 
   closeFixPanel(): void {
-    if (this.fixPanelState == null) return
+    // 直接修复不会打开修复面板，但同样要重绘一次：否则已修复的诊断行会停留在
+    // 展开的面板里，直到用户手动切换标签页。
     this.fixPanelState = null
     this.fixPanelHandlers = null
     if (this.mode === 'expanded' && this.tab === 'diagnostics') this.renderPanel()
