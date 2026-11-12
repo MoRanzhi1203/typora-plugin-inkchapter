@@ -436,3 +436,57 @@ console.log({
 | 一键修复 | 「已修复 5 项」；剩余 3 项（空路径 + 列表 + 引用），空路径仍为显式处理 |
 | Ctrl+Z / Ctrl+Y | 撤销恢复未闭合语法行；重做恢复补全后的标题错误 |
 | 保存源码 | K / L 标题图片移出，M 方括号补全，N / O 括号补全；`![]()` 原样保留 |
+
+---
+
+## 追加：V3-UI 文档检测面板全规则行号统一（本轮）
+
+### A. 审计发现
+
+- 源码类规则（`source-range` / `figure-occurrence` / `source-block`）有真实行号，但 UI 直接显示 0-based 值（例如源码第 87 行显示为 L86）。
+- `document-start` / `document-end` 边界规则、`caption-projection`、`multi-target` / `target-group` 投影不产生行号。
+- 标题 `canonical-node`、代码/链接 `block-node` 依赖 `data-line`；Typora 标题/链接元素常无该属性，导致「章节没有正文」「重复标题」「代码块缺少名称」「本地链接目标不存在」等行完全不显示。
+- `DOCUMENT_EMPTY` 等非定位通知没有任何行号来源。
+
+### B. 统一实现
+
+- `flattenDiagnosticsToProjections` 增加唯一位置解析链：
+  1. 定位器自带行（源码 range / 图片 occurrence / owning block / source-syntax opener）；
+  2. 实时元素 `data-line`；
+  3. 规则元数据真实行（`startLine` / `sectionStartLine` / `sourceLine` / `blockStartLine` 等）；
+  4. 嵌套定位器首成员（multi-target / target-group）；
+  5. 显式文档边界（document-start = L1；document-end = 当前行数）；
+  6. 仅 document 作用域规则允许回退到文档起点；非定位通知也以文档起点显示。
+- `computeDocumentDiagnostics` 统一盖章：用当前 Markdown 的 ATX 标题行表、canonical 对象边界表、链接事实与元素 `data-line` 为缺失行号的诊断补 `metadata.startLine`（0-based 内部值）。
+- `diagnosticDisplayLine(sourceLine)` 是唯一的 1-based 展示转换；面板、预览统一使用。
+- 行号列固定 48px、右对齐、tabular numbers、nowrap；修复按钮有无都不影响行号列。
+
+### C. 自动化
+
+- `document-diagnostic-line-unification-v1.test.ts`（8）：source/canonical/block/caption/element/document-start/end/multi-target/target-group/metadata/通知/1-based 显示。
+- `document-diagnostic-line-coverage-v1.test.ts`（3）：真实混合文档（标题跳级、重复标题、章节提示、本地链接、本地图片、代码块、图文混排、EOF）逐规则行号断言；无 DOM `data-line` 时所有投影仍非空；LF/CRLF/中文/Emoji 映射一致。
+
+### D. 真实 Typora GUI 复验（PASS）
+
+验收构建（dev bundle）`mainJsSha256=D7ABD178AC128DDE6DD0DCDB267937C5D0789DB111ACA135B7F58687F65B31E2`，`loadSource=vault / global`。最终交付重建为生产包 `mainJsSha256=68B31D88FD840CE33E17CDF4E32CA1CB84BF5A0AAADE74A12870A32970FF640C`；重新执行 dev 构建可复现 `D7ABD178…`，证明两次构建源码完全一致，仅压缩模式不同，行为不变。最终构建已同步到 vault 与两个全局插件目录。
+
+| 场景 | 真实结果 |
+|---|---|
+| 混合文档面板 | 5 警告 / 6 提示，全部行显示 1-based `Lxx` |
+| 章节仅包含子标题 | L3（章节标题行） |
+| 章节没有正文 | L5 / L7 / L77 / L79 等真实标题行 |
+| 重复标题 | L9（后出现的重复标题） |
+| 本地链接目标不存在 | L11 |
+| 本地图片不存在 | L13 |
+| 图片与正文同段 | L15 |
+| 一键修复后 | 行号随新快照重算：空路径从 L86 → L85，标题图片 L77；不再保留旧行号 |
+| 无修复按钮的 info 行 | 仍显示 L3 / L5 / L7 / L9 |
+| 窄窗口 / 5 位行号 | 48px 固定列 + nowrap + tabular numbers，无遮挡或换行 |
+
+### E. 最终门禁（本轮）
+
+- 全量 Vitest：**353 文件 / 6128 用例全部通过**（含新增 `document-diagnostic-line-unification-v1` 8 项、`document-diagnostic-line-coverage-v1` 3 项）。
+- `tsc --noEmit`：PASS。
+- `pnpm run build`（prod）：PASS，`dist/main.js` = `68B31D88…`。
+- `pnpm run docs:verify`：PASS（`DOC_BROKEN_LINK_COUNT=0`、`STALE_PROMPT_REFERENCE_COUNT=0`）。
+

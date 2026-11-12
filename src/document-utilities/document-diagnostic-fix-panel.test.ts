@@ -70,8 +70,9 @@ describe('fix panel — preview phase', () => {
 
   it('renders the REAL before/after hunks with their source lines', () => {
     const el = mount(preview, { onConfirm: vi.fn(), onCancel: vi.fn() })
-    expect(el.textContent).toContain('L3–4')
-    expect(el.textContent).toContain('L9')
+    // Hunks are 0-based source ranges; the panel renders the 1-based Lxx form.
+    expect(el.textContent).toContain('L4–5')
+    expect(el.textContent).toContain('L10')
     expect(el.textContent).toContain('+ （删除）')
     expect(el.textContent).toContain('Ctrl+Z')
     expect(el.querySelectorAll(`.${FIX_PANEL_CLASS}__hunk`)).toHaveLength(2)

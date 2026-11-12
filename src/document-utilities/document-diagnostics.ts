@@ -97,6 +97,8 @@ import {
   EXCESSIVE_INTERNAL_BLANK_LINES_RULE_ID,
   INTERNAL_BLANK_LINE_POLICY,
   analyzeInternalBlankLineGaps,
+  collectCanonicalSourceObjectLines,
+  collectSourceHeadingLines,
   internalBlankGapIdentity,
   internalBlankLineDetail,
 } from './document-diagnostic-internal-blank-lines-v1'
@@ -4316,12 +4318,109 @@ export function computeDocumentDiagnostics(
   emitSourceSyntaxIntegrity(input, push)
 
   const deduped = deduplicateDiagnostics(diagnostics)
+  const stamped = stampSourceLineFallbacks(input, deduped)
   return {
-    diagnostics: deduped,
-    errorCount: deduped.filter(d => d.severity === 'error').length,
-    warningCount: deduped.filter(d => d.severity === 'warning').length,
-    infoCount: deduped.filter(d => d.severity === 'info').length,
+    diagnostics: stamped,
+    errorCount: stamped.filter(d => d.severity === 'error').length,
+    warningCount: stamped.filter(d => d.severity === 'warning').length,
+    infoCount: stamped.filter(d => d.severity === 'info').length,
   }
+}
+
+/**
+ * V3-UI §4/§5 — stamp the ONE real source line onto every diagnostic whose
+ * locator does not carry it. The facts are the CURRENT document's source maps
+ * (ATX headings + canonical object boundaries) and the producer's own link
+ * facts; nothing is guessed. This makes the line available to every consumer
+ * (panel row, ordering, locate) even when Typora renders no `data-line`.
+ */
+function stampSourceLineFallbacks(
+  input: DocumentDiagnosticsInput,
+  diagnostics: readonly DocumentDiagnostic[],
+): DocumentDiagnostic[] {
+  const markdown = typeof input.markdown === 'string' ? input.markdown : ''
+  if (markdown === '') return [...diagnostics]
+  const headingLines = collectSourceHeadingLines(markdown)
+  const objectLines = collectCanonicalSourceObjectLines(markdown)
+  const headingIndexByIdentity = new Map<string, number>()
+  input.headings.forEach((heading, index) => {
+    const identity = typeof heading.stableIdentity === 'string' ? heading.stableIdentity.trim() : ''
+    if (identity !== '') headingIndexByIdentity.set(identity, index)
+  })
+  const lineCount = markdown.split('\n').length
+  const elementLine = (el: HTMLElement | null): number | null => {
+    let node: HTMLElement | null = el
+    while (node != null) {
+      const attr = node.getAttribute?.('data-line')
+      if (attr != null && attr !== '') {
+        const n = Number.parseInt(attr, 10)
+        if (Number.isFinite(n)) return n
+      }
+      node = node.parentElement
+    }
+    return null
+  }
+  const lineOfLocation = (loc: DiagnosticLocation | null | undefined): number | null => {
+    if (loc == null) return null
+    switch (loc.kind) {
+      case 'source-range':
+      case 'figure-occurrence':
+      case 'source-block':
+        return typeof loc.startLine === 'number' ? loc.startLine : null
+      case 'source-syntax-opener':
+        return typeof loc.sourceLine === 'number' ? loc.sourceLine : null
+      case 'canonical-node': {
+        const idx = headingIndexByIdentity.get(loc.stableIdentity)
+        return idx != null ? (headingLines[idx] ?? null) : null
+      }
+      case 'block-node':
+        return objectLines.get(loc.stableIdentity) ?? null
+      case 'document-start':
+        return 0
+      case 'document-end':
+        return Math.max(0, lineCount - 1)
+      case 'caption-projection':
+        return null
+      case 'multi-target': {
+        for (const target of loc.targets) {
+          const line = lineOfLocation(target)
+          if (line != null) return line
+        }
+        return null
+      }
+      case 'target-group':
+        return lineOfLocation(loc.scrollAnchor)
+      default:
+        return null
+    }
+  }
+  return diagnostics.map((diagnostic) => {
+    if (typeof diagnostic.metadata?.['startLine'] === 'number') return diagnostic
+    let line = lineOfLocation(diagnostic.location)
+    if (line == null) line = elementLine(diagnostic.locator?.targetElement ?? null)
+    if (line == null && diagnostic.category === 'heading') {
+      const identity = typeof diagnostic.stableIdentity === 'string' ? diagnostic.stableIdentity.trim() : ''
+      const idx = identity !== '' ? headingIndexByIdentity.get(identity) : undefined
+      if (idx != null) line = headingLines[idx] ?? null
+      const sectionLine = diagnostic.metadata?.['sectionStartLine']
+      if (line == null && typeof sectionLine === 'number') line = sectionLine
+    }
+    if (line == null && typeof diagnostic.targetIdentity === 'string') {
+      line = objectLines.get(diagnostic.targetIdentity) ?? null
+    }
+    // Link facts own their real source line (a link element rarely carries
+    // `data-line`; the source token does).
+    if (line == null && diagnostic.category === 'link') {
+      const identity = typeof diagnostic.targetIdentity === 'string' ? diagnostic.targetIdentity : ''
+      const fact = input.links.find(link =>
+        link.startLine != null
+        && (link.targetIdentity === identity || (identity !== '' && identity.startsWith(link.targetIdentity ?? '\u0000'))),
+      )
+      if (fact?.startLine != null) line = fact.startLine
+    }
+    if (line == null) return diagnostic
+    return { ...diagnostic, metadata: { ...(diagnostic.metadata ?? {}), startLine: line } }
+  })
 }
 
 /** Build the compact toolbar/UI state from a snapshot. */

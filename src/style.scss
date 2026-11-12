@@ -5732,8 +5732,8 @@ body.inkchapter-ribbon-hidden.typ-ribbon--enable.typora-node.native-window .side
 .inkchapter-doc-expand__diag {
   appearance: none;
   display: grid;
-  /* 6px severity dot · title/detail · 40px line number · 44px ONE primary action */
-  grid-template-columns: 6px minmax(0, 1fr) 40px 44px;
+  /* 6px severity dot · title/detail · 48px line number · 44px ONE primary action */
+  grid-template-columns: 6px minmax(0, 1fr) 48px 44px;
   column-gap: 6px;
   align-items: start;
   width: 100%;

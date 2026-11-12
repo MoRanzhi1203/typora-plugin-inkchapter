@@ -75,7 +75,12 @@ describe('view order V1 — default document-position sort', () => {
   })
 
   it('is deterministic and does not mutate the input', () => {
-    const list = [proj({ diagnosticId: 'x', sourceLine: 2 }), proj({ diagnosticId: 'y', sourceLine: 1 })]
+    // A document-start rule owns the boundary band (never a source line), so the
+    // fixtures use a source-positioned rule to exercise line ordering.
+    const list = [
+      proj({ diagnosticId: 'x', ruleId: 'HEADING_LEVEL_GAP', sourceLine: 2 }),
+      proj({ diagnosticId: 'y', ruleId: 'HEADING_LEVEL_GAP', sourceLine: 1 }),
+    ]
     const snapshot = list.map(p => p.diagnosticId)
     const sorted = sortProjections(list, 'document')
     expect(sorted.map(p => p.diagnosticId)).toEqual(['y', 'x'])

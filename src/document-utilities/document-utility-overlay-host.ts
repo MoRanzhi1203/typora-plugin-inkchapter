@@ -595,6 +595,7 @@ import {
   countDocumentOrderInversions,
   countMultiTargetGroupedInsteadOfPositionSorted,
   createDrawerOrderV514R1Counters,
+  diagnosticDisplayLine,
   documentPositionOf,
   evaluateDrawerOrderV514R1Gates,
   filterProjectionsBySeverity,
@@ -10743,6 +10744,9 @@ export class DocumentUtilityOverlayHost {
     return {
       headingIndexOfStableIdentity: id => (indexOf.has(id) ? indexOf.get(id)! : null),
       blockIndexOfStableIdentity: id => parseBlockIdentity(id)?.ordinal ?? null,
+      // V3-UI §6 — the ONE live source-line count for document-end rules.
+      documentLineCount: markdown == null ? undefined : (markdown === '' ? 1 : markdown.split('\n').length),
+      lineOfElement: el => sourceLineOfElement(el),
       lineOfStableIdentity: id => {
         const idx = indexOf.get(id)
         if (idx != null) {
@@ -23484,7 +23488,7 @@ export class DocumentUtilityOverlayHost {
         severity: (projection.severity === 'error' || projection.severity === 'warning' ? projection.severity : 'info') as 'error' | 'warning' | 'hint' | 'info',
         title: copy.title,
         detail: copy.description,
-        line: projection.sourceLine,
+        line: diagnosticDisplayLine(projection.sourceLine),
         ruleId: projection.ruleId,
         targetIndex: projection.targetIndex,
         targetCount: projection.targetCount,

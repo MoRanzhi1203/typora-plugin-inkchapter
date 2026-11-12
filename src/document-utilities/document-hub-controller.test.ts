@@ -343,6 +343,26 @@ describe('V5.2 diagnostics list (no summary page)', () => {
     expect(rows[1].textContent).toContain('L7')
   })
 
+  it('every row keeps Lxx when there is no fix, including info and 5-digit lines', () => {
+    const { controller } = mount()
+    controller.update(
+      buildDocumentStatusView(FACTS, false),
+      model(false, IMAGE, [
+        { id: 'i1', severity: 'info', title: '章节没有正文', detail: '', line: 12, ruleId: 'SECTION_EMPTY' },
+        { id: 'e1', severity: 'error', title: '图片资源不存在', detail: '', line: 12345, ruleId: 'FIGURE_LOCAL_IMAGE_MISSING' },
+      ]),
+    )
+    status(controller).click()
+    vi.advanceTimersByTime(300)
+    const rows = panel(controller).querySelectorAll<HTMLElement>('.inkchapter-doc-expand__diag')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].querySelector('.inkchapter-doc-expand__diag-loc')!.textContent).toBe('L12')
+    expect(rows[1].querySelector('.inkchapter-doc-expand__diag-loc')!.textContent).toBe('L12345')
+    // info without a fix still owns its line cell
+    expect(rows[0].querySelector('.inkchapter-doc-expand__diag-fix')).toBeNull()
+    expect(rows[1].querySelector('.inkchapter-doc-expand__diag-fix')).toBeNull()
+  })
+
   it('clicking a diagnostic row locates it and closes the toolbar', () => {
     const { controller, actions: a } = mount()
     status(controller).click()
@@ -575,9 +595,9 @@ describe('V5.2 Fluent Compact visual contract', () => {
     expect(ruleBodies('.inkchapter-doc-expand__filter')).not.toContain('display:')
   })
 
-  it('diagnostics use a stable 40px right-aligned location cell + 44px fix action', () => {
+  it('diagnostics use a stable 48px right-aligned location cell + 44px fix action', () => {
     const diagBody = ruleBodies('.inkchapter-doc-expand__diag')
-    expect(diagBody).toContain('grid-template-columns: 6px minmax(0, 1fr) 40px 44px')
+    expect(diagBody).toContain('grid-template-columns: 6px minmax(0, 1fr) 48px 44px')
     expect(ruleBodies('.inkchapter-doc-expand__diag-loc')).toContain('text-align: right')
     // The fix action is a low-emphasis but ALWAYS reachable entry (touch too).
     expect(ruleBodies('.inkchapter-doc-expand__diag-fix')).toContain('font-size: 11px')

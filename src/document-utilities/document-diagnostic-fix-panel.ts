@@ -241,8 +241,8 @@ function buildHunk(hunk: FixPanelHunk): HTMLElement {
   const loc = document.createElement('span')
   loc.className = `${FIX_PANEL_CLASS}__hunk-loc`
   loc.textContent = hunk.startLine === hunk.endLine
-    ? `L${hunk.startLine}`
-    : `L${hunk.startLine}–${hunk.endLine}`
+    ? `L${hunk.startLine + 1}`
+    : `L${hunk.startLine + 1}–${hunk.endLine + 1}`
   box.appendChild(loc)
 
   const before = document.createElement('div')

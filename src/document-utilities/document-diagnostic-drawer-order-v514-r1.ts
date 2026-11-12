@@ -78,6 +78,10 @@ export interface DocumentPositionContext {
   headingIndexOfStableIdentity?: (stableIdentity: string) => number | null
   blockIndexOfStableIdentity?: (stableIdentity: string) => number | null
   lineOfStableIdentity?: (stableIdentity: string) => number | null
+  /** V3-UI — the CURRENT document's source line count (for `document-end`). */
+  documentLineCount?: number
+  /** V3-UI — live element → `data-line` (0-based) resolver for DOM locators. */
+  lineOfElement?: (element: HTMLElement | null) => number | null
 }
 
 const SEVERITY_RANK: Readonly<Record<DiagnosticSeverityV514, number>> = { error: 0, warning: 1, info: 2 }
@@ -95,6 +99,58 @@ function sourceIdentityOf(loc: Extract<DiagnosticLocation, { kind: 'source-range
   if (typeof loc.sourceRangeIdentity === 'string' && loc.sourceRangeIdentity !== '') return loc.sourceRangeIdentity
   const occ = numOrNull(loc.occurrenceIndex)
   return `source:${loc.startLine}:${loc.startColumn}:${occ ?? 0}`
+}
+
+/**
+ * V3-UI §4/§5 — the ONE line fallback for diagnostics whose locator carries no
+ * `startLine` (document boundaries, caption projections, multi-target groups or
+ * rules that only publish source offsets). Keys are the REAL 0-based line fields
+ * already produced by the rule authors; a value is never invented here.
+ */
+const METADATA_LINE_KEYS = [
+  'startLine',
+  'sourceLine',
+  'line',
+  'sectionStartLine',
+  'headingLine',
+  'blockStartLine',
+  'openerLine',
+] as const
+
+function metadataLineOf(d: DocumentDiagnostic): number | null {
+  const metadata = d.metadata
+  if (metadata == null) return null
+  for (const key of METADATA_LINE_KEYS) {
+    const value = numOrNull(metadata[key])
+    if (value != null && value >= 0) return value
+  }
+  return null
+}
+
+/** The FIRST concrete line of a nested locator (multi-target / target-group). */
+function firstLocationLine(loc: DiagnosticLocation | null, ctx: DocumentPositionContext): number | null {
+  if (loc == null) return null
+  if (loc.kind === 'document-start') return 0
+  if (loc.kind === 'document-end') return Math.max(0, (ctx.documentLineCount ?? 1) - 1)
+  if (loc.kind === 'multi-target') {
+    for (const target of loc.targets) {
+      const line = firstLocationLine(target, ctx)
+      if (line != null) return line
+    }
+    return null
+  }
+  if (loc.kind === 'target-group') {
+    return firstLocationLine(loc.scrollAnchor, ctx)
+  }
+  return null
+}
+
+/**
+ * V3-UI §7 — the 0-based projection line is INTERNAL; every human-visible `Lxx`
+ * is 1-based. The ONE conversion lives here so no view adds its own +1.
+ */
+export function diagnosticDisplayLine(sourceLine: number | null): number | null {
+  return sourceLine == null ? null : Math.max(1, Math.floor(sourceLine) + 1)
 }
 
 function projectOne(
@@ -157,6 +213,21 @@ function projectOne(
       sourceLine = ctx.lineOfStableIdentity?.(stableIdentity) ?? null
     }
   }
+  // V3-UI §4 — ONE fallback chain for every rule that did not publish a line on
+  // its primary locator. Never a diagnostic-array index, DOM sibling order or a
+  // guessed value: each step reads a REAL scan-time fact.
+  if (sourceLine == null) sourceLine = ctx.lineOfElement?.(d.locator?.targetElement ?? null) ?? null
+  if (sourceLine == null) sourceLine = metadataLineOf(d)
+  if (sourceLine == null) sourceLine = firstLocationLine(loc, ctx)
+  if (sourceLine == null && d.locator?.action === 'GO_TOP') sourceLine = 0
+  if (sourceLine == null && d.locator?.action === 'GO_BOTTOM') {
+    sourceLine = Math.max(0, (ctx.documentLineCount ?? 1) - 1)
+  }
+  // A declared non-locatable notice (empty document) still has a DOCUMENT line:
+  // the explicit document-start boundary (rendered as L1), never an invented node.
+  if (sourceLine == null && d.nonLocatableNotice) sourceLine = 0
+  // Only a genuinely document-scoped rule may fall back to the document start.
+  if (sourceLine == null && getRuleMeta(d.code)?.scope === 'document') sourceLine = 0
   return {
     diagnosticId: d.id,
     ruleId: typeof d.code === 'string' && d.code !== '' ? d.code : d.id,
@@ -288,8 +359,18 @@ export function flattenDiagnosticsToProjections(
  *      promoted to band 0/2 — otherwise it jumps to the top of the list.
  */
 export function documentPositionOf(p: DiagnosticTargetProjection): DocumentPosition {
-  // §3 — a RESOLVED source line always wins: it is the ONE comparable unit for
-  // EVERY in-body target (source-range / figure-occurrence / source-block /
+  // §3 — the DECLARED boundary band is an ORDERING semantic, not a line number:
+  // a `document-end` rule still renders the last source line (Lxx) but must sort
+  // last. Resolve the boundary band BEFORE the resolved source line.
+  const strategy = getRuleMeta(p.ruleId)?.locationStrategy ?? null
+  if (strategy === 'document-start' || (strategy === null && p.locationKind === 'document-start')) {
+    return { band: DOCUMENT_POSITION_BAND_START, key: 0, subKey: 0 }
+  }
+  if (strategy === 'document-end' || (strategy === null && p.locationKind === 'document-end')) {
+    return { band: DOCUMENT_POSITION_BAND_END, key: 0, subKey: 0 }
+  }
+  // §3 — a RESOLVED source line is the ONE comparable unit for EVERY in-body
+  // target (source-range / figure-occurrence / source-block /
   // source-syntax-opener / canonical-node / block-node). Never a canonical
   // index, which would sort on an incomparable scale.
   if (p.sourceLine != null) {
@@ -299,19 +380,9 @@ export function documentPositionOf(p: DiagnosticTargetProjection): DocumentPosit
       subKey: p.targetIndex,
     }
   }
-  // §3 — the DECLARED boundary of the rule wins over a runtime location that
-  // merely degraded to a boundary. An unregistered code (legacy / test literal)
-  // keeps the raw location kind so the contract stays backwards compatible. A
-  // source-bearing rule whose location degraded to a boundary (a heading / object
-  // whose canonical identity could not be resolved) falls through to UNKNOWN —
-  // it is NEVER promoted to the front of the list.
-  const strategy = getRuleMeta(p.ruleId)?.locationStrategy ?? null
-  if (strategy === 'document-start' || (strategy === null && p.locationKind === 'document-start')) {
-    return { band: DOCUMENT_POSITION_BAND_START, key: 0, subKey: 0 }
-  }
-  if (strategy === 'document-end' || (strategy === null && p.locationKind === 'document-end')) {
-    return { band: DOCUMENT_POSITION_BAND_END, key: 0, subKey: 0 }
-  }
+  // §3 — a source-bearing rule whose location degraded to a boundary (a heading /
+  // object whose canonical identity could not be resolved) falls through to
+  // UNKNOWN — it is NEVER promoted to the front of the list.
   // §11 — an UNRESOLVED in-body target sorts AFTER every located one, but BEFORE
   // document-end, so it can never jump into the front of the list.
   return { band: DOCUMENT_POSITION_BAND_SOURCE, key: DOCUMENT_POSITION_KEY_UNKNOWN, subKey: p.targetIndex }
