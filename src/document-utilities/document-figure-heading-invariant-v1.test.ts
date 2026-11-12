@@ -271,4 +271,9 @@ describe('pure source authority', () => {
     expect(tokens.map(t => t.rawToken)).toEqual(['![a](x.png)', '![]()'])
     expect(tokens.filter(t => t.emptyDestination)).toHaveLength(1)
   })
+
+  it('the shared resource scanner also excludes escaped image syntax', () => {
+    const occurrences = parseImageSourceOccurrences('\\![a](x.png) ![b](y.png)\n')
+    expect(occurrences.map(o => o.rawToken)).toEqual(['![b](y.png)'])
+  })
 })

@@ -300,14 +300,27 @@ console.log({
 
 ### C. 自动化回归
 
-- `document-figure-heading-invariant-v1.test.ts`：20 条用例（H1–H6、前/中/后、
+- `document-figure-heading-invariant-v1.test.ts`：21 条用例（H1–H6、前/中/后、
   多图、仅图片、三种空路径、行内代码/转义/围栏排除、标题层级保持、图片 token 保持、
-  空路径错误残留、单项与一键一致性、幂等、抽屉文案）。
-- 全量 Vitest：349 文件 / 6071 测试通过；`tsc --noEmit` PASS；`pnpm build` PASS。
+  空路径错误残留、单项与一键一致性、幂等、抽屉文案、共享扫描器转义排除）。
+- 全量 Vitest：349 文件 / 6072 测试通过；`tsc --noEmit` PASS；`pnpm build` PASS。
 
-### D. GUI 验收
+### D. GUI 验收（真实 Typora，PASS）
 
 夹具：`test/vault/runtime/smoke/Figure-Heading-Image-Test.md`。
-运行时回执确认新构建已由 Typora 加载（`mainJsSha256=D401F011…`，`loadSource=vault`）。
-面板点击 / Ctrl+Z / Ctrl+Y 的交互验收仍 NEEDS_MANUAL：Typora 1.6.7 拒绝远程调试、
-无可访问性树，插件浮层无法被窗口截图捕获。
+运行时回执确认新构建已由 Typora 加载（`mainJsSha256=DC4F05AC…`，`loadSource=vault`）。
+
+| 步骤 | 真实结果 |
+|---|---|
+| 检测面板 | 7 条 H2–H6「图片被插入标题」（含两处空路径标题）+「图片路径为空」独立行；标题/说明与规则表一致，无通用「图片必须作为独立块插入」 |
+| 单项修复 | 点击第 4 行「将图片移出标题」→ toast「已修复 1 项」；标题文字保留、图片移到标题外；错误 9 → 8 |
+| 一键修复 | 点击「一键修复可处理项」→ toast「已修复 7 项」；7 个标题图片全部移出；错误 2（仅两个「图片路径为空」），警告 1（代码块名称），提示 1 |
+| 空路径残留 | 第 24 / 28 行「图片路径为空」仍在，且**没有修复按钮**；`![]()` / `![说明]()` 原样保留 |
+| 行内代码 / 转义 / 围栏 | 行内代码与代码围栏不产生诊断；转义图片保持文字 `!不应检测`，不产生图片行 |
+| 去重 | 同一标题只有 1 条 `FIGURE_IN_HEADING`；无 `FIGURE_TEXT_MIXED` / `FIGURE_MULTIPLE_SAME_BLOCK` |
+| Ctrl+Z / Ctrl+Y | 单项修复后 Ctrl+Z 回到原始结构（错误 9），Ctrl+Y 恢复修复结果（错误 8） |
+
+**GUI 验收发现并修复的真实缺陷**：共享资源扫描器此前未排除反斜杠转义的图片标记
+（`\![alt](src)`），导致转义行被当成 `FIGURE_TEXT_MIXED` 并被一键修复拆成图片。
+已在 `scanMarkdownReferences` / `findReferenceSpans` 中跳过奇数反斜杠转义的引用，
+并新增回归用例；复验后转义行保持文字且不再有任何图片诊断。

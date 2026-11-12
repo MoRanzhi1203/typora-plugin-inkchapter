@@ -173,6 +173,8 @@ function scanMarkdownReferences(markdown: string): ScannedReference[] {
     if (!rawDestination) continue
     const sourceStart = m.index
     const sourceEnd = m.index + m[0].length
+    // A backslash-escaped marker is literal text, never a resource candidate.
+    if (isEscapedAt(markdown, sourceStart)) continue
     if (isSourceRangeLiteral(literalRanges, sourceStart, sourceEnd)) continue
     // Destination/path span: the raw destination text sits immediately before
     // the closing `)`, and the path is its first whitespace-separated token.
@@ -347,10 +349,20 @@ export function parseImageSourceOccurrences(markdown: string): ImageSourceOccurr
   return out
 }
 
+/** True when `offset` is escaped by an ODD number of preceding backslashes. */
+function isEscapedAt(text: string, offset: number): boolean {
+  let backslashes = 0
+  for (let i = offset - 1; i >= 0 && text.charAt(i) === '\\'; i--) backslashes++
+  return backslashes % 2 === 1
+}
+
 /**
  * V5.12-R8 §6/§7 — the reference spans on ONE source line, in the scanner's own
  * coordinate system. The locate resolver re-derives its OWN offsets with this
  * function so the resolved range is directly comparable to the expected one.
+ *
+ * A backslash-escaped marker (`\![alt](src)` / `\[text](src)`) is LITERAL text,
+ * never a reference: the escape is part of Markdown syntax, not a resource.
  */
 export function findReferenceSpans(lineText: string): ReferenceSpan[] {
   const out: ReferenceSpan[] = []
@@ -358,6 +370,7 @@ export function findReferenceSpans(lineText: string): ReferenceSpan[] {
   let m: RegExpExecArray | null
   while ((m = re.exec(lineText)) !== null) {
     const resourceKind: ResourceKind = m[1] === '!' ? 'image' : 'link'
+    if (isEscapedAt(lineText, m.index)) continue
     const destinationText = m[3]
     const rawDestination = destinationText.trim().split(/\s+/)[0]
     if (!rawDestination) continue
