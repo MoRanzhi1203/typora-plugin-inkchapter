@@ -28,6 +28,26 @@ import {
   FIGURE_BLOCK_STRUCTURE_AUDIT,
 } from '../document-utilities/document-standalone-object-block-invariant-v515'
 
+/**
+ * V2 §10 — Typora's UNFINISHED image editor state (`![]()`, `![alt]()`) renders a
+ * real `<img>` plus an empty path control. It is a resource error, NOT a picture
+ * object: it must never take a figure number / caption, otherwise one empty
+ * placeholder silently shifts every following figure (the reported “编号错乱”).
+ *
+ * Only Typora's own wrapper is trusted; a plain `<img src="">` produced by other
+ * callers keeps the legacy anonymous-figure behaviour.
+ */
+function isUnfinishedImagePlaceholder(img: HTMLElement): boolean {
+  const wrapper = img.closest<HTMLElement>('.md-image')
+  if (wrapper == null) return false
+  if (wrapper.querySelector('.md-image-input-src-btn') != null) return true
+  const src = (img.getAttribute('src') ?? '').trim()
+  const dataSrc = (img.getAttribute('data-src') ?? '').trim()
+  if (src === '' && dataSrc === '') return true
+  const srcSpan = wrapper.querySelector('.md-image-src-span')
+  return srcSpan != null && (srcSpan.textContent ?? '').trim() === ''
+}
+
 export interface CaptionTarget {
   type: CaptionTargetType
   /** 0-based ordinal among same-type targets in document order. */
@@ -498,6 +518,9 @@ export class CaptionDomAdapter {
     root.querySelectorAll<HTMLElement>('img').forEach(img => {
       if (isInside(img, 'pre, code, .md-codeblock, table')) return
       if (isInside(img, `[${CAPTION_ATTR}]`)) return
+      // V2 §10 — an unfinished `![]()` editor placeholder is a resource error,
+      // never a numbered/captioned figure.
+      if (isUnfinishedImagePlaceholder(img)) return
       // ── V5.15 §6/§9/§10/§24 — STANDALONE OBJECT BLOCK GATE ──────────────
       // An invalid image owning block is never admitted as a normal figure
       // target: it is excluded BEFORE the per-type ordinal assignment below, so

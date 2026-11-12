@@ -78,6 +78,43 @@ describe('CaptionDomAdapter', () => {
     expect(targets[1].ordinal).toBe(1)
   })
 
+  // V2 §10 — an unfinished `![]()` placeholder is a resource error, not a figure.
+  // It must never take a number (otherwise every following figure shifts by one).
+  it('excludes the unfinished Typora image-path placeholder from figure targets', () => {
+    const p = document.createElement('p')
+    p.innerHTML = [
+      '<span class="md-image">',
+      '<span class="md-image-src-span">',
+      '<span class="md-image-btn md-image-input-src-btn"></span>',
+      '</span>',
+      '<img src="" data-src="">',
+      '</span>',
+    ].join('')
+    root.appendChild(p)
+    img('after.png', root)
+
+    const figures = adapter.collectTargets().filter(t => t.type === 'figure')
+    expect(figures).toHaveLength(1)
+    expect(figures[0].src).toBe('after.png')
+    expect(figures[0].ordinal).toBe(0)
+  })
+
+  it('admits the same wrapper once the user fills the image path', () => {
+    const p = document.createElement('p')
+    p.innerHTML = [
+      '<span class="md-image">',
+      '<span class="md-image-src-span">assets/a.png</span>',
+      '<img src="assets/a.png" data-src="assets/a.png">',
+      '</span>',
+    ].join('')
+    root.appendChild(p)
+
+    const figures = adapter.collectTargets().filter(t => t.type === 'figure')
+    expect(figures).toHaveLength(1)
+    expect(figures[0].src).toBe('assets/a.png')
+    expect(figures[0].ordinal).toBe(0)
+  })
+
   // V7 §9 — duplicate-destination figures must never share a caption owner.
   it('gives duplicate-destination figures distinct owner keys (no collision)', () => {
     const imA = img('same.png', root)
