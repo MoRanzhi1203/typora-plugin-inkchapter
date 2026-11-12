@@ -36,6 +36,8 @@ import { parseImageSourceOccurrences, type ImageSourceOccurrence } from './docum
 import {
   analyzeHeadingImages,
   buildHeadingImageFix,
+  scanSourceImageTokens,
+  FIGURE_EMPTY_SOURCE_CODE,
   FIGURE_IN_HEADING_CODE,
   type HeadingImageEntry,
 } from './document-figure-heading-invariant-v1'
@@ -553,6 +555,117 @@ export const FIGURE_IN_HEADING_FIX: Fixer = {
   },
 }
 
+/** Build a line-deletion patch that keeps block spacing canonical. */
+function buildWholeLineRemovalPatch(markdown: string, lineIndex: number): DiagnosticFixPatch | null {
+  const lines = splitFixLines(markdown)
+  const line = lines[lineIndex]
+  if (!line) return null
+  const eol = markdown.includes('\r\n') ? '\r\n' : '\n'
+  let start = line.start
+  const end = line.end
+  const before = markdown.slice(0, start)
+  const after = markdown.slice(end)
+  // Removing a line between two blank lines would leave two blank lines:
+  // absorb ONE preceding EOL so exactly one blank line remains.
+  if (before.endsWith(eol + eol) && after.startsWith(eol)) start -= eol.length
+  return {
+    start,
+    end,
+    before: markdown.slice(start, end),
+    after: '',
+    lineStart: lineIndex,
+    lineEnd: lineIndex,
+    kind: 'delete-lines' as const,
+  }
+}
+
+/**
+ * `FIGURE_EMPTY_SOURCE` — remove an unfinished image node without inventing a
+ * path:
+ *   - a standalone / inline `![]()` token is removed (surrounding text stays);
+ *   - a token inside an H1–H6 heading is removed together with the heading
+ *     structure repair, so ONE action fixes both the heading payload and the
+ *     empty resource; valid images of that heading still move out in order.
+ */
+export const FIGURE_EMPTY_SOURCE_FIX: Fixer = {
+  code: FIGURE_EMPTY_SOURCE_CODE,
+  support: 'AUTO',
+  label: '移除空图片',
+  build(diagnostic, ctx) {
+    const meta = diagnostic.metadata ?? {}
+    const location = locationOf(diagnostic)
+    const sourceStart = asNumber((location as { sourceStart?: unknown } | null)?.sourceStart)
+    const sourceEnd = asNumber((location as { sourceEnd?: unknown } | null)?.sourceEnd)
+    const rawToken = typeof meta.rawToken === 'string' ? meta.rawToken : ''
+    const tokens = scanSourceImageTokens(ctx.markdown).filter(token => token.emptyDestination)
+    const token = tokens.find(t => t.tokenStart === sourceStart && t.tokenEnd === sourceEnd)
+      ?? tokens.find(t => rawToken !== '' && t.rawToken === rawToken
+        && (asNumber(meta.startLine) == null || t.lineIndex === asNumber(meta.startLine)))
+    if (token == null) {
+      return { blockers: [blocker('STALE_DIAGNOSTIC', '目标空图片已变化，请重新检测后再修复。')] }
+    }
+    const eol = ctx.markdown.includes('\r\n') ? '\r\n' : '\n'
+    const heading = analyzeHeadingImages(ctx.markdown)
+      .find(entry => entry.images.some(image => image.tokenStart === token!.tokenStart))
+    if (heading != null) {
+      const validImages = heading.images
+        .filter(image => !image.emptyDestination)
+        .map(image => image.rawToken)
+      const marker = ctx.markdown
+        .slice(heading.lineStart, heading.headingTextStart)
+        .replace(/[ \t]+$/, ' ')
+      let after = heading.textWithoutImages === '' ? '' : `${marker}${heading.textWithoutImages}`
+      if (validImages.length > 0) {
+        after += (after === '' ? '' : eol + eol) + validImages.join(eol + eol)
+      }
+      if (after === '') {
+        const patch = buildWholeLineRemovalPatch(ctx.markdown, heading.lineIndex)
+        return patch ? { patches: [patch] } : { blockers: [blocker('INVALID_FACT', '无法移除该空图片行。')] }
+      }
+      const before = ctx.markdown.slice(heading.lineStart, heading.lineEnd)
+      return {
+        patches: [{
+          start: heading.lineStart,
+          end: heading.lineEnd,
+          before,
+          after,
+          lineStart: heading.lineIndex,
+          lineEnd: heading.lineIndex,
+          kind: 'replace-block',
+        }],
+      }
+    }
+    const lines = splitFixLines(ctx.markdown)
+    const line = lines[token.lineIndex]
+    if (!line) {
+      return { blockers: [blocker('PATCH_OUT_OF_BOUNDS', '空图片所在行不存在。')] }
+    }
+    const relativeStart = token.tokenStart - line.start
+    const relativeEnd = token.tokenEnd - line.start
+    if (relativeStart < 0 || relativeEnd > line.text.length) {
+      return { blockers: [blocker('INVALID_FACT', '空图片 token 与当前源码不一致。')] }
+    }
+    const remaining = (line.text.slice(0, relativeStart) + line.text.slice(relativeEnd))
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/[ \t]+$/, '')
+    if (remaining.trim() === '') {
+      const patch = buildWholeLineRemovalPatch(ctx.markdown, token.lineIndex)
+      return patch ? { patches: [patch] } : { blockers: [blocker('INVALID_FACT', '无法移除该空图片行。')] }
+    }
+    return {
+      patches: [{
+        start: line.start,
+        end: line.start + line.text.length,
+        before: line.text,
+        after: remaining,
+        lineStart: token.lineIndex,
+        lineEnd: token.lineIndex,
+        kind: 'replace-line',
+      }],
+    }
+  },
+}
+
 function parseCodeOrdinal(diagnostic: DocumentDiagnostic): number | null {
   const location = locationOf(diagnostic)
   const stable = location && 'stableIdentity' in location ? String(location.stableIdentity ?? '') : ''
@@ -692,6 +805,7 @@ export function createDefaultDiagnosticFixRegistry(): DiagnosticFixRegistry {
     .register(FIGURE_IN_QUOTE_FIX)
     .register(FIGURE_INLINE_FORMAT_FIX)
     .register(FIGURE_IN_HEADING_FIX)
+    .register(FIGURE_EMPTY_SOURCE_FIX)
     .register(CODE_LANGUAGE_FIX)
     .register(FIGURE_NAME_FIX)
     .register(CODE_NAME_FIX)

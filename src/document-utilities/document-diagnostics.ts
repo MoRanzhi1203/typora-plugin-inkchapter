@@ -3135,7 +3135,7 @@ export function computeDocumentDiagnostics(
     if (!token.emptyDestination) continue
     push(
       makeDiagnostic(input, 'figure', FIGURE_EMPTY_SOURCE_CODE, '图片路径为空', {
-        detail: `图片语法「${token.rawToken}」没有目标路径，无法解析为图片。`,
+        detail: `图片语法「${token.rawToken}」没有目标路径，无法显示图片。可补充路径，或点击修复移除空图片节点。`,
         kind: 'object',
         targetIdentity: `empty-source:${token.tokenStart}`,
         metadata: {

@@ -28,7 +28,7 @@
 | `LIST_EMPTY_ITEM` | `AUTO_SAFE` | 源补丁：删除无内容的列表标记行 | ✅ 同上 | format-integrity-v1 / fix-v2 |
 | `FORMULA_SINGLE_LINE_BLOCK` | `AUTO_SAFE` | 源补丁：`$$x$$` → `$$` / 公式 / `$$` 三行 | ✅ 同上 | format-integrity-v1 / fix-v2 |
 | `FIGURE_IN_HEADING` | `AUTO_SAFE` | 源补丁：保留标题层级与文字，图片按原顺序移出为独立段落（仅图片标题移除标题结构） | ✅ 同上 | heading-v1 / classification-v1 |
-| `FIGURE_EMPTY_SOURCE` | `UNAVAILABLE` | 仅「定位 / 说明」；不伪造路径、不自动上传下载 | — | heading-v1 |
+| `FIGURE_EMPTY_SOURCE` | `AUTO_SAFE` | 源补丁：移除空图片 token（标题内同时完成标题结构修复；不伪造路径） | ✅ 同上 | heading-v1 / classification-v1 |
 | `FIGURE_BLOCK_STRUCTURE_INVALID` | `AUTO_SAFE` | 源补丁：把通用非法 owning block 拆成「文字块 / 每图一块」 | ✅ 同上 | v515 §11 / fix-v2 |
 | `FIGURE_MULTIPLE_SAME_BLOCK` | `AUTO_SAFE` | 源补丁：按原顺序拆成「每图一块」 | ✅ 同上 | v515 §8.2 / classification-v1 |
 | `FIGURE_TEXT_MIXED` | `AUTO_SAFE` | 源补丁：文字 / 图片 / 文字 三段 | ✅ 同上 | v515 §8.2 / classification-v1 |

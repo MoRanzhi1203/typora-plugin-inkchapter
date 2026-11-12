@@ -399,7 +399,7 @@
   - `FIGURE_INLINE_FORMAT`（警告，图片包含不允许的行内格式）
   - `FIGURE_BLOCK_STRUCTURE_INVALID`（错误，通用兜底「图片独立块结构异常」）
   - `FIGURE_IN_HEADING`（错误，图片被插入标题；H1–H6，优先级高于多图/图文混排）
-  - `FIGURE_EMPTY_SOURCE`（错误，图片路径为空；独立资源维度，结构修复后仍保留）
+  - `FIGURE_EMPTY_SOURCE`（错误，图片路径为空；独立资源维度；AUTO_SAFE「移除空图片」，标题内会与结构修复合并完成）
 
   非法块**压制** `FIGURE_MISSING_NAME`、**禁止**编号/命名/caption，但**仍可定位**（`source-block`）。
 - **合法/非法容器**：合法 `paragraph | figure`；非法 `list-item | blockquote | table | code`。自动修复 `buildStandaloneFigureBlockFix()`：段落拆分、顶层列表移除标记、引用移除**全部**层级、行内格式剥离；表格 / 嵌套列表 / 非常规引用续行显式拒绝（`autoFixable=false`，无修复按钮）。拆分保文本/URL/数量/顺序、exactly-one-blank、幂等。

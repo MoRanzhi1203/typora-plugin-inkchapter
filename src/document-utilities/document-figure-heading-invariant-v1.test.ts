@@ -82,6 +82,16 @@ function fixFirstHeading(markdown: string): string {
   return applyPatchesToMarkdown(markdown, built.patches ?? [])
 }
 
+function fixFirstEmptySource(markdown: string): string {
+  const diagnostic = emptySourceDiagnostics(markdown)[0]
+  expect(diagnostic, 'expected a FIGURE_EMPTY_SOURCE diagnostic').toBeTruthy()
+  const fixer = createDefaultDiagnosticFixRegistry().get(FIGURE_EMPTY_SOURCE_CODE)
+  expect(fixer).toBeTruthy()
+  const built = fixer!.build(diagnostic, fixCtx(markdown))
+  expect(built.blockers ?? []).toEqual([])
+  return applyPatchesToMarkdown(markdown, built.patches ?? [])
+}
+
 beforeEach(() => {
   resetFigureBlockStructureV515State()
 })
@@ -162,6 +172,26 @@ describe('空路径图片（未完成图片节点）', () => {
     expect(fixed).toBe('![]()\n')
     expect(emptySourceDiagnostics(fixed)).toHaveLength(1)
   })
+
+  it('the dedicated fix removes an inline empty token and keeps the text', () => {
+    expect(fixFirstEmptySource('前文 ![]() 后文\n')).toBe('前文 后文\n')
+    expect(fixFirstEmptySource('前文 ![说明]() 后文\n')).toBe('前文 后文\n')
+  })
+
+  it('the dedicated fix removes a standalone empty image line and normalizes blanks', () => {
+    expect(fixFirstEmptySource('![]()\n')).toBe('')
+    expect(fixFirstEmptySource('A\n\n![]()\n\nB\n')).toBe('A\n\nB\n')
+  })
+
+  it('a heading empty image is fixed together with the heading structure', () => {
+    expect(fixFirstEmptySource('## 标题 ![]()\n')).toBe('## 标题\n')
+    expect(fixFirstEmptySource('## ![说明]()\n')).toBe('')
+    expect(fixFirstEmptySource('## 标题 ![说明]() ![A](a.png)\n'))
+      .toBe('## 标题\n\n![A](a.png)\n')
+    const fixed = fixFirstEmptySource('## 标题 ![]()\n')
+    expect(headingDiagnostics(fixed)).toEqual([])
+    expect(emptySourceDiagnostics(fixed)).toEqual([])
+  })
 })
 
 describe('优先级与去重', () => {
@@ -241,6 +271,31 @@ describe('修复完整性', () => {
     expect(next).toBe('## 标题\n\n![A](a.png)\n\n### 另一个\n\n![B](b.png)\n')
   })
 
+  it('one-click fixes heading structure AND empty-path images in one transaction', () => {
+    const md = '## 标题 ![]()\n\n### 另一个 ![A](a.png)\n\n## 普通 ![说明]()\n'
+    const out = computeDocumentDiagnostics(inputOf(md))
+    const snapshot = {
+      documentKey: DOC_KEY,
+      revision: 1,
+      sourceRevision: 1,
+      generatedAt: 1,
+      diagnostics: out.diagnostics,
+      errorCount: out.errorCount,
+      warningCount: out.warningCount,
+      infoCount: out.infoCount,
+      structuralVerified: true,
+    }
+    const plans = planAllAutoFixesV2(
+      { markdown: md, snapshotMarkdown: md, documentKey: DOC_KEY, snapshot, locked: false },
+      { captionAvailable: true },
+    )
+    const { accepted } = selectNonConflictingPlans(plans)
+    const { next } = buildFixedMarkdown(md, accepted)
+    expect(next).toBe('## 标题\n\n### 另一个\n\n![A](a.png)\n\n## 普通\n')
+    expect(headingDiagnostics(next)).toEqual([])
+    expect(emptySourceDiagnostics(next)).toEqual([])
+  })
+
   it('the drawer copy uses the required name and explanation', () => {
     const diagnostic = headingDiagnostics('## 标题 ![图](a.png)\n')[0]
     const copy = resolveDiagnosticCopy({
@@ -253,7 +308,8 @@ describe('修复完整性', () => {
     expect(copy.description).toContain('标题中包含图片')
     expect(copy.description).toContain('独立段落')
     expect(describeFixCapability(FIGURE_IN_HEADING_CODE).capability).toBe('AUTO_SAFE')
-    expect(describeFixCapability(FIGURE_EMPTY_SOURCE_CODE).capability).toBe('UNAVAILABLE')
+    expect(describeFixCapability(FIGURE_EMPTY_SOURCE_CODE).capability).toBe('AUTO_SAFE')
+    expect(describeFixCapability(FIGURE_EMPTY_SOURCE_CODE).label).toBe('移除空图片')
   })
 })
 

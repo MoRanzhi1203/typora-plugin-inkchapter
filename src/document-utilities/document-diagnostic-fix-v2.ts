@@ -21,10 +21,15 @@
  */
 import type { DocumentDiagnostic, DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import {
+  FIGURE_EMPTY_SOURCE_CODE,
+  FIGURE_IN_HEADING_CODE,
+} from './document-figure-heading-invariant-v1'
+import {
   CODE_LANGUAGE_FIX,
   FIGURE_BLOCK_STRUCTURE_INVALID_FIX,
   FIGURE_INLINE_FORMAT_FIX,
   FIGURE_IN_HEADING_FIX,
+  FIGURE_EMPTY_SOURCE_FIX,
   FIGURE_IN_LIST_FIX,
   FIGURE_IN_QUOTE_FIX,
   FIGURE_MULTIPLE_SAME_BLOCK_FIX,
@@ -132,6 +137,12 @@ const CAPABILITY_MATRIX: Readonly<Record<string, FixCapabilityDescriptor>> = Obj
     code: 'FIGURE_IN_HEADING',
     capability: 'AUTO_SAFE',
     label: '将图片移出标题',
+    actionKind: 'source-patches',
+  },
+  FIGURE_EMPTY_SOURCE: {
+    code: 'FIGURE_EMPTY_SOURCE',
+    capability: 'AUTO_SAFE',
+    label: '移除空图片',
     actionKind: 'source-patches',
   },
   CODE_MISSING_LANGUAGE: {
@@ -287,6 +298,7 @@ const V1_FIXERS: Readonly<Record<string, Fixer>> = Object.freeze({
   FIGURE_IN_QUOTE: FIGURE_IN_QUOTE_FIX,
   FIGURE_INLINE_FORMAT: FIGURE_INLINE_FORMAT_FIX,
   FIGURE_IN_HEADING: FIGURE_IN_HEADING_FIX,
+  FIGURE_EMPTY_SOURCE: FIGURE_EMPTY_SOURCE_FIX,
   CODE_MISSING_LANGUAGE: CODE_LANGUAGE_FIX,
   FIGURE_MISSING_NAME: FIGURE_NAME_FIX,
 })
@@ -414,18 +426,38 @@ export function selectNonConflictingPlans(plans: readonly FixPlanV2[]): {
   const rejected: FixPlanV2[] = []
   for (const plan of plans) {
     if (!plan.ok) { rejected.push(plan); continue }
-    const overlap = accepted.some(other => patchesOverlap(other.patches, plan.patches))
-    if (overlap) {
-      rejected.push({
-        ...plan,
-        ok: false,
-        blockers: [...plan.blockers, blocker('PATCH_CONFLICT', '与其他待修复项范围重叠。')],
-      })
+    const overlapIndex = accepted.findIndex(other => patchesOverlap(other.patches, plan.patches))
+    if (overlapIndex < 0) {
+      accepted.push(plan)
       continue
     }
-    accepted.push(plan)
+    // A FIGURE_EMPTY_SOURCE fix on a heading ALREADY performs the heading
+    // structure repair (moves valid images out, removes the empty token), so it
+    // supersedes the plain FIGURE_IN_HEADING plan for the same line. Prefer it
+    // instead of dropping it as a conflict; the final result is re-diagnosed.
+    const overlapping = accepted[overlapIndex]
+    if (plan.code === FIGURE_EMPTY_SOURCE_CODE
+      && overlapping.code === FIGURE_IN_HEADING_CODE
+      && patchSpan(plan.patches) >= patchSpan(overlapping.patches)) {
+      rejected.push({
+        ...overlapping,
+        ok: false,
+        blockers: [...overlapping.blockers, blocker('PATCH_CONFLICT', '与其他待修复项范围重叠。')],
+      })
+      accepted[overlapIndex] = plan
+      continue
+    }
+    rejected.push({
+      ...plan,
+      ok: false,
+      blockers: [...plan.blockers, blocker('PATCH_CONFLICT', '与其他待修复项范围重叠。')],
+    })
   }
   return { accepted, rejected }
+}
+
+function patchSpan(patches: readonly DiagnosticFixPatch[]): number {
+  return patches.reduce((total, patch) => total + Math.max(0, patch.end - patch.start), 0)
 }
 
 function patchesOverlap(a: readonly DiagnosticFixPatch[], b: readonly DiagnosticFixPatch[]): boolean {
