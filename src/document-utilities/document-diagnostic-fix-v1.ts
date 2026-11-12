@@ -19,6 +19,15 @@ import type {
 } from './diagnostics-types'
 import { parseFencedCodeBlocks } from './content-block-toolbar-code-source'
 import { isRangeProtected, parseDocumentSourceSyntax } from './document-source-syntax-authority'
+import {
+  FIGURE_MIXED_WITH_TEXT_CODE,
+  FORMULA_SINGLE_LINE_BLOCK_CODE,
+  LIST_EMPTY_ITEM_CODE,
+  isImageMixedWithText,
+  isEmptyListMarker,
+  singleLineDisplayFormulaSource,
+  splitImageSegments,
+} from './document-format-integrity-v1'
 
 export type DiagnosticFixSupport = 'AUTO' | 'REQUIRES_INPUT' | 'MANUAL' | 'UNSUPPORTED'
 
@@ -49,7 +58,7 @@ export interface DiagnosticFixPatch {
   after: string
   lineStart: number
   lineEnd: number
-  kind: 'delete-lines' | 'replace-tail' | 'insert-language' | 'insert-figure-name'
+  kind: 'delete-lines' | 'replace-tail' | 'insert-language' | 'insert-figure-name' | 'replace-line'
 }
 
 export interface FixPreviewHunk {
@@ -256,6 +265,121 @@ export const TRAILING_BLANK_LINES_FIX: Fixer = {
   },
 }
 
+/**
+ * Locate the diagnostic's source line inside the CURRENT Markdown. The recorded
+ * `lineNumber` is preferred, but every candidate must still look like the shape
+ * the diagnostic described — a stale/duplicated fact never deletes content.
+ */
+function locateDiagnosticLine(
+  ctx: FixContext,
+  diagnostic: DocumentDiagnostic,
+  matches: (text: string) => boolean,
+): { line: FixLine; index: number } | { blocker: FixBlocker } {
+  const meta = diagnostic.metadata ?? {}
+  const recorded = asNumber(meta.lineNumber)
+  const expectedText = typeof meta.lineText === 'string' ? meta.lineText : null
+  const lines = splitFixLines(ctx.markdown)
+  if (recorded != null && recorded < lines.length && matches(lines[recorded].text)) {
+    return { line: lines[recorded], index: recorded }
+  }
+  const candidates: number[] = []
+  for (let i = 0; i < lines.length; i++) {
+    if (!matches(lines[i].text)) continue
+    if (expectedText != null && lines[i].text !== expectedText) continue
+    candidates.push(i)
+  }
+  if (candidates.length === 0) return { blocker: blocker('STALE_DIAGNOSTIC', '目标行已变化，请重新检测后再修复。') }
+  if (candidates.length > 1) return { blocker: blocker('STALE_DIAGNOSTIC', '存在多处相同格式，请重新检测后再修复。') }
+  return { line: lines[candidates[0]], index: candidates[0] }
+}
+
+function documentEol(markdown: string): string {
+  return markdown.includes('\r\n') ? '\r\n' : '\n'
+}
+
+/** `LIST_EMPTY_ITEM` — delete the contentless marker line. */
+export const LIST_EMPTY_ITEM_FIX: Fixer = {
+  code: LIST_EMPTY_ITEM_CODE,
+  support: 'AUTO',
+  label: '删除空列表项',
+  build(diagnostic, ctx) {
+    const located = locateDiagnosticLine(ctx, diagnostic, isEmptyListMarker)
+    if ('blocker' in located) return { blockers: [located.blocker] }
+    const { line, index } = located
+    return {
+      patches: [{
+        start: line.start,
+        end: line.end,
+        before: ctx.markdown.slice(line.start, line.end),
+        after: '',
+        lineStart: index,
+        lineEnd: index,
+        kind: 'delete-lines',
+      }],
+    }
+  },
+}
+
+/** `FORMULA_SINGLE_LINE_BLOCK` — expand `$$x$$` into the renderable 3-line block. */
+export const FORMULA_SINGLE_LINE_BLOCK_FIX: Fixer = {
+  code: FORMULA_SINGLE_LINE_BLOCK_CODE,
+  support: 'AUTO',
+  label: '拆成独立公式块',
+  build(diagnostic, ctx) {
+    const located = locateDiagnosticLine(
+      ctx,
+      diagnostic,
+      text => singleLineDisplayFormulaSource(text) != null,
+    )
+    if ('blocker' in located) return { blockers: [located.blocker] }
+    const { line, index } = located
+    const source = singleLineDisplayFormulaSource(line.text)
+    if (source == null || source.trim() === '') {
+      return { blockers: [blocker('INVALID_FACT', '公式源码为空，拒绝改写。')] }
+    }
+    const eol = documentEol(ctx.markdown)
+    return {
+      patches: [{
+        start: line.start,
+        end: line.start + line.text.length,
+        before: line.text,
+        after: `$$${eol}${source.trim()}${eol}$$`,
+        lineStart: index,
+        lineEnd: index,
+        kind: 'replace-line',
+      }],
+    }
+  },
+}
+
+/** `FIGURE_MIXED_WITH_TEXT` — split the paragraph into text / image blocks. */
+export const FIGURE_MIXED_WITH_TEXT_FIX: Fixer = {
+  code: FIGURE_MIXED_WITH_TEXT_CODE,
+  support: 'AUTO',
+  label: '图片与文字分段',
+  build(diagnostic, ctx) {
+    const located = locateDiagnosticLine(ctx, diagnostic, isImageMixedWithText)
+    if ('blocker' in located) return { blockers: [located.blocker] }
+    const { line, index } = located
+    const segments = splitImageSegments(line.text)
+    if (segments.length < 2) {
+      return { blockers: [blocker('INVALID_FACT', '无需分段的图片行。')] }
+    }
+    const eol = documentEol(ctx.markdown)
+    return {
+      patches: [{
+        start: line.start,
+        end: line.start + line.text.length,
+        before: line.text,
+        after: segments.join(`${eol}${eol}`),
+        lineStart: index,
+        lineEnd: index,
+        kind: 'replace-line',
+      }],
+    }
+  },
+}
+
 function parseCodeOrdinal(diagnostic: DocumentDiagnostic): number | null {
   const location = locationOf(diagnostic)
   const stable = location && 'stableIdentity' in location ? String(location.stableIdentity ?? '') : ''
@@ -386,6 +510,9 @@ export function createDefaultDiagnosticFixRegistry(): DiagnosticFixRegistry {
   return new DiagnosticFixRegistry()
     .register(INTERNAL_BLANK_LINES_FIX)
     .register(TRAILING_BLANK_LINES_FIX)
+    .register(LIST_EMPTY_ITEM_FIX)
+    .register(FORMULA_SINGLE_LINE_BLOCK_FIX)
+    .register(FIGURE_MIXED_WITH_TEXT_FIX)
     .register(CODE_LANGUAGE_FIX)
     .register(FIGURE_NAME_FIX)
     .register(CODE_NAME_FIX)

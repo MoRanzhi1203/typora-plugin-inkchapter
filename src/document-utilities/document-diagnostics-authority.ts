@@ -15,6 +15,7 @@ import {
   hasSubstantiveNonHeadingContent,
   mergeDocumentDiagnostics,
 } from './document-diagnostics'
+import { computeFormatIntegrityDiagnostics } from './document-format-integrity-v1'
 // Heading Auto-Number Conflict V1.2 §3–§47 — the ONE per-heading evidence-state
 // audit + transition classifier + hard-gate + positive-coverage authority for
 // `HEADING_AUTO_NUMBER_CONFLICT`.
@@ -349,7 +350,18 @@ export class DocumentDiagnosticsAuthority {
     // producer is wired) into the SAME snapshot the Drawer / location contract
     // consume. Never a second pipeline, never a second registry.
     const captionDiagnostics = this.collectCaptionIntegrityDiagnostics(input.documentKey)
-    const merged = mergeDocumentDiagnostics(computed.diagnostics, captionDiagnostics)
+    // Format Integrity V1 — 纯文本排版规则（空列表项 / 单行 $$ 公式 / 图片与正文混排）。
+    // 输入必须是 EXACT 文本（eofMarkdown = editor mirror）：结构序列化器会折叠代码块
+    // 正文并让行号发生位移，而这些规则与对应的修复都以“源码行”为身份。
+    const exactMarkdown = typeof input.eofMarkdown === 'string' && input.eofMarkdown !== ''
+      ? input.eofMarkdown
+      : (input.markdown ?? '')
+    const formatDiagnostics = computeFormatIntegrityDiagnostics({
+      markdown: exactMarkdown,
+      documentKey: input.documentKey,
+      sourceRevision: this.sourceRevision,
+    })
+    const merged = mergeDocumentDiagnostics(computed.diagnostics, [...formatDiagnostics, ...captionDiagnostics])
     // Heading Auto-Number Conflict V1 §44/§45 — the ONE runtime audit for the
     // conflict rule (state-deduped; event-driven, never a poll).
     this.emitHeadingAutoNumberConflictAudits(input, computed)

@@ -22,8 +22,11 @@
 import type { DocumentDiagnostic, DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import {
   CODE_LANGUAGE_FIX,
+  FIGURE_MIXED_WITH_TEXT_FIX,
   FIGURE_NAME_FIX,
+  FORMULA_SINGLE_LINE_BLOCK_FIX,
   INTERNAL_BLANK_LINES_FIX,
+  LIST_EMPTY_ITEM_FIX,
   TRAILING_BLANK_LINES_FIX,
   applyPatchesToMarkdown,
   buildFixPreview,
@@ -68,6 +71,24 @@ const CAPABILITY_MATRIX: Readonly<Record<string, FixCapabilityDescriptor>> = Obj
     code: 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE',
     capability: 'AUTO_SAFE',
     label: '删除文末多余空行',
+    actionKind: 'source-patches',
+  },
+  LIST_EMPTY_ITEM: {
+    code: 'LIST_EMPTY_ITEM',
+    capability: 'AUTO_SAFE',
+    label: '删除空列表项',
+    actionKind: 'source-patches',
+  },
+  FORMULA_SINGLE_LINE_BLOCK: {
+    code: 'FORMULA_SINGLE_LINE_BLOCK',
+    capability: 'AUTO_SAFE',
+    label: '拆成独立公式块',
+    actionKind: 'source-patches',
+  },
+  FIGURE_MIXED_WITH_TEXT: {
+    code: 'FIGURE_MIXED_WITH_TEXT',
+    capability: 'AUTO_SAFE',
+    label: '图片与文字分段',
     actionKind: 'source-patches',
   },
   CODE_MISSING_LANGUAGE: {
@@ -214,6 +235,9 @@ function buildPlanFromV1(
 const V1_FIXERS: Readonly<Record<string, Fixer>> = Object.freeze({
   EXCESSIVE_INTERNAL_BLANK_LINES: INTERNAL_BLANK_LINES_FIX,
   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: TRAILING_BLANK_LINES_FIX,
+  LIST_EMPTY_ITEM: LIST_EMPTY_ITEM_FIX,
+  FORMULA_SINGLE_LINE_BLOCK: FORMULA_SINGLE_LINE_BLOCK_FIX,
+  FIGURE_MIXED_WITH_TEXT: FIGURE_MIXED_WITH_TEXT_FIX,
   CODE_MISSING_LANGUAGE: CODE_LANGUAGE_FIX,
   FIGURE_MISSING_NAME: FIGURE_NAME_FIX,
 })

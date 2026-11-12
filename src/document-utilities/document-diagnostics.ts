@@ -85,6 +85,7 @@ import {
 // Phase G — the DOM-side caption-integrity producer's emitted codes (the SAME
 // single allow-list mirrored below; the caption producer is not a second registry).
 import { CAPTION_INTEGRITY_DIAGNOSTIC_CODES } from './document-diagnostics-caption-integrity-v1'
+import { FORMAT_INTEGRITY_DIAGNOSTIC_CODES } from './document-format-integrity-v1'
 // TRAE V3 §7 — the THREE shared source authorities (single-pass per source
 // revision; every new rule consumes them instead of re-scanning the document).
 import {
@@ -859,6 +860,9 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   // Phase G — DOM-side Caption Integrity (produced by
   // `computeCaptionIntegrityDiagnostics`, merged into the SAME snapshot).
   ...CAPTION_INTEGRITY_DIAGNOSTIC_CODES,
+  // Format Integrity V1 — source-level排版规则（空列表项 / 单行 $$ / 图片与正文混排），
+  // 由 `computeFormatIntegrityDiagnostics` 产出并合入同一快照。
+  ...FORMAT_INTEGRITY_DIAGNOSTIC_CODES,
   // Numbering Integrity V2 (spec §9) — the object / formula NUMBER rules.
   ...NUMBER_INTEGRITY_DIAGNOSTIC_CODES,
   // TRAE V3 — Source Syntax / Footnote / Reference / Front Matter / Table header

@@ -99,6 +99,10 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   DOCUMENT_TERMINAL_NEWLINE_MISSING: 200,
   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: 210,
   EXCESSIVE_INTERNAL_BLANK_LINES: 220,
+  // ── format integrity (source-level) ───────────────────────────────────────
+  LIST_EMPTY_ITEM: 230,
+  FORMULA_SINGLE_LINE_BLOCK: 235,
+  FIGURE_MIXED_WITH_TEXT: 240,
   // ── document completeness ─────────────────────────────────────────────────
   DOCUMENT_HEADING_ONLY_NO_BODY: 250,
   DOCUMENT_HEADINGS_ONLY_NO_BODY: 251,
@@ -310,6 +314,10 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   TABLE_COLUMN_COUNT_MISMATCH: { title: '表格列数不一致', description: '表头、分隔行或数据行的列数不一致。', suggestion: '补齐或删除多余单元格，使每行列数一致。' },
   TABLE_ALIGNMENT_INVALID: { title: '表格对齐标记非法', description: '表格分隔行中的某个单元格不是合法的 GFM 对齐标记。', suggestion: '使用 ---、:---、---: 或 :---: 作为分隔单元格。' },
   LIST_INDENTATION_INVALID: { title: '列表缩进不一致', description: '列表项缩进与当前父级或同级缩进不一致。', suggestion: '按同一层级统一缩进，避免悬空缩进。' },
+  // ── format integrity (source-level) ───────────────────────────────────────
+  LIST_EMPTY_ITEM: { title: '列表项为空', description: '这一行只有列表标记，没有任何内容。', suggestion: '删除空的列表项，或补上内容。' },
+  FORMULA_SINGLE_LINE_BLOCK: { title: '单行公式不会被渲染', description: '独立公式写在一行内（$$…$$），Typora 会把它当作普通文字。', suggestion: '拆成 $$、公式、$$ 三行。' },
+  FIGURE_MIXED_WITH_TEXT: { title: '图片与正文混排', description: '图片与文字位于同一段落内，图片不是独立块。', suggestion: '将图片拆成独立段落，文字与图片分开。' },
   TABLE_HEADER_EMPTY: { title: '表头单元格为空', description: '表格存在空的表头单元格。', suggestion: '为空的表头单元格补充列名。' },
   TABLE_HEADER_DUPLICATE: { title: '表头重复', description: '同一表头文字在表格中出现多次。', suggestion: '重命名重复的表头以区分列。' },
   // ── code ──────────────────────────────────────────────────────────────────
