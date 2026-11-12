@@ -61,6 +61,7 @@ import { HeadingNumberingService } from './heading-numbering/heading-numbering-s
 import type { ServiceContext } from './heading-numbering/heading-numbering-service'
 import { resolveHeadingPolicyActivation } from './heading-numbering/heading-policy-activation'
 import { HeadingDomAdapter } from './infrastructure/heading-dom-adapter'
+import { mountPendingFencesSynchronously, type TyporaFenceApi } from './infrastructure/typora-adapter'
 import { HeadingNumberingSettingTab } from './settings/heading-numbering-setting-tab'
 import { CaptionService } from './heading-numbering/caption-service'
 import type { CaptionServiceContext } from './heading-numbering/caption-service'
@@ -1604,6 +1605,10 @@ export default class extends Plugin<InkChapterSettings> {
                 markdown: string,
                 options?: Record<string, unknown>,
               ) => void)(next, {})
+              // 代码块在 reload 后会先渲染成 `mock-cm`（只有纯文本、没有行内编号），
+              // CodeMirror 稍后才挂载——中间那一帧会被绘制，肉眼就是“行内编号刷新一下”。
+              // 在插入的同一个任务里同步挂载，使第一帧即为最终形态。
+              mountPendingFencesSynchronously(editor as unknown as TyporaFenceApi)
               // READBACK — the STRUCTURAL serializer is block-level and cannot
               // represent the document's terminal newline (a real 1.6.7 document
               // ending in `\n` serializes without it), so it can never verify an
