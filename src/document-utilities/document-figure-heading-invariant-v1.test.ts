@@ -11,8 +11,10 @@ import type { DocumentDiagnosticsInput, DiagnosticLinkFact } from './document-di
 import { parseImageSourceOccurrences } from './document-resource-scanner'
 import {
   analyzeHeadingImages,
+  analyzeHeadingImageSyntax,
   scanSourceImageTokens,
   FIGURE_IN_HEADING_CODE,
+  FIGURE_SYNTAX_IN_HEADING_CODE,
   FIGURE_EMPTY_SOURCE_CODE,
 } from './document-figure-heading-invariant-v1'
 import { resetFigureBlockStructureV515State } from './document-standalone-object-block-invariant-v515'
@@ -68,6 +70,10 @@ function emptySourceDiagnostics(markdown: string) {
   return diagnosticsOf(markdown).filter(d => d.code === FIGURE_EMPTY_SOURCE_CODE)
 }
 
+function syntaxDiagnostics(markdown: string) {
+  return diagnosticsOf(markdown).filter(d => d.code === FIGURE_SYNTAX_IN_HEADING_CODE)
+}
+
 function fixCtx(markdown: string): FixContext {
   return { markdown, snapshotMarkdown: markdown, documentKey: DOC_KEY, snapshot: null, locked: false }
 }
@@ -86,6 +92,16 @@ function fixFirstEmptySource(markdown: string): string {
   const diagnostic = emptySourceDiagnostics(markdown)[0]
   expect(diagnostic, 'expected a FIGURE_EMPTY_SOURCE diagnostic').toBeTruthy()
   const fixer = createDefaultDiagnosticFixRegistry().get(FIGURE_EMPTY_SOURCE_CODE)
+  expect(fixer).toBeTruthy()
+  const built = fixer!.build(diagnostic, fixCtx(markdown))
+  expect(built.blockers ?? []).toEqual([])
+  return applyPatchesToMarkdown(markdown, built.patches ?? [])
+}
+
+function fixFirstSyntax(markdown: string): string {
+  const diagnostic = syntaxDiagnostics(markdown)[0]
+  expect(diagnostic, 'expected a FIGURE_SYNTAX_IN_HEADING diagnostic').toBeTruthy()
+  const fixer = createDefaultDiagnosticFixRegistry().get(FIGURE_SYNTAX_IN_HEADING_CODE)
   expect(fixer).toBeTruthy()
   const built = fixer!.build(diagnostic, fixCtx(markdown))
   expect(built.blockers ?? []).toEqual([])
@@ -271,7 +287,7 @@ describe('修复完整性', () => {
     expect(next).toBe('## 标题\n\n![A](a.png)\n\n### 另一个\n\n![B](b.png)\n')
   })
 
-  it('one-click fixes heading structure AND empty-path images in one transaction', () => {
+  it('one-click fixes heading structure but NEVER deletes empty-path images', () => {
     const md = '## 标题 ![]()\n\n### 另一个 ![A](a.png)\n\n## 普通 ![说明]()\n'
     const out = computeDocumentDiagnostics(inputOf(md))
     const snapshot = {
@@ -289,11 +305,19 @@ describe('修复完整性', () => {
       { markdown: md, snapshotMarkdown: md, documentKey: DOC_KEY, snapshot, locked: false },
       { captionAvailable: true },
     )
+    expect(plans.some(plan => plan.code === FIGURE_EMPTY_SOURCE_CODE)).toBe(false)
     const { accepted } = selectNonConflictingPlans(plans)
     const { next } = buildFixedMarkdown(md, accepted)
-    expect(next).toBe('## 标题\n\n### 另一个\n\n![A](a.png)\n\n## 普通\n')
+    // the structure errors are gone; both empty tokens stay for an EXPLICIT choice
+    expect(next).toBe('## 标题\n\n![]()\n\n### 另一个\n\n![A](a.png)\n\n## 普通\n\n![说明]()\n')
     expect(headingDiagnostics(next)).toEqual([])
-    expect(emptySourceDiagnostics(next)).toEqual([])
+    expect(emptySourceDiagnostics(next)).toHaveLength(2)
+  })
+
+  it('the empty-source rule is EXPLICIT_ONLY and its label names the real action', () => {
+    const capability = describeFixCapability(FIGURE_EMPTY_SOURCE_CODE)
+    expect(capability.capability).toBe('EXPLICIT_ONLY')
+    expect(capability.label).toBe('删除空图片占位符')
   })
 
   it('the drawer copy uses the required name and explanation', () => {
@@ -308,8 +332,61 @@ describe('修复完整性', () => {
     expect(copy.description).toContain('标题中包含图片')
     expect(copy.description).toContain('独立段落')
     expect(describeFixCapability(FIGURE_IN_HEADING_CODE).capability).toBe('AUTO_SAFE')
-    expect(describeFixCapability(FIGURE_EMPTY_SOURCE_CODE).capability).toBe('AUTO_SAFE')
-    expect(describeFixCapability(FIGURE_EMPTY_SOURCE_CODE).label).toBe('移除空图片')
+  })
+})
+
+describe('V2 §5.5 — 标题中包含图片链接语法 / 语法残留', () => {
+  it('an unclosed image syntax in a heading is reported and moved out verbatim', () => {
+    const md = '## 结束 ![J](https://raw.githubusercontent.com/a/b/c.png\n'
+    const diagnostics = syntaxDiagnostics(md)
+    expect(diagnostics).toHaveLength(1)
+    expect(diagnostics[0].message).toBe('标题中包含图片链接语法')
+    expect(diagnostics[0].severity).toBe('error')
+    // the complete-token rule never competes for the same heading
+    expect(headingDiagnostics(md)).toEqual([])
+    const fixed = fixFirstSyntax(md)
+    expect(fixed).toBe('## 结束\n\n![J](https://raw.githubusercontent.com/a/b/c.png\n')
+    expect(syntaxDiagnostics(fixed)).toEqual([])
+  })
+
+  it('T14 — a complete remote image token is moved out and leaves NO syntax residue', () => {
+    const md = '## 结束 ![J](https://raw.githubusercontent.com/a/b/c.png)\n'
+    expect(syntaxDiagnostics(md)).toEqual([])
+    expect(headingDiagnostics(md)).toHaveLength(1)
+    const fixed = fixFirstHeading(md)
+    expect(fixed).toBe('## 结束\n\n![J](https://raw.githubusercontent.com/a/b/c.png)\n')
+    expect(fixed.split('\n')[0]).toBe('## 结束')
+  })
+
+  it('a token + residual syntax in the same heading moves BOTH out (one diagnostic)', () => {
+    const md = '## 标题 ![A](a.png) ![B](b.png\n'
+    expect(headingDiagnostics(md)).toHaveLength(1)
+    expect(syntaxDiagnostics(md)).toEqual([])
+    expect(fixFirstHeading(md)).toBe('## 标题\n\n![A](a.png)\n\n![B](b.png\n')
+  })
+
+  it('inline code / escaped image syntax is never a syntax diagnostic', () => {
+    expect(syntaxDiagnostics('## 示例 `![a](b.png`\n')).toEqual([])
+    expect(syntaxDiagnostics('## 示例 \\![a](b.png\n')).toEqual([])
+    expect(syntaxDiagnostics('```md\n## 结束 ![a](b.png\n```\n')).toEqual([])
+  })
+
+  it('a heading that merely contains ! and [ is not an image error', () => {
+    expect(syntaxDiagnostics('## 说明 ![不是图片 的写法\n')).toEqual([])
+    expect(headingDiagnostics('## 说明 ![不是图片 的写法\n')).toEqual([])
+  })
+
+  it('a destination with balanced parentheses stays ONE token (URL never split)', () => {
+    const md = '## 标题 ![图](a(b).png)\n'
+    expect(headingDiagnostics(md)).toHaveLength(1)
+    expect(fixFirstHeading(md)).toBe('## 标题\n\n![图](a(b).png)\n')
+  })
+
+  it('analyzeHeadingImageSyntax is pure and reports only syntax-only headings', () => {
+    const entries = analyzeHeadingImageSyntax('## 结束 ![J](a.png\n\n## 完整 ![A](a.png)\n')
+    expect(entries).toHaveLength(1)
+    expect(entries[0].syntaxFragments.map(f => f.raw)).toEqual(['![J](a.png'])
+    expect(entries[0].textWithoutSyntax).toBe('结束')
   })
 })
 

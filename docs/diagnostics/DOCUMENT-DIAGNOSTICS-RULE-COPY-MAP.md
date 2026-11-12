@@ -55,12 +55,13 @@ HINT_FAMILY_COUNT=24
 | `DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE` | DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE | 警告 | 是 | document-end | SINGLE_TARGET | 尾部空行过多 | 文档末尾空行过多 | 文档末尾存在多个连续空行。 | 删除文档末尾多余的空行，仅保留一个换行符。 |
 | `EXCESSIVE_INTERNAL_BLANK_LINES` | EXCESSIVE_INTERNAL_BLANK_LINES | 警告 | 是 | source-range | SINGLE_TARGET | 连续空行过多 | 连续空行过多 | 两个内容块之间存在 2 个及以上连续空行。 | 删除多余的连续空行，块之间保留一个空行即可。 |
 | `FIGURE_IN_HEADING` | FIGURE_IN_HEADING | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片被插入标题 | 标题中包含图片，图片必须移出标题并作为独立段落。 | 将图片移出标题后作为独立图片段落，保留标题层级与原有文字。 |
-| `FIGURE_EMPTY_SOURCE` | FIGURE_EMPTY_SOURCE | 错误 | 是 | source-range | SINGLE_TARGET | （无映射/动态） | 图片路径为空 | 图片语法没有目标路径，无法显示图片。可补充路径，或使用修复移除该空图片节点。 | 补充图片路径，或点击修复移除空图片节点。 |
+| `FIGURE_SYNTAX_IN_HEADING` | FIGURE_SYNTAX_IN_HEADING | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 标题中包含图片链接语法 | 标题中残留未完成的图片链接语法，图片语法必须移出标题。 | 将图片链接语法移出标题并作为独立段落，保留标题层级与原有文字。 |
+| `FIGURE_EMPTY_SOURCE` | FIGURE_EMPTY_SOURCE | 错误 | 是 | source-range | SINGLE_TARGET | （无映射/动态） | 图片路径为空 | 图片语法没有目标路径，无法显示图片。请补充路径，或明确选择删除空图片占位符。 | 补充图片路径，或点击「处理」明确删除空图片占位符；一键修复不会自动删除。 |
 | `FIGURE_BLOCK_STRUCTURE_INVALID` | FIGURE_BLOCK_STRUCTURE_INVALID | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片独立块结构异常 | 图片块不满足独立块结构要求。 | 将图片拆成独立段落：文字一段、每张图片各一段，前后保留空行。 |
 | `FIGURE_MULTIPLE_SAME_BLOCK` | FIGURE_MULTIPLE_SAME_BLOCK | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 多张图片位于同一段落 | 同一段落中存在多张图片，图片块只能包含一张图片。 | 将每张图片拆分为独立的图片段落，按原顺序排列并保留前后空行。 |
 | `FIGURE_TEXT_MIXED` | FIGURE_TEXT_MIXED | 警告 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片与正文位于同一段落 | 同一段落中同时存在图片和正文内容。 | 将图片从段落中拆出为独立图片段落，正文保留原位置。 |
-| `FIGURE_IN_LIST` | FIGURE_IN_LIST | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片被设置为列表项 | 图片位于列表项中，图片不能作为列表内容。 | 移除图片所在列表项（含任务列表）的列表标记，使图片成为独立段落。 |
-| `FIGURE_IN_QUOTE` | FIGURE_IN_QUOTE | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片被设置为引用块 | 图片位于引用块中，图片不能作为引用内容。 | 移除图片所在段落的全部引用层级，使图片成为独立段落。 |
+| `FIGURE_IN_LIST` | FIGURE_IN_LIST | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片被设置为列表项 | 图片位于列表项中，图片不能作为列表内容。 | 原位移除图片所在列表项（含任务列表）的列表标记，图片留在原位置并成为独立段落。 |
+| `FIGURE_IN_QUOTE` | FIGURE_IN_QUOTE | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片被设置为引用块 | 图片位于引用块中，图片不能作为引用内容。 | 原位移除图片行的全部引用层级；前后引用文字保持引用属性。 |
 | `FIGURE_IN_TABLE` | FIGURE_IN_TABLE | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片嵌入表格单元格 | 图片位于表格单元格中，表格结构不允许独立图片块。 | 手动将图片移出表格并作为独立段落插入，保持表格其余单元格不变。 |
 | `FIGURE_INLINE_FORMAT` | FIGURE_INLINE_FORMAT | 警告 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片包含不允许的行内格式 | 图片被加粗、斜体或删除线等行内格式包裹。 | 移除图片外层的行内格式标记，并将图片独立成块。 |
 | `FIGURE_CAPTION_FORMAT_INVALID` | FIGURE_CAPTION_FORMAT_INVALID | 警告 | 是 | caption-projection | SINGLE_TARGET | （无映射/动态） | 图片题注格式不规范 | 题注文字不符合规范格式「图片 编号 名称」。 | 按「图片 编号 名称」格式修改题注。 |

@@ -35,8 +35,10 @@ import {
 // V1 — Figure-in-heading invariant (H1–H6) + empty-source image tokens.
 import {
   analyzeHeadingImages,
+  analyzeHeadingImageSyntax,
   scanSourceImageTokens,
   FIGURE_IN_HEADING_CODE,
+  FIGURE_SYNTAX_IN_HEADING_CODE,
   FIGURE_EMPTY_SOURCE_CODE,
 } from './document-figure-heading-invariant-v1'
 import type {
@@ -366,6 +368,7 @@ export function resolveDocumentDiagnosticSeverity(
     case 'FIGURE_MULTIPLE_SAME_BLOCK':
     case 'FIGURE_BLOCK_STRUCTURE_INVALID':
     case 'FIGURE_IN_HEADING':
+    case 'FIGURE_SYNTAX_IN_HEADING':
     case 'FIGURE_EMPTY_SOURCE':
       return 'error'
     case 'FIGURE_TEXT_MIXED':
@@ -3126,6 +3129,67 @@ export function computeDocumentDiagnostics(
     })
   }
 
+  // ── V1 — FIGURE_SYNTAX_IN_HEADING (incomplete image-link syntax) ──────────
+  // Only headings WITHOUT a complete image token are reported here: a heading
+  // that owns a real token is already owned by FIGURE_IN_HEADING (and that
+  // repair extracts both the token and any syntax fragment), so the same image
+  // node is never reported twice (V2 §4.1).
+  const headingSyntaxEntries = structureSourceText != null
+    ? analyzeHeadingImageSyntax(structureSourceText)
+    : []
+  for (const entry of headingSyntaxEntries) {
+    const rawHeading = structureSourceText == null
+      ? ''
+      : structureSourceText.slice(entry.lineStart, entry.lineEnd)
+    const syntaxOrdinal = structureBlockOrdinalByText.get(rawHeading) ?? 0
+    structureBlockOrdinalByText.set(rawHeading, syntaxOrdinal + 1)
+    push(
+      makeDiagnostic(input, 'figure', FIGURE_SYNTAX_IN_HEADING_CODE, '标题中包含图片链接语法', {
+        detail: `标题中包含未完成的图片链接语法，图片语法必须移出标题并作为独立段落。当前 H${entry.level} 标题包含 ${entry.syntaxFragments.length} 处图片链接语法。`,
+        kind: 'object',
+        targetIdentity: `heading-syntax:src-block:${entry.lineIndex}`,
+        metadata: {
+          ruleId: 'FIGURE-SYNTAX-IN-HEADING',
+          resourceKind: 'image',
+          issueCode: FIGURE_SYNTAX_IN_HEADING_CODE,
+          headingLevel: entry.level,
+          syntaxCount: entry.syntaxFragments.length,
+          headingText: entry.textWithoutSyntax,
+          owningBlockIdentity: `src-block:${entry.lineIndex}`,
+          sourceBlockIdentity: `src-block:${entry.lineIndex}`,
+          sourceBlockOrdinal: syntaxOrdinal,
+          containerKind: 'heading',
+          rawObjectCount: entry.syntaxFragments.length,
+          canonicalObjectCount: 0,
+          normalBusinessTargetAdmitted: false,
+          structuralDiagnosticPublished: true,
+          autoFixable: true,
+          sourceStart: entry.lineStart,
+          sourceEnd: entry.lineEnd,
+          startLine: entry.lineIndex,
+          endLine: entry.lineIndex,
+        },
+        location: {
+          kind: 'source-block',
+          objectKind: 'figure',
+          sourceBlockIdentity: `src-block:${entry.lineIndex}`,
+          sourceBlockOrdinal: syntaxOrdinal,
+          sourceStart: entry.lineStart,
+          sourceEnd: entry.lineEnd,
+          startLine: entry.lineIndex,
+          endLine: entry.lineIndex,
+          sourceRevision: input.sourceRevision ?? null,
+          locatorStrategy: 'OWNING_BLOCK',
+        },
+      }),
+    )
+    noteFigureStructureDiagnosticPublished({
+      owningBlockIdentity: `src-block:${entry.lineIndex}`,
+      violationCount: 1,
+      locatable: true,
+    })
+  }
+
   // ── V1 — FIGURE_EMPTY_SOURCE (independent resource dimension) ─────────────
   // `![]()` / `![alt]()` / `![alt](   )` are REAL image tokens with an empty
   // destination. They are reported independently of the structure repair and
@@ -3135,7 +3199,7 @@ export function computeDocumentDiagnostics(
     if (!token.emptyDestination) continue
     push(
       makeDiagnostic(input, 'figure', FIGURE_EMPTY_SOURCE_CODE, '图片路径为空', {
-        detail: `图片语法「${token.rawToken}」没有目标路径，无法显示图片。可补充路径，或点击修复移除空图片节点。`,
+        detail: `图片语法「${token.rawToken}」没有目标路径，无法显示图片。请补充图片路径，或点击「处理」明确删除空图片占位符（一键修复不会自动删除）。`,
         kind: 'object',
         targetIdentity: `empty-source:${token.tokenStart}`,
         metadata: {

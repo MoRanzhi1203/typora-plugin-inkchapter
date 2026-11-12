@@ -37,6 +37,9 @@
 import { parseImageSourceOccurrences, type ImageSourceOccurrence } from './document-resource-scanner'
 // V1 §7 — the ONE stable DOM owning-block identity authority (never `dom-block:p:na`).
 import { buildDomBlockIdentity } from './document-diagnostic-locator-authority-v1'
+// V2 §5.5 / §11 — the BALANCED-PAREN image tokenizer shared with the heading
+// rule (a real URL like `a(b).png` is never split into token + residue).
+import { scanSourceImageTokens, type SourceImageToken } from './document-figure-heading-invariant-v1'
 
 // ── §4 — the unified abstraction ───────────────────────────────────────────
 
@@ -79,6 +82,8 @@ export const FIGURE_IN_LIST_CODE = 'FIGURE_IN_LIST'
 export const FIGURE_IN_QUOTE_CODE = 'FIGURE_IN_QUOTE'
 export const FIGURE_IN_TABLE_CODE = 'FIGURE_IN_TABLE'
 export const FIGURE_INLINE_FORMAT_CODE = 'FIGURE_INLINE_FORMAT'
+/** V2 §5.5 — incomplete image-link syntax left inside a heading. */
+export const FIGURE_SYNTAX_IN_HEADING_CODE = 'FIGURE_SYNTAX_IN_HEADING'
 
 export type FigureStructureIssueCode =
   | typeof FIGURE_BLOCK_STRUCTURE_INVALID_CODE
@@ -88,6 +93,7 @@ export type FigureStructureIssueCode =
   | typeof FIGURE_IN_QUOTE_CODE
   | typeof FIGURE_IN_TABLE_CODE
   | typeof FIGURE_INLINE_FORMAT_CODE
+  | typeof FIGURE_SYNTAX_IN_HEADING_CODE
 
 /** Every rule id that owns a BLOCK-level figure structure diagnostic. */
 export const FIGURE_STRUCTURE_BLOCK_RULE_CODES: ReadonlySet<string> = new Set<FigureStructureIssueCode>([
@@ -98,6 +104,7 @@ export const FIGURE_STRUCTURE_BLOCK_RULE_CODES: ReadonlySet<string> = new Set<Fi
   FIGURE_IN_QUOTE_CODE,
   FIGURE_IN_TABLE_CODE,
   FIGURE_INLINE_FORMAT_CODE,
+  FIGURE_SYNTAX_IN_HEADING_CODE,
 ])
 
 /** True when a rule id is one of the block-level figure structure rules. */
@@ -679,16 +686,21 @@ function splitRelativeLines(raw: string): RelativeLine[] {
 }
 
 function relativeTokensOf(block: FigureStandaloneSourceBlock): RelativeToken[] {
+  const robust = robustTokensOf(block.rawText ?? '')
   return block.tokenStarts
     .map(start => start - block.blockStart)
     .filter(offset => offset >= 0)
     .sort((a, b) => a - b)
     .map(offset => {
-      const occurrence = parseImageSourceOccurrences(block.rawText ?? '')
-        .find(o => o.tokenStart === offset)
-      return { start: offset, end: occurrence?.tokenEnd ?? offset }
+      const token = robust.find(candidate => candidate.tokenStart === offset)
+      return { start: offset, end: token?.tokenEnd ?? -1 }
     })
     .filter(t => t.end > t.start)
+}
+
+/** V2 §11 — the balanced-paren tokenizer, empty destinations stay resource-only. */
+function robustTokensOf(text: string): SourceImageToken[] {
+  return scanSourceImageTokens(text).filter(token => !token.emptyDestination)
 }
 
 function tokensOnLine(tokens: readonly RelativeToken[], line: RelativeLine): RelativeToken[] {
@@ -746,11 +758,19 @@ function splitTextByTokens(text: string, tokens: readonly RelativeToken[], eol: 
 }
 
 /**
- * §4 — list-item extraction. A TOP-LEVEL list item that owns an image loses its
- * list marker; the images become standalone blocks. Other list items and the
- * remaining text of a mixed item are kept verbatim. A nested / irregular list
- * item is refused with a reason (removing its marker would keep it inside the
- * parent list, silently changing the document structure).
+ * §6.3 — IN-PLACE list-item extraction. The image leaves the list exactly where
+ * it was; sibling items stay above and below it (never moved to the list end):
+ *
+ *   - 第一项            - 第一项
+ *   - ![图](a.png)  →              (blank line)
+ *   - 第三项            ![图](a.png)
+ *                       (blank line)
+ *                       - 第三项
+ *
+ * A TOP-LEVEL item that also owns text keeps that text as its list item; only
+ * the image (and the inline wrapper around it) is removed. A nested item or an
+ * item owning indented child lines is refused, because detaching its marker /
+ * interposing a paragraph would silently change the list structure.
  */
 function buildListBlockFix(
   rawText: string,
@@ -758,12 +778,19 @@ function buildListBlockFix(
   eol: string,
 ): FigureBlockFixOutcome {
   const lines = splitRelativeLines(rawText)
-  const kept: string[] = []
-  const images: string[] = []
-  for (const line of lines) {
+  const blocks: string[] = []
+  let run: string[] = []
+  const flushRun = (): void => {
+    if (run.length > 0) {
+      blocks.push(run.join(eol))
+      run = []
+    }
+  }
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]
     const lineTokens = tokensOnLine(tokens, line)
     if (lineTokens.length === 0) {
-      kept.push(line.text)
+      run.push(line.text)
       continue
     }
     const match = /^([ \t]*)([-*+]|\d+[.)])([ \t]+)([\s\S]*)$/.exec(line.text)
@@ -772,6 +799,14 @@ function buildListBlockFix(
         changed: false,
         text: rawText,
         refusal: '图片位于嵌套或非标准列表项中，自动删除列表标记会破坏列表层级，请手动处理。',
+      }
+    }
+    const nextLine = lines[index + 1]
+    if (nextLine != null && /^[ \t]+/.test(nextLine.text) && nextLine.text.trim() !== '') {
+      return {
+        changed: false,
+        text: rawText,
+        refusal: '图片所在列表项还拥有缩进子内容，提取图片会改变列表层级，请手动处理。',
       }
     }
     let contentStart = line.start + match[1].length + match[2].length + match[3].length
@@ -783,27 +818,37 @@ function buildListBlockFix(
     }
     const contentTokens = lineTokens.map(t => ({ start: t.start - contentStart, end: t.end - contentStart }))
     const stripped = stripInlineWrapperMarkers(content, contentTokens)
-    const strippedTokens = parseImageSourceOccurrences(stripped)
+    const strippedTokens = robustTokensOf(stripped)
       .map(o => ({ start: o.tokenStart, end: o.tokenEnd }))
       .sort((a, b) => a.start - b.start)
-    for (const token of strippedTokens) images.push(stripped.slice(token.start, token.end))
     const residual = removeRelativeTokens(stripped, 0, strippedTokens)
       .trim()
       .replace(/[ \t]{2,}/g, ' ')
-    if (residual !== '') kept.push(line.text.slice(0, contentStart - line.start) + residual)
+    if (residual !== '') run.push(line.text.slice(0, contentStart - line.start) + residual)
+    flushRun()
+    for (const token of strippedTokens) blocks.push(stripped.slice(token.start, token.end))
   }
-  const listText = kept.join(eol)
-  const imageText = images.join(eol + eol)
-  const text = listText !== '' && imageText !== ''
-    ? listText + eol + eol + imageText
-    : (listText !== '' ? listText : imageText)
+  flushRun()
+  const text = blocks.join(eol + eol)
   return { changed: text !== rawText, text, refusal: null }
 }
 
+/** True for a blockquote line that carries no content besides its `>` markers. */
+function isBlankQuoteLine(text: string): boolean {
+  const match = /^[ \t]*(?:>[ \t]?)+([\s\S]*)$/.exec(text)
+  return match != null && (match[1] ?? '').trim() === ''
+}
+
 /**
- * §5 — blockquote extraction. EVERY quote level of the image's own line is
- * removed (never just one `>`), while a quote that still owns other text keeps
- * its remaining lines and their quote semantics.
+ * §7.3 — IN-PLACE blockquote extraction. Only the image's own quote levels are
+ * removed; the quote text before / after it keeps its quote semantics and the
+ * image becomes a standalone block exactly where it was:
+ *
+ *   > 前面的引用说明          > 前面的引用说明
+ *   >                        (blank line)
+ *   > ![图](a.png)      →    ![图](a.png)
+ *   >                        (blank line)
+ *   > 后面的引用说明          > 后面的引用说明
  */
 function buildQuoteBlockFix(
   rawText: string,
@@ -811,12 +856,20 @@ function buildQuoteBlockFix(
   eol: string,
 ): FigureBlockFixOutcome {
   const lines = splitRelativeLines(rawText)
-  const kept: string[] = []
-  const images: string[] = []
+  const blocks: string[] = []
+  let run: string[] = []
+  const flushRun = (): void => {
+    while (run.length > 0 && isBlankQuoteLine(run[0])) run.shift()
+    while (run.length > 0 && isBlankQuoteLine(run[run.length - 1])) run.pop()
+    if (run.length > 0) {
+      blocks.push(run.join(eol))
+      run = []
+    }
+  }
   for (const line of lines) {
     const lineTokens = tokensOnLine(tokens, line)
     if (lineTokens.length === 0) {
-      kept.push(line.text)
+      run.push(line.text)
       continue
     }
     const match = /^([ \t]*(?:>[ \t]?)+)([\s\S]*)$/.exec(line.text)
@@ -829,25 +882,21 @@ function buildQuoteBlockFix(
     }
     const prefix = match[1]
     const contentStart = line.start + prefix.length
-    let content = match[2]
+    const content = match[2]
     const contentTokens = lineTokens.map(t => ({ start: t.start - contentStart, end: t.end - contentStart }))
     const stripped = stripInlineWrapperMarkers(content, contentTokens)
-    const strippedTokens = parseImageSourceOccurrences(stripped)
+    const strippedTokens = robustTokensOf(stripped)
       .map(o => ({ start: o.tokenStart, end: o.tokenEnd }))
       .sort((a, b) => a.start - b.start)
-    for (const token of strippedTokens) images.push(stripped.slice(token.start, token.end))
     const residual = removeRelativeTokens(stripped, 0, strippedTokens)
       .trim()
       .replace(/[ \t]{2,}/g, ' ')
-    const semantic = stripContainerMarkers(residual)
-    if (semantic !== '') kept.push(prefix + residual)
+    if (stripContainerMarkers(residual) !== '') run.push(prefix + residual)
+    flushRun()
+    for (const token of strippedTokens) blocks.push(stripped.slice(token.start, token.end))
   }
-  const quoteHasSemanticContent = kept.some(line => stripContainerMarkers(line) !== '')
-  const quoteText = quoteHasSemanticContent ? kept.join(eol) : ''
-  const imageText = images.join(eol + eol)
-  const text = quoteText !== '' && imageText !== ''
-    ? quoteText + eol + eol + imageText
-    : (quoteText !== '' ? quoteText : imageText)
+  flushRun()
+  const text = blocks.join(eol + eol)
   return { changed: text !== rawText, text, refusal: null }
 }
 
@@ -861,7 +910,7 @@ function buildParagraphBlockFix(
   // are syntax around the object, never body text, and keeping them would leave a
   // dangling `**` in the produced text block.
   const text = stripInlineWrapperMarkers(rawText, tokens)
-  const parsed = parseImageSourceOccurrences(text)
+  const parsed = robustTokensOf(text)
     .map(o => ({ start: o.tokenStart, end: o.tokenEnd }))
     .sort((a, b) => a.start - b.start)
   if (parsed.length !== tokens.length) {
@@ -963,10 +1012,15 @@ export function figureBlockFixRefusalReason(block: FigureStandaloneSourceBlock):
   }
   if (block.containerKind === 'code') return '代码块中的图片语法不是图片对象，无需修复。'
   if (block.containerKind === 'list-item') {
-    const invalid = imageBearingLines(block).some(line =>
-      /^([ \t]*)([-*+]|\d+[.)])([ \t]+)/.test(line.text) === false
-      || /^[ \t]+/.test(line.text),
-    )
+    const lines = splitRelativeLines(block.rawText ?? '')
+    const tokens = relativeTokensOf(block)
+    const invalid = lines.some((line, index) => {
+      if (tokensOnLine(tokens, line).length === 0) return false
+      if (/^([ \t]*)([-*+]|\d+[.)])([ \t]+)/.test(line.text) === false) return true
+      if (/^[ \t]+/.test(line.text)) return true
+      const next = lines[index + 1]
+      return next != null && /^[ \t]+/.test(next.text) && next.text.trim() !== ''
+    })
     return invalid ? '图片位于嵌套或非标准列表项中，自动删除列表标记会破坏列表层级，请手动处理。' : null
   }
   if (block.containerKind === 'blockquote') {

@@ -43,7 +43,7 @@ export const DIAGNOSTIC_SORT_MODES: readonly { id: DiagnosticSortMode; label: st
 
 /** 行内修复入口的能力描述（来自真实修复能力矩阵）。 */
 export interface DocumentHubFixAction {
-  capability: 'AUTO_SAFE' | 'USER_INPUT_REQUIRED' | 'MANUAL_ONLY' | 'UNAVAILABLE'
+  capability: 'AUTO_SAFE' | 'EXPLICIT_ONLY' | 'USER_INPUT_REQUIRED' | 'MANUAL_ONLY' | 'UNAVAILABLE'
   label: string
   requiresInput?: { field: 'name' | 'language'; label: string; placeholder?: string }
 }

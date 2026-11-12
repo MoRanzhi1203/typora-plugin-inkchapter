@@ -390,7 +390,7 @@
 ### Standalone Object Block Invariant（V5.15）
 
 - **唯一不变式**：`1 business object = 1 standalone owning block = 1 canonical business target`。统一抽象 `StandaloneObjectKind = figure | table | formula`；`analyzeStandaloneObjectBlock()`（`src/document-utilities/document-standalone-object-block-invariant-v515.ts`）输出 `StandaloneObjectBlockAnalysis`。
-- **图片结构 Gate 前置于 canonicalization**：同一块内混正文 / 同块多图 / 非独立容器 → 先按优先级分类为 **7 条稳定 ruleId 之一**（每个 owning block **只发布 1 条**）：
+- **图片结构 Gate 前置于 canonicalization**：同一块内混正文 / 同块多图 / 非独立容器 → 先按优先级分类为 **8 条稳定结构 ruleId 之一**（每个 owning block **只发布 1 条**）：
   - `FIGURE_IN_LIST`（错误，图片被设置为列表项）
   - `FIGURE_IN_QUOTE`（错误，图片被设置为引用块）
   - `FIGURE_IN_TABLE`（错误，图片嵌入表格单元格）
@@ -399,11 +399,12 @@
   - `FIGURE_INLINE_FORMAT`（警告，图片包含不允许的行内格式）
   - `FIGURE_BLOCK_STRUCTURE_INVALID`（错误，通用兜底「图片独立块结构异常」）
   - `FIGURE_IN_HEADING`（错误，图片被插入标题；H1–H6，优先级高于多图/图文混排）
-  - `FIGURE_EMPTY_SOURCE`（错误，图片路径为空；独立资源维度；AUTO_SAFE「移除空图片」，标题内会与结构修复合并完成）
+  - `FIGURE_SYNTAX_IN_HEADING`（错误，标题中包含图片链接语法；只覆盖无完整 token 的语法残留，与 `FIGURE_IN_HEADING` 互斥）
+  - `FIGURE_EMPTY_SOURCE`（错误，图片路径为空；独立资源维度；`EXPLICIT_ONLY`「删除空图片占位符」，不进入一键修复）
 
   非法块**压制** `FIGURE_MISSING_NAME`、**禁止**编号/命名/caption，但**仍可定位**（`source-block`）。
-- **合法/非法容器**：合法 `paragraph | figure`；非法 `list-item | blockquote | table | code`。自动修复 `buildStandaloneFigureBlockFix()`：段落拆分、顶层列表移除标记、引用移除**全部**层级、行内格式剥离；表格 / 嵌套列表 / 非常规引用续行显式拒绝（`autoFixable=false`，无修复按钮）。拆分保文本/URL/数量/顺序、exactly-one-blank、幂等。
-- **审计与门禁**：`DOCUMENT-DIAGNOSTIC-STANDALONE-OBJECT-BLOCK-AUDIT` / `FIGURE-BLOCK-STRUCTURE-AUDIT`；11 项 hard gate（全 0 = PASS）+ 正向 coverage。真机（`test/vault/runtime/smoke/Figure-Standalone-Block-Invariant-Test.md`）：7 个非法块分类为 3×`FIGURE_TEXT_MIXED` + 2×`FIGURE_MULTIPLE_SAME_BLOCK` + 1×`FIGURE_IN_LIST` + 1×`FIGURE_IN_QUOTE`（错误 4 / 警告 3），一键修复后 0 条结构诊断、10 个独立图片块，gateDecision=PASS。
+- **合法/非法容器**：合法 `paragraph | figure`；非法 `list-item | blockquote | table | code`。自动修复 `buildStandaloneFigureBlockFix()`：段落拆分、顶层列表**原位**移除标记（兄弟项顺序不变）、引用**原位**提取（前后引用文字保留引用属性）、行内格式剥离；表格 / 嵌套列表 / 带缩进子内容 / 非常规引用续行显式拒绝（`autoFixable=false`，无修复按钮）。拆分保文本/URL/数量/顺序、exactly-one-blank、幂等。
+- **审计与门禁**：`DOCUMENT-DIAGNOSTIC-STANDALONE-OBJECT-BLOCK-AUDIT` / `FIGURE-BLOCK-STRUCTURE-AUDIT`；11 项 hard gate（全 0 = PASS）+ 正向 coverage。真机（`test/vault/runtime/smoke/Figure-Standalone-Block-Invariant-Test.md`，V1 记录；V2 已追加列表兄弟项 / 引用前后文字 / 标题语法残留用例，复验见本轮验收）：7 个非法块分类为 3×`FIGURE_TEXT_MIXED` + 2×`FIGURE_MULTIPLE_SAME_BLOCK` + 1×`FIGURE_IN_LIST` + 1×`FIGURE_IN_QUOTE`（错误 4 / 警告 3），一键修复后 0 条结构诊断、10 个独立图片块，gateDecision=PASS。
 - **残差（如实）**：`blockquote` 容器结构块（`> ![J](…)`）DOM owning-block 绑定失败 → locate `FAIL`（见 §8 PENDING）。
 
 ### Heading Multi-Target Exact Projection V2：Canonical Active Target Authority（V5.15）

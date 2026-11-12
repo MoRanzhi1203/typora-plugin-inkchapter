@@ -40,6 +40,28 @@ before ![F1](assets/phase7-strict-h1-boundary/boundary-a-figure.png) middle ![F2
 
 > ![J](assets/phase7-strict-h1-boundary/boundary-a-figure.png)
 
+## Case I2 列表图片原位拆分
+
+- 第一项
+- ![I2](assets/phase7-strict-h1-boundary/boundary-a-figure.png)
+- 第三项
+
+## Case J2 引用文字与图片共存
+
+> 前面的引用说明
+>
+> ![J2](assets/phase7-strict-h1-boundary/boundary-a-figure.png)
+>
+> 后面的引用说明
+
+## Case K 标题未闭合图片语法
+
+## 结束 ![K](https://raw.githubusercontent.com/inkchapter/fixture/main/assets/k.png
+
+## Case L 标题多图含空路径
+
+## 标题 ![L1](assets/phase7-strict-h1-boundary/boundary-a-figure.png) ![]()
+
 ## 结束
 
 本 fixture 结束。

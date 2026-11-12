@@ -43,6 +43,7 @@ const FIGURE_STRUCTURE_RULE_CODES: ReadonlySet<string> = new Set([
   'FIGURE_IN_TABLE',
   'FIGURE_INLINE_FORMAT',
   'FIGURE_IN_HEADING',
+  'FIGURE_SYNTAX_IN_HEADING',
 ])
 
 // ── §11 — the literal range model ─────────────────────────
@@ -479,6 +480,7 @@ export function evaluateLiteralExclusionAgainstDiagnostics(input: {
       case 'FIGURE_IN_QUOTE':
       case 'FIGURE_IN_TABLE':
       case 'FIGURE_INLINE_FORMAT':
+      case 'FIGURE_SYNTAX_IN_HEADING':
         counters.codeLiteralFigureStructureInvalid++
         counters.literalFigureDiagnosticFalsePositive++
         counters.codeLiteralImageMixedWithText++

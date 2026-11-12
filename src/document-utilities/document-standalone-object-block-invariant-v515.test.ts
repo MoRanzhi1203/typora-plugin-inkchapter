@@ -57,6 +57,8 @@ import {
 import { computeDocumentDiagnostics, buildFigureSourceOccurrences } from './document-diagnostics'
 import type { DocumentDiagnosticsInput, DiagnosticLinkFact } from './document-diagnostics'
 import { parseImageSourceOccurrences, parseLocalLinkTargets } from './document-resource-scanner'
+// V2 §11 — the balanced-paren image token authority (the one the fixers use).
+import { scanSourceImageTokens } from './document-figure-heading-invariant-v1'
 import {
   FIGURE_BLOCK_STRUCTURE_INVALID_FIX,
   applyPatchesToMarkdown,
@@ -597,19 +599,22 @@ describe('V5.15 §20/§34/§36 — the real runtime fixture', () => {
   const fixturePath = resolve(process.cwd(), 'test/vault/runtime/smoke/Figure-Standalone-Block-Invariant-Test.md')
   const source = readFileSync(fixturePath, 'utf8')
 
-  it('§34 — exactly 3 valid standalone figures and 7 classified structure issues', () => {
+  it('§34 — exactly 3 valid standalone figures and 10 classified structure issues', () => {
     const blocks = blocksOf(source)
     expect(blocks.filter(b => b.result.decision === 'VALID_STANDALONE_FIGURE')).toHaveLength(3) // A + G1 + G2
-    expect(blocks.filter(b => b.result.decision !== 'VALID_STANDALONE_FIGURE')).toHaveLength(7) // B C D E F I J
+    // B C D E F I J + I2 J2 + L (the heading block is analysed as a paragraph
+    // here; the production emitter owns it as FIGURE_IN_HEADING instead)
+    expect(blocks.filter(b => b.result.decision !== 'VALID_STANDALONE_FIGURE')).toHaveLength(10)
     // every fixture image really exists on disk → no resource warning
     const out = diagnosticsOf(source, { missing: () => false })
     const issues = out.diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
-    expect(issues).toHaveLength(7)
+    expect(issues).toHaveLength(10) // 9 block classes + Case K heading syntax
+    expect(issues.filter(d => d.code === 'FIGURE_SYNTAX_IN_HEADING')).toHaveLength(1)
     expect(issues.filter(d => d.code === FIGURE_TEXT_MIXED_CODE)).toHaveLength(3) // B C D
     expect(issues.filter(d => d.code === FIGURE_MULTIPLE_SAME_BLOCK_CODE)).toHaveLength(2) // E F
-    expect(issues.filter(d => d.code === FIGURE_IN_LIST_CODE)).toHaveLength(1) // I
-    expect(issues.filter(d => d.code === FIGURE_IN_QUOTE_CODE)).toHaveLength(1) // J
-    expect(out.errorCount).toBe(4) // E F I J
+    expect(issues.filter(d => d.code === FIGURE_IN_LIST_CODE)).toHaveLength(2) // I + I2
+    expect(issues.filter(d => d.code === FIGURE_IN_QUOTE_CODE)).toHaveLength(2) // J + J2
+    expect(out.errorCount).toBe(9) // E F I I2 J J2 + Case K syntax + Case L heading + empty source
     expect(out.warningCount).toBe(3) // B C D
     // an invalid block never produces a normal figure naming diagnostic
     expect(out.diagnostics.filter(d => d.code === 'FIGURE_MISSING_NAME')).toHaveLength(0)
@@ -621,13 +626,18 @@ describe('V5.15 §20/§34/§36 — the real runtime fixture', () => {
     expect(once.changed).toBe(true)
     const after = diagnosticsOf(once.output, { missing: () => false })
       .diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
-    expect(after).toHaveLength(0)
-    // E/F each carried two images → 3 + B/C/D + (E1,E2) + (F1,F2) + I + J = 12
-    expect(blocksOf(once.output).filter(b => b.result.decision === 'VALID_STANDALONE_FIGURE')).toHaveLength(12)
+    // The V5.15 block repair owns every container / composition class. The Case K
+    // heading-syntax residue is owned by the INDEPENDENT FIGURE_SYNTAX_IN_HEADING
+    // fixer (not by this block-level repair), so it is the only code left.
+    expect(after.map(d => d.code)).toEqual(['FIGURE_SYNTAX_IN_HEADING'])
+    // E/F each carried two images; I2 / J2 / L add one each:
+    // 3 + B/C/D + (E1,E2) + (F1,F2) + I + J + I2 + J2 + L1 = 15
+    expect(blocksOf(once.output).filter(b => b.result.decision === 'VALID_STANDALONE_FIGURE')).toHaveLength(15)
     // §12 — never 2+ consecutive blank lines
     expect(/\n[ \t]*\n[ \t]*\n/.test(once.output)).toBe(false)
-    // §21 — every image token survives, in the original order
-    const tokens = (s: string): string[] => [...s.matchAll(/!\[[^\]]*\]\([^)]*\)/g)].map(m => m[0])
+    // §21 — every COMPLETE image token survives, in the original order (the
+    // deliberately unclosed Case K fragment is not a token in either document).
+    const tokens = (s: string): string[] => scanSourceImageTokens(s).map(t => t.rawToken)
     expect(tokens(once.output)).toEqual(tokens(source))
     // §21 — idempotent
     const twice = buildStandaloneFigureBlockFix(once.output)

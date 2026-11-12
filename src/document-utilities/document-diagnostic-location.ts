@@ -343,6 +343,7 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   HEADING_NUMBER_SEQUENCE_INVALID: 'warning',
   FIGURE_BLOCK_STRUCTURE_INVALID: 'error',
   FIGURE_IN_HEADING: 'error',
+  FIGURE_SYNTAX_IN_HEADING: 'error',
   FIGURE_EMPTY_SOURCE: 'error',
   FIGURE_MULTIPLE_SAME_BLOCK: 'error',
   FIGURE_TEXT_MIXED: 'warning',
@@ -712,6 +713,7 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   // V1 — an image inside an H1–H6 heading is its own block-level structure rule
   // (higher priority than the paragraph mixed / multi classes).
   FIGURE_IN_HEADING: rule('FIGURE_IN_HEADING', 'figure', 'source-block'),
+  FIGURE_SYNTAX_IN_HEADING: rule('FIGURE_SYNTAX_IN_HEADING', 'figure', 'source-block'),
   // V1 — an image token with an EMPTY destination is an independent resource
   // error, reported at the exact token (never as a structure warning).
   FIGURE_EMPTY_SOURCE: rule('FIGURE_EMPTY_SOURCE', 'figure', 'source-range', {

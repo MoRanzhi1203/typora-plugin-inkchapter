@@ -286,26 +286,37 @@ console.log({
 - 新增 `FIGURE_IN_HEADING`（错误，`source-block`）：「图片被插入标题」。
   覆盖 H1–H6 的文字前 / 中 / 后、多图、仅图片、空路径图片；优先级高于
   `FIGURE_MULTIPLE_SAME_BLOCK` / `FIGURE_TEXT_MIXED`，同一标题只发布 1 条结构诊断。
+- 新增 `FIGURE_SYNTAX_IN_HEADING`（错误，`source-block`）：「标题中包含图片链接语法」。
+  只覆盖**没有完整图片 token** 的标题语法残留（如未闭合的 `![J](url`）；有完整 token 的
+  标题由 `FIGURE_IN_HEADING` 独占，同一图片节点不会重复报错。
 - 新增 `FIGURE_EMPTY_SOURCE`（错误，`source-range`）：「图片路径为空」。
   `![]()` / `![alt]()` / `![alt](   )` 作为独立资源维度报告；结构修复后仍保留。
+  **V2 起能力为 `EXPLICIT_ONLY`：删除必须由用户点击该行「处理」明确触发，不进入一键修复。**
 - 检测权威是 Markdown 源码（`document-figure-heading-invariant-v1.ts`），
   不是渲染后的 `<img>`；行内代码、代码围栏、转义 `\![...]` 一律排除。
 
 ### B. 修复
 
-- 有文字标题：保留 H1–H6 层级与文字，图片按原顺序移到标题后的独立段落。
+- 有文字标题：保留 H1–H6 层级与文字，图片按原顺序移到标题后的独立段落；
+  标题内残留的图片语法片段一并移出，标题中不再留下 `![](...)`。
 - 仅图片标题：移除标题结构，图片节点原样保留。
-- 空路径图片：原样保留（`![]()` 仍是 `![]()`），不伪造路径、不自动上传/下载。
+- 空路径图片：结构修复时原样保留（`![]()` 仍是 `![]()`），不伪造路径、不自动上传/下载；
+  用户明确选择「删除空图片占位符」时才删除。
 - 单一修复与一键修复走同一 `replace-block` 源补丁；修复后重新解析文档刷新诊断。
 
 ### C. 自动化回归
 
-- `document-figure-heading-invariant-v1.test.ts`：25 条用例（H1–H6、前/中/后、
-  多图、仅图片、三种空路径、行内代码/转义/围栏排除、标题层级保持、图片 token 保持、
-  空路径移除、单项与一键一致性、幂等、抽屉文案、共享扫描器转义排除）。
-- 全量 Vitest：349 文件 / 6076 测试通过；`tsc --noEmit` PASS；`pnpm build` PASS。
+- `document-figure-heading-invariant-v1.test.ts`：33 条用例（H1–H6、前/中/后、
+  多图、仅图片、三种空路径、标题语法残留、平衡括号 URL、行内代码/转义/围栏排除、
+  标题层级保持、图片 token 保持、显式删除空路径、单项与一键一致性、幂等、抽屉文案、
+  共享扫描器转义排除）。
+- 全量 Vitest：349 文件 / 6088 测试通过；`tsc --noEmit` PASS；`pnpm build` PASS。
 
-### D. GUI 验收（真实 Typora，PASS）
+### D. GUI 验收（真实 Typora，V1 记录）
+
+> 以下为 V1 验收记录，当时 `FIGURE_EMPTY_SOURCE` 为 `AUTO_SAFE`。V2 已改为
+> `EXPLICIT_ONLY`（一键修复不再删除空图片），并新增标题语法规则与列表/引用原位修复；
+> 复验结果见下一节。
 
 夹具：`test/vault/runtime/smoke/Figure-Heading-Image-Test.md`。
 运行时回执确认新构建已由 Typora 加载（`mainJsSha256=9304AB67…`，`loadSource=vault`）。
@@ -320,10 +331,67 @@ console.log({
 | 去重 | 同一标题只有 1 条 `FIGURE_IN_HEADING`；无 `FIGURE_TEXT_MIXED` / `FIGURE_MULTIPLE_SAME_BLOCK` |
 | Ctrl+Z / Ctrl+Y | 单项修复后 Ctrl+Z 回到原始结构（错误 9），Ctrl+Y 恢复修复结果（错误 8） |
 
-**空路径综合修复**：标题内的 `FIGURE_EMPTY_SOURCE` 计划会同时完成标题结构修复并移除空 token，
-因此在同一事务中优先于普通 `FIGURE_IN_HEADING` 计划，避免两条补丁范围重叠导致空路径残留。
+**空路径综合修复（V1 行为，V2 已取消）**：V1 中标题内的 `FIGURE_EMPTY_SOURCE` 计划会同时完成
+标题结构修复并移除空 token，因此优先于普通 `FIGURE_IN_HEADING` 计划。V2 改为 `EXPLICIT_ONLY`
+后，一键修复不再包含空路径计划，标题修复由 `FIGURE_IN_HEADING` 独占并原样保留空 token。
 
 **GUI 验收发现并修复的真实缺陷**：共享资源扫描器此前未排除反斜杠转义的图片标记
 （`\![alt](src)`），导致转义行被当成 `FIGURE_TEXT_MIXED` 并被一键修复拆成图片。
 已在 `scanMarkdownReferences` / `findReferenceSpans` 中跳过奇数反斜杠转义的引用，
 并新增回归用例；复验后转义行保持文字且不再有任何图片诊断。
+
+---
+
+## 追加：V2 图片规则纠偏（本轮）
+
+### A. 规则与去重
+
+- `FIGURE_IN_HEADING`：标题中存在**完整图片 token**（含空路径 `![]()`）；一个标题只发 1 条，
+  优先级高于多图 / 图文 / 通用结构。
+- `FIGURE_SYNTAX_IN_HEADING`：标题中存在**未闭合的图片链接语法**（`![...](` 但没有配对的
+  `)`），且该标题没有完整 token；一个标题只发 1 条。两者以「是否存在完整 token」为唯一边界，
+  同一图片节点不会重复报错。
+- 空路径 `FIGURE_EMPTY_SOURCE` 仍是独立资源维度：标题结构修复后继续显示，不会被静默清除。
+- 规则 ID 映射：V2 表中的 `FIGURE_BLOCK_STRUCTURE` 沿用既有稳定 ID
+  `FIGURE_BLOCK_STRUCTURE_INVALID`（兜底规则），未新增同义 ID。
+
+### B. 修复（真实源码补丁）
+
+- 标题：图片 + 语法片段按源码顺序移出，标题层级 / 文字 / 图片字节不变；仅图片 / 仅语法标题
+  失去标题标记；空路径 token 原样保留。
+- 列表（§6.3）：**原位**拆分，`- 第一项\n- ![图]\n- 第三项` →
+  `- 第一项\n\n![图]\n\n- 第三项`；有序列表保留字面编号；任务列表仅移除任务标记。
+  嵌套项、带缩进子内容的项拒绝自动修复并说明原因。
+- 引用（§7.3）：**原位**提取，图片前后引用文字保留各自引用属性，`>` 空行邻居被规范化，
+  不把其他引用文字转成普通段落。
+- 空路径（§10.1）：能力 `EXPLICIT_ONLY`，行内按钮文案「删除空图片占位符」，需用户明确点击；
+  `planAllAutoFixesV2` / 「N 项可自动修复」/ 一键修复均不包含它。
+- 一键修复（§13.2）：只收集 `AUTO_SAFE`，按依赖优先级排序（容器 → 多图 → 图文 → 通用；
+  同优先级按位置），冲突计划保留先占用字节者；合并为一次 `reloadContent`，写回后重新检测。
+
+### C. 自动化回归
+
+- `document-figure-heading-invariant-v1.test.ts`（33）：新增标题语法残留 / 平衡括号 URL /
+  显式删除空路径 / 一键不删除空路径。
+- `document-figure-issue-classification-v1.test.ts`（22）：新增列表原位、兄弟项保留、有序
+  列表编号、任务列表、缩进子内容拒绝、引用原位三段。
+- 全量 Vitest：349 文件 / 6088 测试通过；`tsc --noEmit` PASS；`pnpm build` 与 `pnpm build:dev` PASS。
+- 真实 Typora 已加载新构建：`mainJsSha256=664F5D73B04A0E40246E55CCDDD9B2901B5860174190568111C33CC3BCE546E6`，
+  `loadSource=vault`。
+
+### D. GUI 复验（真实 Typora，PASS）
+
+夹具：`test/vault/runtime/smoke/Figure-Standalone-Block-Invariant-Test.md`（含 V2 追加用例）。
+
+| 场景 | 真实结果 |
+|---|---|
+| 初始检测 | 错误 9 / 警告 3 / 提示 6；「11 项可自动修复」——空路径项**不计入**一键修复 |
+| 可见行 | 3×「图片与正文位于同一段落」、2×「多张图片位于同一段落」、1×「图片被设置为列表项」 |
+| 一键修复 | toast「已修复 11 项（Ctrl+Z 可撤销）」；剩余 1 错误（「图片路径为空（第 86 行）」）+ 1 警告 + 2 提示 |
+| Case I2 列表 | 保存后的源码为 `- 第一项` / 空行 / `![I2]` / 空行 / `- 第三项`，兄弟项与顺序不变 |
+| Case J2 引用 | `> 前面的引用说明` / 空行 / `![J2]` / 空行 / `> 后面的引用说明`，前后文字保留引用属性 |
+| Case K 标题语法 | `## 结束` 与 `![K](https://raw.githubusercontent.com/…)` 分成两个块，标题中无 `![` 残留，远程 URL 完整 |
+| Case L 标题多图 | `## 标题` + 独立 `![L1]` + 原样保留的 `![]()`；标题文字与图片均未丢失 |
+| 空路径显式处理 | 行内按钮 aria「删除空图片占位符：图片路径为空」；点击后 toast「已修复 1 项」、错误 0；源码中的 `![]()` 行被干净删除，L1 与标题保留 |
+| Ctrl+Z / Ctrl+Y | Ctrl+Z：错误 9 / 警告 3（整批恢复）；Ctrl+Y：错误 1 / 警告 1（整批重做） |
+| 去重 | 每个标题 / 容器只出现一条专用诊断；无通用「图片必须作为独立块插入」占位文案 |

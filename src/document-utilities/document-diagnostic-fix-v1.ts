@@ -35,11 +35,15 @@ import {
 import { parseImageSourceOccurrences, type ImageSourceOccurrence } from './document-resource-scanner'
 import {
   analyzeHeadingImages,
+  analyzeHeadingImageSyntax,
   buildHeadingImageFix,
+  buildHeadingSyntaxFix,
   scanSourceImageTokens,
   FIGURE_EMPTY_SOURCE_CODE,
   FIGURE_IN_HEADING_CODE,
+  FIGURE_SYNTAX_IN_HEADING_CODE,
   type HeadingImageEntry,
+  type HeadingSyntaxEntry,
 } from './document-figure-heading-invariant-v1'
 import {
   FORMULA_SINGLE_LINE_BLOCK_CODE,
@@ -555,6 +559,70 @@ export const FIGURE_IN_HEADING_FIX: Fixer = {
   },
 }
 
+/** Locate the syntax-only heading entry described by its diagnostic. */
+function locateHeadingSyntaxEntry(
+  diagnostic: DocumentDiagnostic,
+  markdown: string,
+): HeadingSyntaxEntry | null {
+  const meta = diagnostic.metadata ?? {}
+  const sourceStart = asNumber(meta.sourceStart)
+  const sourceEnd = asNumber(meta.sourceEnd)
+  const startLine = asNumber(meta.startLine)
+  const entries = analyzeHeadingImageSyntax(markdown)
+  if (sourceStart != null && sourceEnd != null) {
+    const exact = entries.find(entry => entry.lineStart === sourceStart && entry.lineEnd === sourceEnd)
+    if (exact) return exact
+  }
+  if (startLine != null) {
+    const byLine = entries.filter(entry => entry.lineIndex === startLine)
+    if (byLine.length === 1) return byLine[0]
+  }
+  const identity = typeof meta.owningBlockIdentity === 'string' ? meta.owningBlockIdentity : ''
+  const match = /^src-block:(\d+)$/.exec(identity)
+  if (match) {
+    const byIdentity = entries.filter(entry => entry.lineIndex === Number.parseInt(match[1], 10))
+    if (byIdentity.length === 1) return byIdentity[0]
+  }
+  return null
+}
+
+/**
+ * `FIGURE_SYNTAX_IN_HEADING` — move incomplete image-link syntax out of an
+ * H1–H6 heading. A heading that also owns a COMPLETE token is owned by
+ * `FIGURE_IN_HEADING` (that repair extracts both), so this fixer never competes
+ * with it for the same image node.
+ */
+export const FIGURE_SYNTAX_IN_HEADING_FIX: Fixer = {
+  code: FIGURE_SYNTAX_IN_HEADING_CODE,
+  support: 'AUTO',
+  label: '将图片语法移出标题',
+  build(diagnostic, ctx) {
+    const entry = locateHeadingSyntaxEntry(diagnostic, ctx.markdown)
+    if (entry == null) {
+      return { blockers: [blocker('STALE_DIAGNOSTIC', '目标标题已变化，请重新检测后再修复。')] }
+    }
+    const outcome = buildHeadingSyntaxFix(ctx.markdown, entry)
+    if (outcome.refusal != null) {
+      return { blockers: [blocker('STRUCTURE_NOT_AUTO_FIXABLE', outcome.refusal)] }
+    }
+    const before = ctx.markdown.slice(entry.lineStart, entry.lineEnd)
+    if (outcome.changed === false || outcome.text === before) {
+      return { blockers: [blocker('NOT_APPLICABLE', '该标题无需修复。')] }
+    }
+    return {
+      patches: [{
+        start: entry.lineStart,
+        end: entry.lineEnd,
+        before,
+        after: outcome.text,
+        lineStart: entry.lineIndex,
+        lineEnd: entry.lineIndex,
+        kind: 'replace-block',
+      }],
+    }
+  },
+}
+
 /** Build a line-deletion patch that keeps block spacing canonical. */
 function buildWholeLineRemovalPatch(markdown: string, lineIndex: number): DiagnosticFixPatch | null {
   const lines = splitFixLines(markdown)
@@ -590,7 +658,7 @@ function buildWholeLineRemovalPatch(markdown: string, lineIndex: number): Diagno
 export const FIGURE_EMPTY_SOURCE_FIX: Fixer = {
   code: FIGURE_EMPTY_SOURCE_CODE,
   support: 'AUTO',
-  label: '移除空图片',
+  label: '删除空图片占位符',
   build(diagnostic, ctx) {
     const meta = diagnostic.metadata ?? {}
     const location = locationOf(diagnostic)
@@ -805,6 +873,7 @@ export function createDefaultDiagnosticFixRegistry(): DiagnosticFixRegistry {
     .register(FIGURE_IN_QUOTE_FIX)
     .register(FIGURE_INLINE_FORMAT_FIX)
     .register(FIGURE_IN_HEADING_FIX)
+    .register(FIGURE_SYNTAX_IN_HEADING_FIX)
     .register(FIGURE_EMPTY_SOURCE_FIX)
     .register(CODE_LANGUAGE_FIX)
     .register(FIGURE_NAME_FIX)

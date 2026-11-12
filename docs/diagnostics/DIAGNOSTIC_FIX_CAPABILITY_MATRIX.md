@@ -27,13 +27,14 @@
 | `FIGURE_MISSING_NAME` | `USER_INPUT_REQUIRED` | 源补丁：仅 `![alt]` | ✅ 同上 | fix-v2 |
 | `LIST_EMPTY_ITEM` | `AUTO_SAFE` | 源补丁：删除无内容的列表标记行 | ✅ 同上 | format-integrity-v1 / fix-v2 |
 | `FORMULA_SINGLE_LINE_BLOCK` | `AUTO_SAFE` | 源补丁：`$$x$$` → `$$` / 公式 / `$$` 三行 | ✅ 同上 | format-integrity-v1 / fix-v2 |
-| `FIGURE_IN_HEADING` | `AUTO_SAFE` | 源补丁：保留标题层级与文字，图片按原顺序移出为独立段落（仅图片标题移除标题结构） | ✅ 同上 | heading-v1 / classification-v1 |
-| `FIGURE_EMPTY_SOURCE` | `AUTO_SAFE` | 源补丁：移除空图片 token（标题内同时完成标题结构修复；不伪造路径） | ✅ 同上 | heading-v1 / classification-v1 |
+| `FIGURE_IN_HEADING` | `AUTO_SAFE` | 源补丁：保留标题层级与文字，图片（含空路径 token）按原顺序移出为独立段落；标题内残留的图片语法片段一并移出（仅图片标题移除标题结构） | ✅ 同上 | heading-v1 / classification-v1 |
+| `FIGURE_SYNTAX_IN_HEADING` | `AUTO_SAFE` | 源补丁：把标题中未完成的 `![...](` 语法整体移出标题（标题文字保留；仅语法标题移除标题结构） | ✅ 同上 | heading-v1 |
+| `FIGURE_EMPTY_SOURCE` | `EXPLICIT_ONLY` | 源补丁：**仅在用户点击该行「处理」时**删除空图片占位符；**不进入一键修复**，也不伪造路径 | ✅ 同上 | heading-v1 / fix-v2 |
 | `FIGURE_BLOCK_STRUCTURE_INVALID` | `AUTO_SAFE` | 源补丁：把通用非法 owning block 拆成「文字块 / 每图一块」 | ✅ 同上 | v515 §11 / fix-v2 |
 | `FIGURE_MULTIPLE_SAME_BLOCK` | `AUTO_SAFE` | 源补丁：按原顺序拆成「每图一块」 | ✅ 同上 | v515 §8.2 / classification-v1 |
 | `FIGURE_TEXT_MIXED` | `AUTO_SAFE` | 源补丁：文字 / 图片 / 文字 三段 | ✅ 同上 | v515 §8.2 / classification-v1 |
-| `FIGURE_IN_LIST` | `AUTO_SAFE` | 源补丁：仅移除**顶层**列表项标记（无序 / 有序 / 任务列表） | ✅ 同上 | classification-v1 |
-| `FIGURE_IN_QUOTE` | `AUTO_SAFE` | 源补丁：移除图片所在行的**全部**引用层级 | ✅ 同上 | classification-v1 |
+| `FIGURE_IN_LIST` | `AUTO_SAFE` | 源补丁：**原位**移除目标顶层列表项标记（无序 / 有序 / 任务列表），图片留在原位置，前后兄弟项保持原顺序 | ✅ 同上 | classification-v1 |
+| `FIGURE_IN_QUOTE` | `AUTO_SAFE` | 源补丁：**原位**移除图片行的全部引用层级；前后引用文字保留引用属性 | ✅ 同上 | classification-v1 |
 | `FIGURE_INLINE_FORMAT` | `AUTO_SAFE` | 源补丁：移除直接包裹图片的强调标记后独立成块 | ✅ 同上 | classification-v1 |
 | `FIGURE_IN_TABLE` | `UNAVAILABLE` | 仅「定位 / 说明」；不渲染修复按钮 | — | classification-v1 |
 | `CODE_MISSING_NAME` | `USER_INPUT_REQUIRED` | `CaptionService.setCaption('code', …)` | ✅ 题注服务（不改 Markdown） | fix-v2 / fix-controller |
@@ -43,16 +44,28 @@
 `CODE_MISSING_NAME` / `TABLE_MISSING_NAME` 在题注服务不可用时会降级为 `UNAVAILABLE`
 （不渲染空按钮）。
 
-图片结构规则按真实问题分类（`FIGURE_IN_LIST` / `FIGURE_IN_QUOTE` / `FIGURE_IN_TABLE` /
-`FIGURE_MULTIPLE_SAME_BLOCK` / `FIGURE_TEXT_MIXED` / `FIGURE_INLINE_FORMAT` /
-`FIGURE_BLOCK_STRUCTURE_INVALID`），每个 owning block **只发布一条**诊断（优先级：非法容器 >
-多图同行 > 图文混排 > 行内格式 > 通用结构）。
+图片结构规则按真实问题分类（`FIGURE_IN_HEADING` / `FIGURE_SYNTAX_IN_HEADING` /
+`FIGURE_IN_LIST` / `FIGURE_IN_QUOTE` / `FIGURE_IN_TABLE` / `FIGURE_MULTIPLE_SAME_BLOCK` /
+`FIGURE_TEXT_MIXED` / `FIGURE_INLINE_FORMAT` / `FIGURE_BLOCK_STRUCTURE_INVALID`），每个
+owning block **只发布一条**诊断（优先级：标题 > 非法容器 > 多图同行 > 图文混排 > 行内格式 >
+通用结构）。`FIGURE_IN_HEADING` 与 `FIGURE_SYNTAX_IN_HEADING` 以「是否存在完整图片 token」
+为唯一边界：有完整 token 的标题只报前者，后者只覆盖语法残留，同一图片节点绝不重复报错。
+
+> 规则 ID 映射：V2 规格表中的 `FIGURE_BLOCK_STRUCTURE` 在本工程继续使用既有稳定 ID
+> `FIGURE_BLOCK_STRUCTURE_INVALID`（兜底规则），未新增同义 ID。
 
 可自动修复范围：
 - 段落 / 独立图片块：文字与每张图片各自成块；
-- **顶层**列表项：移除列表标记，图片成为独立段落（嵌套列表拒绝并说明原因）；
-- 引用块：移除图片所在行的全部 `>` 层级（其他引用文字保持原样）；
+- 标题（H1–H6）：图片与图片语法片段移出标题，标题层级 / 文字 / 图片字节不变；
+- **顶层**列表项：原位移除列表标记，图片成为独立段落，前后兄弟项顺序不变（嵌套项或带缩进子内容时拒绝并说明原因）；
+- 引用块：原位移除图片行的全部 `>` 层级，前后引用文字保持引用属性；
 - 行内格式：仅移除直接包裹图片的 `**` / `*` / `__` / `_` / `~~`。
+
+**一键修复（§13.2）**：只收集 `AUTO_SAFE` 计划，并按依赖优先级排序（容器结构 → 多图同行 →
+图文混排 → 通用兜底；同优先级按文档位置），冲突计划由第一个占用字节的计划获胜，其余标记
+`PATCH_CONFLICT`。所有补丁合并为**一次** `File.reloadContent` 写回，写回后重新检测并以新快照
+判定修复结果（`VERIFIED_FIXED` / `CHANGED_BUT_PERSISTS`），不按列表顺序逐条字符串替换。
+`FIGURE_EMPTY_SOURCE` 为 `EXPLICIT_ONLY`，永远不进入一键修复。
 
 表格单元格 `FIGURE_IN_TABLE` 的生产者把 `metadata.autoFixable` 记为 `false`，列表行
 **不渲染修复按钮**，修复器本身也以 `STRUCTURE_NOT_AUTO_FIXABLE` 明确拒绝并说明原因

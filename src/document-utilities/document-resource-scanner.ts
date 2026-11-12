@@ -108,9 +108,15 @@ export interface ReferenceSpan {
   resourceClass: ResourceClass
 }
 
-/** The ONE reference-shape authority: `![alt](dest)` / `[alt](dest)`. */
+/**
+ * The ONE reference-shape authority: `![alt](dest)` / `[alt](dest)`.
+ *
+ * V2 §11 — a destination may contain BALANCED parentheses (`a(b).png`) and
+ * escaped parentheses; the old `[^)]+` stopped at the first `)` and split a
+ * real URL into a truncated token + plain-text residue.
+ */
 function createReferencePattern(): RegExp {
-  return /(!?)\[([^\]]*)\]\(([^)]+)\)/g
+  return /(!?)\[([^\]]*)\]\(((?:\\[()]|[^()\n]|\([^()\n]*\))+)\)/g
 }
 
 function countLineBreaks(text: string): number {

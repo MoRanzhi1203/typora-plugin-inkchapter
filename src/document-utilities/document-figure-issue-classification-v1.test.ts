@@ -102,9 +102,27 @@ describe('FIGURE_IN_LIST — remove the list marker of a simple image item', () 
     expect(fixFirst(md)).toBe('![图](a.png)\n')
   })
 
-  it('never deletes sibling list items', () => {
+  it('never deletes sibling list items and keeps the image IN PLACE', () => {
     const md = '- 文字\n- ![图](a.png)\n- 另一项\n'
-    expect(fixFirst(md)).toBe('- 文字\n- 另一项\n\n![图](a.png)\n')
+    expect(fixFirst(md)).toBe('- 文字\n\n![图](a.png)\n\n- 另一项\n')
+  })
+
+  it('an ordered list keeps its literal numbering and sibling order', () => {
+    const md = '1. 第一项\n2. ![图](a.png)\n3. 第三项\n'
+    expect(fixFirst(md)).toBe('1. 第一项\n\n![图](a.png)\n\n3. 第三项\n')
+  })
+
+  it('a task-list image loses the task marker only', () => {
+    expect(fixFirst('- [ ] ![图](a.png)\n')).toBe('![图](a.png)\n')
+  })
+
+  it('a list item with indented child content is refused (no structure change)', () => {
+    const md = '- ![图](a.png)\n  - 子项\n'
+    const diagnostic = structureDiagnostics(md)[0]
+    expect(diagnostic.metadata?.autoFixable).toBe(false)
+    const built = createDefaultDiagnosticFixRegistry().get(diagnostic.code)!
+      .build(diagnostic, fixCtx(md))
+    expect(built.patches ?? []).toEqual([])
   })
 
   it('a nested list item is refused with a reason and never rewritten', () => {
@@ -138,6 +156,12 @@ describe('FIGURE_IN_QUOTE — remove EVERY quote level of the image line', () =>
     expect(fixFirst(md)).toBe('> 前文 后文\n\n![图](a.png)\n')
     // the remaining text is still a blockquote, the image is a standalone block
     expect(structureDiagnostics('> 前文 后文\n\n![图](a.png)\n')).toEqual([])
+  })
+
+  it('V2 §7.3 — the image is extracted BETWEEN quote text segments, in place', () => {
+    const md = '> 前面的引用说明\n>\n> ![图](a.png)\n>\n> 后面的引用说明\n'
+    expect(fixFirst(md)).toBe('> 前面的引用说明\n\n![图](a.png)\n\n> 后面的引用说明\n')
+    expect(structureDiagnostics('> 前面的引用说明\n\n![图](a.png)\n\n> 后面的引用说明\n')).toEqual([])
   })
 })
 
