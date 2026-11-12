@@ -1580,16 +1580,12 @@ export default class extends Plugin<InkChapterSettings> {
         diagnosticFix: {
           applyMarkdown: (next: string, expectedBefore: string) => {
             try {
-              // The SAME structural authority the planner used: the incremental
-              // mirror can lag on blank-line structure, and a read-back against
-              // it would be meaningless.
+              // The SAME authority the planner used (the exact document text). The
+              // structural serializer must never be the write base: it rebuilds a
+              // rendered fenced code block from DOM text, so its fence body carries
+              // the line-number gutter and the language/line-count chrome
+              // (`" 1<code>TXT纯文本1 行"` — see runtime/gui-acceptance/snap-J.json).
               const readSource = (): string | null => {
-                try {
-                  const structural = readStructuralMarkdown()
-                  if (structural.structural && typeof structural.markdown === 'string' && structural.markdown !== '') {
-                    return structural.markdown
-                  }
-                } catch { /* fall through */ }
                 try { return editor.getMarkdown() } catch { return null }
               }
               const before = readSource()
@@ -1619,7 +1615,7 @@ export default class extends Plugin<InkChapterSettings> {
                 console.error('[InkChapter] diagnostic fix readback mismatch', {
                   expectedLength: next.length,
                   actualLength: after?.length ?? null,
-                  structuralLength: readSource()?.length ?? null,
+                  beforeLength: before?.length ?? null,
                 })
                 return { ok: false, reason: 'READBACK_MISMATCH' }
               }

@@ -164,6 +164,27 @@ describe('fix controller — auto-safe one-click flow', () => {
     expect(h.state.writes).toEqual(['# 标题\n\n最后一段。\n'])
   })
 
+  it('REPRO §doc.md — 删除文末多余空行不得改动前置代码块正文', () => {
+    // Real defect: the write base used to be the STRUCTURAL serializer, whose
+    // fence body is DOM text (`" 1<code>TXT纯文本1 行"`), so this repair wrote the
+    // code-block chrome into the document. The base is now the exact text mirror,
+    // and this contract pins it: only the extra newlines may change.
+    const fence = '```text\nruntime/smoke/Document-Diagnostics-Block-Gap-Presentation-Extent-Test.md\n```\n'
+    const base = `# 墨章 Runtime 根文档\n\n打开：\n\n\n\n\n\n${fence}\n\n\n\n\n`
+    const d = diag('DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE', { extraTrailingBlankLineCount: 4 })
+    const h = createHarness({
+      markdown: base,
+      diagnostics: [d],
+      onRecheck: (state) => { state.snapshot = snapshot([]) },
+    })
+    h.controller.startAllAuto()
+    expect(h.state.writes).toHaveLength(1)
+    const written = h.state.writes[0]
+    expect(written).toBe(`# 墨章 Runtime 根文档\n\n打开：\n\n\n\n\n\n${fence}`)
+    expect(written).toContain(fence)
+    expect(written).not.toContain('纯文本')
+  })
+
   it('a late cancel after the direct fix performs ZERO extra writes', () => {
     const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', blankMeta, blankLocation)
     const h = createHarness({

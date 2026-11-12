@@ -176,12 +176,25 @@ Typora 已启动并加载本轮 bundle。以下项目保留人工验收：
 
 1. **EOF chip 定位基座错误**：`paintDocEndExcessRows` 用「第一条尾随行」当 `containerTop`，而 chip 的 `top` 相对载体 → 每个文末标签下移约 38px，碰撞判定评估的矩形与实际绘制矩形不一致（假 PASS）。改为载体自身 `hostRect.top + localRect.top`，候选行仅取 `trailingBlankRects.slice(requiredRows)`（超额行），全部被光标占用时移到载体下方。
 2. **写回校验权威错误**：块级结构序列化器不保留文末换行（写回后 `…内容。`），导致真实成功的修复被判 `READBACK_MISMATCH`。新增 `readMarkdownExact`（文本镜像）作为唯一 READBACK 权威；基座仍用结构序列化器。
+3. **写回基座权威错误（会后复现，已修）**：`editor.UserOp.getMarkdownSourceFrom($('#write'))` 在有**已渲染代码块**的文档里会把代码块正文序列化成 DOM 文本 —— 取证实测为 `" 1runtime/smoke/….mdTXT纯文本1 行"`（` 1` 行号槽、`TXT纯文本` 语言标签、`1 行` 行数提示），见 `snap-J.json`；同一文档的镜像 `editor.getMarkdown()` 与磁盘文件逐字节一致。修复器过去以结构序列化结果为整篇写回基座，因此在 `test/vault/doc.md` 上执行「删除文末多余空行」时把这段界面文字写进了代码块。现改为：**写回基座 / 陈旧性比对 / 回读全部使用文本镜像**，结构序列化只保留给诊断读取。
+
+### 3b. doc.md 代码块污染回归（真实 GUI，`snap-K/L/M.json`）
+
+| 阶段 | 代码块状态 | 文末换行 | 说明 |
+| --- | --- | --- | --- |
+| 修复前 | 正文 `runtime/smoke/….md`（渲染层另有行号/语言 chrome） | 6 个（12 字符 CRLF） | — |
+| 点「删除文末多余空行」后 | 仍为 `runtime/smoke/….md`，`纯文本`/`TXT` 未出现 | 1 个（2 字符） | 直接修复，无中间预览面板，提示「已修复 1 项（Ctrl+Z 可撤销）」 |
+| `Ctrl+Z` | 不变 | 恢复 6 个 | 单事务撤销成立 |
+| `Ctrl+Y` | 不变 | 仍为 6 个 | **未复现 redo**（`reloadContent` 的 undo 步未提供 redo 步），记为 NEEDS_MANUAL |
+
+同时在本轮确认：同一份诊断生成的内部空行修复（8 空行 → 1）同样不再污染代码块。
+
 
 ### 5. 本轮验证
 
-- `npx vitest run`：345 文件 / 6006 测试 PASS。
+- `npx vitest run`：345 文件 / 6007 测试 PASS。
 - `tsc --noEmit` PASS；`pnpm build` PASS。
-- `dist/main.js` SHA256：`B7C93D55D7B1E51A5074C8ECEFD6DF4EF506D75BDC45D4B740A920C2EC0F7897`。
+- `dist/main.js` SHA256：`904EEAD679A9732144F1D7ABDF9FAED57EAD5C66B4AC9274F6F59F4FEEC883EF`（含写回基座修复）。
 - 测试 vault 部署文件已还原为无探针的同一 `dist/main.js`；夹具已还原；采证脚本保留在 gitignored 的 `runtime/gui-acceptance/`。
 
 ### 6. 仍未验收（NEEDS_MANUAL）
@@ -191,6 +204,8 @@ Typora 已启动并加载本轮 bundle。以下项目保留人工验收：
 3. 文档锁定、多文档快速切换下的标记生命周期。
 4. 「同类修复（N 项）」多诊断一次写回 + 一次撤销（本轮为单项）。
 5. 内部空行诊断在 source 模式下的发布策略（上方既有 BLOCKED 事实未变）。
+6. `Ctrl+Y` 在 `reloadContent` 修复事务后的 redo（本轮未复现，撤销正常）。
+7. 诊断读取仍使用结构序列化器：含多行代码块的文档里，块内文本与行号会与真实 Markdown 不一致（本轮仅把**写回**切到文本镜像；诊断读取未改，属已知限制）。
 
 DevTools 只读采证（可选）：
 ```js

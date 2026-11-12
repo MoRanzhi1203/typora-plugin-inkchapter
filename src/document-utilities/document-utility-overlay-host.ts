@@ -23535,24 +23535,25 @@ export class DocumentUtilityOverlayHost {
   /**
    * F0 SAFETY — the ONE source read for diagnostic fixes.
    *
-   * `verified=true` only when the STRUCTURAL serializer produced the string.
-   * The incremental mirror (`getMarkdown`) can lag on blank-line structure, so
-   * a fix planned/written from it could drop content. Source-patch fixes are
-   * refused when this is degraded (caption-name fixes do not touch Markdown).
+   * The base MUST be the incremental mirror (`getMarkdown`), i.e. the exact text
+   * Typora itself saves — NOT the structural serializer.
+   *
+   * EVIDENCE (Typora 1.6.7, `runtime/gui-acceptance/snap-J.json`, fixture
+   * `test/vault/doc.md`): the block-level `UserOp.getMarkdownSourceFrom($write)`
+   * serializes a RENDERED fenced code block from its DOM text nodes, so the fence
+   * body comes back as `" 1<code>TXT纯文本1 行"` — the line-number gutter plus the
+   * language label and line-count chrome. Planning a whole-document write-back on
+   * that string then wrote the chrome into the code block. The mirror of the same
+   * document was byte-identical to the file (trailing blank lines included).
+   *
+   * `verified` therefore means "the document text was readable", and source-patch
+   * fixes are still refused when it is not (caption-name fixes never touch Markdown).
    */
   private readFixSource(): { markdown: string | null; verified: boolean } {
-    try {
-      const structural = this.opts.ctx.authority.getStructuralMarkdown?.()
-      if (structural
-        && structural.structural === true
-        && typeof structural.markdown === 'string'
-        && structural.markdown !== '') {
-        return { markdown: structural.markdown, verified: true }
-      }
-    } catch { /* fall through to the mirror */ }
     let markdown: string | null = null
     try { markdown = this.opts.ctx.authority.getMarkdown() } catch { markdown = null }
-    return { markdown, verified: false }
+    if (typeof markdown !== 'string' || markdown === '') return { markdown, verified: false }
+    return { markdown, verified: true }
   }
 
   /**
