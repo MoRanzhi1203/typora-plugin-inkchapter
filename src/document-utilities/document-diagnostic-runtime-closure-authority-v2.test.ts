@@ -45,8 +45,8 @@ const DEFAULT_INPUT: DocumentDiagnosticClosureAuthorityInput = {}
 // ── §21 — single registry authority ─────────────────────────────────────────
 
 describe('Capability Matrix V2 §21 — single registry authority', () => {
-  it('there is exactly ONE registry and it has the frozen 112 families', () => {
-    expect(Object.keys(DOCUMENT_DIAGNOSTIC_RULE_REGISTRY)).toHaveLength(112)
+  it('there is exactly ONE registry and it has the frozen 116 families', () => {
+    expect(Object.keys(DOCUMENT_DIAGNOSTIC_RULE_REGISTRY)).toHaveLength(116)
     const gates = computeDocumentDiagnosticMetadataGates()
     expect(gates.DUPLICATE_RULE_METADATA_AUTHORITY_COUNT).toBe(0)
     expect(gates.DUPLICATE_RULE_FAMILY_ID_COUNT).toBe(0)
@@ -62,19 +62,19 @@ describe('Capability Matrix V2 §21 — single registry authority', () => {
 // ── §21 — count authority (family layer vs code layer) ──────────────────────
 
 describe('Capability Matrix V2 §21 — count authority', () => {
-  it('family layer: 108 + 4 = 112; code layer: 5 + 113 = 118', () => {
+  it('family layer: 112 + 4 = 116; code layer: 5 + 117 = 122', () => {
     const s = resolveDocumentDiagnosticCapabilitySummary()
-    expect(s.implementedFamilyCount).toBe(108)
+    expect(s.implementedFamilyCount).toBe(112)
     expect(s.deferredFamilyCount).toBe(4)
     expect(s.plannedFamilyCount).toBe(0)
-    expect(s.implementedFamilyCount + s.deferredFamilyCount).toBe(112)
-    expect(s.registeredRuleFamilyCount).toBe(112)
+    expect(s.implementedFamilyCount + s.deferredFamilyCount).toBe(116)
+    expect(s.registeredRuleFamilyCount).toBe(116)
 
     expect(s.stateGuardCodeCount).toBe(5)
-    expect(s.contentDiagnosticCodeCount).toBe(113)
-    expect(s.stateGuardCodeCount + s.contentDiagnosticCodeCount).toBe(118)
-    expect(s.resolvedDiagnosticCodeCount).toBe(118)
-    expect(s.userVisibleDiagnosticTypeCount).toBe(108)
+    expect(s.contentDiagnosticCodeCount).toBe(117)
+    expect(s.stateGuardCodeCount + s.contentDiagnosticCodeCount).toBe(122)
+    expect(s.resolvedDiagnosticCodeCount).toBe(122)
+    expect(s.userVisibleDiagnosticTypeCount).toBe(112)
     expect(computeDocumentDiagnosticMetadataGates().DIAGNOSTIC_RULE_COUNT_AUTHORITY_MISMATCH_COUNT).toBe(0)
   })
 
@@ -144,8 +144,8 @@ describe('Capability Matrix V2 §6 — Runtime Code Resolver', () => {
       [1, 2, 3, 4, 5, 6].map(n => resolveRuntimeCodeFamilyId(`${DOCUMENT_DIAGNOSTIC_LATENT_ATX_CODE_PREFIX}_LEVEL_${n}`)),
     )
     expect(familiesFromLevels.size).toBe(1)
-    // Solving the resolver over the whole registry yields the frozen 112 families.
-    expect(new Set(Object.values(DOCUMENT_DIAGNOSTIC_RULE_REGISTRY).map(m => m.familyId)).size).toBe(112)
+    // Solving the resolver over the whole registry yields the frozen 116 families.
+    expect(new Set(Object.values(DOCUMENT_DIAGNOSTIC_RULE_REGISTRY).map(m => m.familyId)).size).toBe(116)
   })
 
   it('UNRESOLVED_DYNAMIC_RUNTIME_CODE_COUNT is 0', () => {
@@ -199,14 +199,14 @@ describe('Capability Matrix V2 §6 — Static Test Manifest', () => {
 // ── §31 — XX + YY + ZZ + 4 = 63 ─────────────────────────────────────────────
 
 describe('Capability Matrix V2 §31 — summary identity', () => {
-  it('closed + partial + unverified + deferred == 112', () => {
+  it('closed + partial + unverified + deferred == 116', () => {
     const s = resolveDocumentDiagnosticCapabilitySummary()
-    expect(s.closedFamilyCount + s.partialFamilyCount + s.unverifiedFamilyCount + s.deferredClosureFamilyCount).toBe(112)
+    expect(s.closedFamilyCount + s.partialFamilyCount + s.unverifiedFamilyCount + s.deferredClosureFamilyCount).toBe(116)
     expect(s.deferredClosureFamilyCount).toBe(4)
     // With NO runtime evidence nothing is CLOSED and every implemented family is
     // honestly UNVERIFIED.
     expect(s.closedFamilyCount).toBe(0)
-    expect(s.unverifiedFamilyCount).toBe(108)
+    expect(s.unverifiedFamilyCount).toBe(112)
   })
 })
 

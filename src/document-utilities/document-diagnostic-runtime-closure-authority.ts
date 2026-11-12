@@ -204,14 +204,16 @@ export const DOCUMENT_DIAGNOSTIC_BASELINE = {
   // classified figure-structure families (list / quote / table / multiple /
   // text-mixed / inline-format) — each with its own real producer + fixer.
   // V2 §5.5 adds FIGURE_SYNTAX_IN_HEADING (+1 implemented family / code).
-  registeredRuleFamilyCount: 112,
-  resolvedDiagnosticCodeCount: 118,
-  userVisibleDiagnosticTypeCount: 108,
-  implementedFamilyCount: 108,
+  // V3 adds the image SYNTAX completeness family set (+4): unclosed destination /
+  // unclosed alt / malformed / invalid destination.
+  registeredRuleFamilyCount: 116,
+  resolvedDiagnosticCodeCount: 122,
+  userVisibleDiagnosticTypeCount: 112,
+  implementedFamilyCount: 112,
   deferredFamilyCount: 4,
   plannedFamilyCount: 0,
   stateGuardCodeCount: 5,
-  contentDiagnosticCodeCount: 113,
+  contentDiagnosticCodeCount: 117,
 } as const
 
 // ── Internal authorities ────────────────────────────────────────────────────

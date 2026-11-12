@@ -130,11 +130,11 @@ describe('Capability Matrix V2 §11 — evidence booleans map one-to-one to dime
     const summary = resolveDocumentDiagnosticCapabilitySummary(input)
     expect(summary.closedFamilyCount).toBe(0)
     expect(summary.partialFamilyCount).toBe(1)
-    expect(summary.unverifiedFamilyCount).toBe(107)
+    expect(summary.unverifiedFamilyCount).toBe(111)
     expect(summary.deferredClosureFamilyCount).toBe(4)
     expect(
       summary.closedFamilyCount + summary.partialFamilyCount + summary.unverifiedFamilyCount + summary.deferredClosureFamilyCount,
-    ).toBe(112)
+    ).toBe(116)
     const markdown = formatDocumentDiagnosticCapabilityMatrixMarkdown(input)
     expect(markdown).toContain('1 Runtime Partial')
   })

@@ -56,6 +56,10 @@ HINT_FAMILY_COUNT=24
 | `EXCESSIVE_INTERNAL_BLANK_LINES` | EXCESSIVE_INTERNAL_BLANK_LINES | 警告 | 是 | source-range | SINGLE_TARGET | 连续空行过多 | 连续空行过多 | 两个内容块之间存在 2 个及以上连续空行。 | 删除多余的连续空行，块之间保留一个空行即可。 |
 | `FIGURE_IN_HEADING` | FIGURE_IN_HEADING | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片被插入标题 | 标题中包含图片，图片必须移出标题并作为独立段落。 | 将图片移出标题后作为独立图片段落，保留标题层级与原有文字。 |
 | `FIGURE_SYNTAX_IN_HEADING` | FIGURE_SYNTAX_IN_HEADING | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 标题中包含图片链接语法 | 标题中残留未完成的图片链接语法，图片语法必须移出标题。 | 将图片链接语法移出标题并作为独立段落，保留标题层级与原有文字。 |
+| `FIGURE_UNCLOSED_DESTINATION` | FIGURE_UNCLOSED_DESTINATION | 错误 | 是 | source-range | SINGLE_TARGET | （无映射/动态） | 图片链接括号未闭合 | 图片语法的目标路径缺少右圆括号，Typora 无法把它渲染成图片。 | 在语法结尾补全 `)`；仅在段落结尾且无其他未闭合结构时自动修复，URL 内容保持不变。 |
+| `FIGURE_UNCLOSED_ALT` | FIGURE_UNCLOSED_ALT | 错误 | 是 | source-range | SINGLE_TARGET | （无映射/动态） | 图片描述方括号未闭合 | 图片描述的方括号 `]` 未闭合，无法区分描述与路径。 | 在描述结束处补全 `]`；边界存在歧义时请手动修复。 |
+| `FIGURE_MALFORMED_SYNTAX` | FIGURE_MALFORMED_SYNTAX | 错误 | 是 | source-range | SINGLE_TARGET | （无映射/动态） | 图片链接语法不完整 | 图片链接语法不完整或描述与路径之间的分隔结构不合法。 | 按 `![描述](路径)` 的完整结构手动补全缺失符号。 |
+| `FIGURE_INVALID_DESTINATION` | FIGURE_INVALID_DESTINATION | 错误 | 是 | source-range | SINGLE_TARGET | （无映射/动态） | 图片路径语法不合法 | 图片路径无法解析为有效目标（例如尖括号路径缺少 `>` 或路径后存在无法解析的内容）。 | 修正图片路径语法，或重新插入图片。 |
 | `FIGURE_EMPTY_SOURCE` | FIGURE_EMPTY_SOURCE | 错误 | 是 | source-range | SINGLE_TARGET | （无映射/动态） | 图片路径为空 | 图片语法没有目标路径，无法显示图片。请补充路径，或明确选择删除空图片占位符。 | 补充图片路径，或点击「处理」明确删除空图片占位符；一键修复不会自动删除。 |
 | `FIGURE_BLOCK_STRUCTURE_INVALID` | FIGURE_BLOCK_STRUCTURE_INVALID | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片独立块结构异常 | 图片块不满足独立块结构要求。 | 将图片拆成独立段落：文字一段、每张图片各一段，前后保留空行。 |
 | `FIGURE_MULTIPLE_SAME_BLOCK` | FIGURE_MULTIPLE_SAME_BLOCK | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 多张图片位于同一段落 | 同一段落中存在多张图片，图片块只能包含一张图片。 | 将每张图片拆分为独立的图片段落，按原顺序排列并保留前后空行。 |

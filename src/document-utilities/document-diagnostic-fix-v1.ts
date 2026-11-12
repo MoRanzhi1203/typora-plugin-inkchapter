@@ -45,6 +45,14 @@ import {
   type HeadingImageEntry,
   type HeadingSyntaxEntry,
 } from './document-figure-heading-invariant-v1'
+// V3 — image syntax completeness (missing `)` / `]`).
+import {
+  analyzeFigureSyntax,
+  buildFigureSyntaxFix,
+  FIGURE_UNCLOSED_DESTINATION_CODE,
+  FIGURE_UNCLOSED_ALT_CODE,
+  type FigureSyntaxIssue,
+} from './document-figure-syntax-integrity-v1'
 import {
   FORMULA_SINGLE_LINE_BLOCK_CODE,
   LIST_EMPTY_ITEM_CODE,
@@ -82,7 +90,7 @@ export interface DiagnosticFixPatch {
   after: string
   lineStart: number
   lineEnd: number
-  kind: 'delete-lines' | 'replace-tail' | 'insert-language' | 'insert-figure-name' | 'replace-line' | 'replace-block'
+  kind: 'delete-lines' | 'replace-tail' | 'insert-language' | 'insert-figure-name' | 'insert-syntax' | 'replace-line' | 'replace-block'
 }
 
 export interface FixPreviewHunk {
@@ -623,6 +631,92 @@ export const FIGURE_SYNTAX_IN_HEADING_FIX: Fixer = {
   },
 }
 
+/** Locate the V3 syntax issue described by a diagnostic. */
+function locateFigureSyntaxIssue(
+  diagnostic: DocumentDiagnostic,
+  markdown: string,
+  code: string,
+): FigureSyntaxIssue | null {
+  const meta = diagnostic.metadata ?? {}
+  const sourceStart = asNumber(meta.sourceStart) ?? sourceStartOf(locationOf(diagnostic))
+  const startLine = asNumber(meta.startLine)
+  const candidates = analyzeFigureSyntax(markdown).filter(issue => issue.code === code)
+  if (sourceStart != null) {
+    const exact = candidates.find(issue => issue.start === sourceStart)
+    if (exact) return exact
+  }
+  if (startLine != null) {
+    const byLine = candidates.filter(issue => issue.startLine === startLine)
+    if (byLine.length === 1) return byLine[0]
+  }
+  const rawToken = typeof meta.rawToken === 'string' ? meta.rawToken : ''
+  if (rawToken !== '') {
+    const byRaw = candidates.filter(issue => issue.rawToken === rawToken)
+    if (byRaw.length === 1) return byRaw[0]
+  }
+  return null
+}
+
+/**
+ * V3 §4.1/§4.2 — the ONLY automatic syntax repair: insert the missing `)` at a
+ * proven paragraph boundary, or the missing `]` before an unambiguous `(`.
+ * Every original byte (URL / alt / title) is preserved.
+ */
+function buildFigureSyntaxFixPatch(
+  diagnostic: DocumentDiagnostic,
+  ctx: FixContext,
+  code: string,
+): { patches?: DiagnosticFixPatch[]; blockers?: FixBlocker[] } {
+  const issue = locateFigureSyntaxIssue(diagnostic, ctx.markdown, code)
+  if (issue == null) {
+    return { blockers: [blocker('STALE_DIAGNOSTIC', '目标图片语法已变化，请重新检测后再修复。')] }
+  }
+  const outcome = buildFigureSyntaxFix(ctx.markdown, issue)
+  if (outcome.refusal != null) {
+    return { blockers: [blocker('STRUCTURE_NOT_AUTO_FIXABLE', outcome.refusal)] }
+  }
+  if (!outcome.changed || issue.repairAt == null) {
+    return { blockers: [blocker('NOT_APPLICABLE', '该图片语法无需修复。')] }
+  }
+  const insertAt = issue.repairAt
+  if (!Number.isInteger(insertAt) || insertAt < 0 || insertAt > ctx.markdown.length) {
+    return { blockers: [blocker('PATCH_OUT_OF_BOUNDS', '图片语法修复位置超出当前文档。')] }
+  }
+  const insertText = code === FIGURE_UNCLOSED_ALT_CODE ? ']' : ')'
+  if (code === FIGURE_UNCLOSED_ALT_CODE && ctx.markdown.charAt(insertAt) !== '(') {
+    return { blockers: [blocker('INVALID_FACT', '无法确定 `]` 的插入位置，请手动修复。')] }
+  }
+  return {
+    patches: [{
+      start: insertAt,
+      end: insertAt,
+      before: '',
+      after: insertText,
+      lineStart: issue.startLine,
+      lineEnd: issue.endLine,
+      kind: 'insert-syntax',
+    }],
+  }
+}
+
+export const FIGURE_UNCLOSED_DESTINATION_FIX: Fixer = {
+  code: FIGURE_UNCLOSED_DESTINATION_CODE,
+  support: 'AUTO',
+  label: '补全图片链接括号',
+  build(diagnostic, ctx) {
+    return buildFigureSyntaxFixPatch(diagnostic, ctx, FIGURE_UNCLOSED_DESTINATION_CODE)
+  },
+}
+
+export const FIGURE_UNCLOSED_ALT_FIX: Fixer = {
+  code: FIGURE_UNCLOSED_ALT_CODE,
+  support: 'AUTO',
+  label: '补全图片描述方括号',
+  build(diagnostic, ctx) {
+    return buildFigureSyntaxFixPatch(diagnostic, ctx, FIGURE_UNCLOSED_ALT_CODE)
+  },
+}
+
 /** Build a line-deletion patch that keeps block spacing canonical. */
 function buildWholeLineRemovalPatch(markdown: string, lineIndex: number): DiagnosticFixPatch | null {
   const lines = splitFixLines(markdown)
@@ -874,6 +968,8 @@ export function createDefaultDiagnosticFixRegistry(): DiagnosticFixRegistry {
     .register(FIGURE_INLINE_FORMAT_FIX)
     .register(FIGURE_IN_HEADING_FIX)
     .register(FIGURE_SYNTAX_IN_HEADING_FIX)
+    .register(FIGURE_UNCLOSED_DESTINATION_FIX)
+    .register(FIGURE_UNCLOSED_ALT_FIX)
     .register(FIGURE_EMPTY_SOURCE_FIX)
     .register(CODE_LANGUAGE_FIX)
     .register(FIGURE_NAME_FIX)

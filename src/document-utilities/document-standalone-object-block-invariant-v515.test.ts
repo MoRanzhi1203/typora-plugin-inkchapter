@@ -608,8 +608,9 @@ describe('V5.15 §20/§34/§36 — the real runtime fixture', () => {
     // every fixture image really exists on disk → no resource warning
     const out = diagnosticsOf(source, { missing: () => false })
     const issues = out.diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
-    expect(issues).toHaveLength(10) // 9 block classes + Case K heading syntax
-    expect(issues.filter(d => d.code === 'FIGURE_SYNTAX_IN_HEADING')).toHaveLength(1)
+    expect(issues).toHaveLength(9) // 9 block classes (Case K is now a V3 syntax rule)
+    // V3 owns the unclosed Case K syntax with its own specific rule.
+    expect(out.diagnostics.filter(d => d.code === 'FIGURE_UNCLOSED_DESTINATION')).toHaveLength(1)
     expect(issues.filter(d => d.code === FIGURE_TEXT_MIXED_CODE)).toHaveLength(3) // B C D
     expect(issues.filter(d => d.code === FIGURE_MULTIPLE_SAME_BLOCK_CODE)).toHaveLength(2) // E F
     expect(issues.filter(d => d.code === FIGURE_IN_LIST_CODE)).toHaveLength(2) // I + I2
@@ -626,10 +627,13 @@ describe('V5.15 §20/§34/§36 — the real runtime fixture', () => {
     expect(once.changed).toBe(true)
     const after = diagnosticsOf(once.output, { missing: () => false })
       .diagnostics.filter(d => FIGURE_STRUCTURE_BLOCK_RULE_CODES.has(d.code))
-    // The V5.15 block repair owns every container / composition class. The Case K
-    // heading-syntax residue is owned by the INDEPENDENT FIGURE_SYNTAX_IN_HEADING
-    // fixer (not by this block-level repair), so it is the only code left.
-    expect(after.map(d => d.code)).toEqual(['FIGURE_SYNTAX_IN_HEADING'])
+    // The V5.15 block repair owns every container / composition class.
+    expect(after).toHaveLength(0)
+    // The unclosed Case K syntax is an INDEPENDENT V3 rule (not a block class).
+    expect(
+      diagnosticsOf(once.output, { missing: () => false })
+        .diagnostics.filter(d => d.code === 'FIGURE_UNCLOSED_DESTINATION'),
+    ).toHaveLength(1)
     // E/F each carried two images; I2 / J2 / L add one each:
     // 3 + B/C/D + (E1,E2) + (F1,F2) + I + J + I2 + J2 + L1 = 15
     expect(blocksOf(once.output).filter(b => b.result.decision === 'VALID_STANDALONE_FIGURE')).toHaveLength(15)

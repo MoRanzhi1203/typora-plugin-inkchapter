@@ -400,6 +400,10 @@
   - `FIGURE_BLOCK_STRUCTURE_INVALID`（错误，通用兜底「图片独立块结构异常」）
   - `FIGURE_IN_HEADING`（错误，图片被插入标题；H1–H6，优先级高于多图/图文混排）
   - `FIGURE_SYNTAX_IN_HEADING`（错误，标题中包含图片链接语法；只覆盖无完整 token 的语法残留，与 `FIGURE_IN_HEADING` 互斥）
+  - `FIGURE_UNCLOSED_DESTINATION`（错误，图片链接括号未闭合；状态机源码扫描，段落结尾可安全补 `)`）
+  - `FIGURE_UNCLOSED_ALT`（错误，图片描述方括号未闭合；仅在边界无歧义时补 `]`）
+  - `FIGURE_MALFORMED_SYNTAX`（错误，图片链接语法不完整；仅诊断/定位）
+  - `FIGURE_INVALID_DESTINATION`（错误，图片路径语法不合法；仅诊断/定位）
   - `FIGURE_EMPTY_SOURCE`（错误，图片路径为空；独立资源维度；`EXPLICIT_ONLY`「删除空图片占位符」，不进入一键修复）
 
   非法块**压制** `FIGURE_MISSING_NAME`、**禁止**编号/命名/caption，但**仍可定位**（`source-block`）。

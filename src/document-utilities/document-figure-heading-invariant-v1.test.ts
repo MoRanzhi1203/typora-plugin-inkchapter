@@ -17,6 +17,7 @@ import {
   FIGURE_SYNTAX_IN_HEADING_CODE,
   FIGURE_EMPTY_SOURCE_CODE,
 } from './document-figure-heading-invariant-v1'
+import { FIGURE_UNCLOSED_DESTINATION_CODE } from './document-figure-syntax-integrity-v1'
 import { resetFigureBlockStructureV515State } from './document-standalone-object-block-invariant-v515'
 import {
   applyPatchesToMarkdown,
@@ -71,7 +72,9 @@ function emptySourceDiagnostics(markdown: string) {
 }
 
 function syntaxDiagnostics(markdown: string) {
-  return diagnosticsOf(markdown).filter(d => d.code === FIGURE_SYNTAX_IN_HEADING_CODE)
+  return diagnosticsOf(markdown).filter(d =>
+    d.code === FIGURE_SYNTAX_IN_HEADING_CODE || d.code === FIGURE_UNCLOSED_DESTINATION_CODE,
+  )
 }
 
 function fixCtx(markdown: string): FixContext {
@@ -100,8 +103,8 @@ function fixFirstEmptySource(markdown: string): string {
 
 function fixFirstSyntax(markdown: string): string {
   const diagnostic = syntaxDiagnostics(markdown)[0]
-  expect(diagnostic, 'expected a FIGURE_SYNTAX_IN_HEADING diagnostic').toBeTruthy()
-  const fixer = createDefaultDiagnosticFixRegistry().get(FIGURE_SYNTAX_IN_HEADING_CODE)
+  expect(diagnostic, 'expected a syntax diagnostic').toBeTruthy()
+  const fixer = createDefaultDiagnosticFixRegistry().get(diagnostic.code)
   expect(fixer).toBeTruthy()
   const built = fixer!.build(diagnostic, fixCtx(markdown))
   expect(built.blockers ?? []).toEqual([])
@@ -340,13 +343,16 @@ describe('V2 §5.5 — 标题中包含图片链接语法 / 语法残留', () => 
     const md = '## 结束 ![J](https://raw.githubusercontent.com/a/b/c.png\n'
     const diagnostics = syntaxDiagnostics(md)
     expect(diagnostics).toHaveLength(1)
-    expect(diagnostics[0].message).toBe('标题中包含图片链接语法')
+    expect(diagnostics[0].code).toBe(FIGURE_UNCLOSED_DESTINATION_CODE)
+    expect(diagnostics[0].message).toBe('图片链接括号未闭合')
     expect(diagnostics[0].severity).toBe('error')
     // the complete-token rule never competes for the same heading
     expect(headingDiagnostics(md)).toEqual([])
     const fixed = fixFirstSyntax(md)
-    expect(fixed).toBe('## 结束\n\n![J](https://raw.githubusercontent.com/a/b/c.png\n')
+    expect(fixed).toBe('## 结束 ![J](https://raw.githubusercontent.com/a/b/c.png)\n')
     expect(syntaxDiagnostics(fixed)).toEqual([])
+    // the repaired heading image now enters the heading structure rule
+    expect(headingDiagnostics(fixed)).toHaveLength(1)
   })
 
   it('T14 — a complete remote image token is moved out and leaves NO syntax residue', () => {

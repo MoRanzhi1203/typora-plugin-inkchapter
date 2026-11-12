@@ -344,6 +344,10 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   FIGURE_BLOCK_STRUCTURE_INVALID: 'error',
   FIGURE_IN_HEADING: 'error',
   FIGURE_SYNTAX_IN_HEADING: 'error',
+  FIGURE_UNCLOSED_DESTINATION: 'error',
+  FIGURE_UNCLOSED_ALT: 'error',
+  FIGURE_MALFORMED_SYNTAX: 'error',
+  FIGURE_INVALID_DESTINATION: 'error',
   FIGURE_EMPTY_SOURCE: 'error',
   FIGURE_MULTIPLE_SAME_BLOCK: 'error',
   FIGURE_TEXT_MIXED: 'warning',
@@ -717,6 +721,23 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   // V1 — an image token with an EMPTY destination is an independent resource
   // error, reported at the exact token (never as a structure warning).
   FIGURE_EMPTY_SOURCE: rule('FIGURE_EMPTY_SOURCE', 'figure', 'source-range', {
+    area: 'figure', capabilityCategory: 'figure', scope: 'object',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  // V3 — image syntax completeness (missing `)` / `]`, malformed / invalid path).
+  FIGURE_UNCLOSED_DESTINATION: rule('FIGURE_UNCLOSED_DESTINATION', 'figure', 'source-range', {
+    area: 'figure', capabilityCategory: 'figure', scope: 'object',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  FIGURE_UNCLOSED_ALT: rule('FIGURE_UNCLOSED_ALT', 'figure', 'source-range', {
+    area: 'figure', capabilityCategory: 'figure', scope: 'object',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  FIGURE_MALFORMED_SYNTAX: rule('FIGURE_MALFORMED_SYNTAX', 'figure', 'source-range', {
+    area: 'figure', capabilityCategory: 'figure', scope: 'object',
+    producerAuthority: 'computeDocumentDiagnostics',
+  }),
+  FIGURE_INVALID_DESTINATION: rule('FIGURE_INVALID_DESTINATION', 'figure', 'source-range', {
     area: 'figure', capabilityCategory: 'figure', scope: 'object',
     producerAuthority: 'computeDocumentDiagnostics',
   }),

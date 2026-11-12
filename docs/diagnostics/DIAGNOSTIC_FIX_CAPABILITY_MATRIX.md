@@ -29,6 +29,10 @@
 | `FORMULA_SINGLE_LINE_BLOCK` | `AUTO_SAFE` | 源补丁：`$$x$$` → `$$` / 公式 / `$$` 三行 | ✅ 同上 | format-integrity-v1 / fix-v2 |
 | `FIGURE_IN_HEADING` | `AUTO_SAFE` | 源补丁：保留标题层级与文字，图片（含空路径 token）按原顺序移出为独立段落；标题内残留的图片语法片段一并移出（仅图片标题移除标题结构） | ✅ 同上 | heading-v1 / classification-v1 |
 | `FIGURE_SYNTAX_IN_HEADING` | `AUTO_SAFE` | 源补丁：把标题中未完成的 `![...](` 语法整体移出标题（标题文字保留；仅语法标题移除标题结构） | ✅ 同上 | heading-v1 |
+| `FIGURE_UNCLOSED_DESTINATION` | `AUTO_SAFE` | 源补丁：仅在**段落结尾且无其他未闭合结构**时插入 `)`；URL 字节不变 | ✅ 同上 | syntax-integrity-v1 |
+| `FIGURE_UNCLOSED_ALT` | `AUTO_SAFE` | 源补丁：仅在描述与路径边界无歧义时插入 `]`；歧义时降级为手动 | ✅ 同上 | syntax-integrity-v1 |
+| `FIGURE_MALFORMED_SYNTAX` | `UNAVAILABLE` | 仅「定位 / 说明」；不渲染修复按钮 | — | syntax-integrity-v1 |
+| `FIGURE_INVALID_DESTINATION` | `UNAVAILABLE` | 仅「定位 / 说明」；不渲染修复按钮 | — | syntax-integrity-v1 |
 | `FIGURE_EMPTY_SOURCE` | `EXPLICIT_ONLY` | 源补丁：**仅在用户点击该行「处理」时**删除空图片占位符；**不进入一键修复**，也不伪造路径 | ✅ 同上 | heading-v1 / fix-v2 |
 | `FIGURE_BLOCK_STRUCTURE_INVALID` | `AUTO_SAFE` | 源补丁：把通用非法 owning block 拆成「文字块 / 每图一块」 | ✅ 同上 | v515 §11 / fix-v2 |
 | `FIGURE_MULTIPLE_SAME_BLOCK` | `AUTO_SAFE` | 源补丁：按原顺序拆成「每图一块」 | ✅ 同上 | v515 §8.2 / classification-v1 |

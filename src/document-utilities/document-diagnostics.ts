@@ -41,6 +41,14 @@ import {
   FIGURE_SYNTAX_IN_HEADING_CODE,
   FIGURE_EMPTY_SOURCE_CODE,
 } from './document-figure-heading-invariant-v1'
+// V3 — image SYNTAX integrity (unclosed `)` / `]`, malformed / invalid path).
+import {
+  analyzeFigureSyntax,
+  FIGURE_UNCLOSED_DESTINATION_CODE,
+  FIGURE_UNCLOSED_ALT_CODE,
+  FIGURE_MALFORMED_SYNTAX_CODE,
+  FIGURE_INVALID_DESTINATION_CODE,
+} from './document-figure-syntax-integrity-v1'
 import type {
   DiagnosticFigureOccurrenceIdentity,
   DiagnosticLocation,
@@ -369,6 +377,10 @@ export function resolveDocumentDiagnosticSeverity(
     case 'FIGURE_BLOCK_STRUCTURE_INVALID':
     case 'FIGURE_IN_HEADING':
     case 'FIGURE_SYNTAX_IN_HEADING':
+    case 'FIGURE_UNCLOSED_DESTINATION':
+    case 'FIGURE_UNCLOSED_ALT':
+    case 'FIGURE_MALFORMED_SYNTAX':
+    case 'FIGURE_INVALID_DESTINATION':
     case 'FIGURE_EMPTY_SOURCE':
       return 'error'
     case 'FIGURE_TEXT_MIXED':
@@ -843,6 +855,10 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   ...FIGURE_STRUCTURE_BLOCK_RULE_CODES,
   FIGURE_IN_HEADING_CODE,
   FIGURE_EMPTY_SOURCE_CODE,
+  FIGURE_UNCLOSED_DESTINATION_CODE,
+  FIGURE_UNCLOSED_ALT_CODE,
+  FIGURE_MALFORMED_SYNTAX_CODE,
+  FIGURE_INVALID_DESTINATION_CODE,
   'FIGURE_DUPLICATE_NAME',
   'FIGURE_LOCAL_IMAGE_MISSING',
   'FIGURE_MISSING_NAME',
@@ -3129,15 +3145,65 @@ export function computeDocumentDiagnostics(
     })
   }
 
+  // ── V3 — IMAGE SYNTAX INTEGRITY (source scanner, no DOM image required) ────
+  // A missing `)` / `]` never renders an `<img>`, so this scan runs on the
+  // SOURCE and owns its own stable ids. Empty destinations stay with
+  // FIGURE_EMPTY_SOURCE; a heading that already owns a COMPLETE image token is
+  // owned by FIGURE_IN_HEADING and never double-reports the same line.
+  const figureSyntaxIssues = structureSourceText != null
+    ? analyzeFigureSyntax(structureSourceText)
+    : []
+  const figureSyntaxLineIndexes = new Set(figureSyntaxIssues.map(issue => issue.startLine))
+  for (const issue of figureSyntaxIssues) {
+    if (headingLineIndexes.has(issue.startLine)) continue
+    const lineStart = (structureSourceText ?? '').lastIndexOf('\n', issue.start - 1) + 1
+    push(
+      makeDiagnostic(input, 'figure', issue.code, issue.title, {
+        detail: issue.detail,
+        kind: 'object',
+        targetIdentity: `figure-syntax:${issue.code}:${issue.start}`,
+        metadata: {
+          ruleId: issue.code,
+          resourceKind: 'image',
+          issueCode: issue.code,
+          reason: issue.code,
+          rawToken: issue.rawToken,
+          destination: issue.destination,
+          autoFixable: issue.repair != null,
+          repairKind: issue.repair,
+          repairAt: issue.repairAt,
+          refusal: issue.refusal,
+          sourceStart: issue.start,
+          sourceEnd: issue.end,
+          startLine: issue.startLine,
+          endLine: issue.endLine,
+        },
+        location: {
+          kind: 'source-range',
+          startLine: issue.startLine,
+          startColumn: Math.max(0, issue.start - lineStart),
+          endLine: issue.endLine,
+          endColumn: Math.max(0, issue.end - lineStart),
+          sourceStart: issue.start,
+          sourceEnd: issue.end,
+          sourceFingerprint: `figure-syntax:${issue.code}:${issue.start}`,
+          rawText: issue.rawToken,
+        },
+      }),
+    )
+  }
+
   // ── V1 — FIGURE_SYNTAX_IN_HEADING (incomplete image-link syntax) ──────────
   // Only headings WITHOUT a complete image token are reported here: a heading
   // that owns a real token is already owned by FIGURE_IN_HEADING (and that
   // repair extracts both the token and any syntax fragment), so the same image
-  // node is never reported twice (V2 §4.1).
+  // node is never reported twice (V2 §4.1). A heading line already classified
+  // by the V3 syntax scanner keeps the SPECIFIC rule (unclosed `)` / `]`).
   const headingSyntaxEntries = structureSourceText != null
     ? analyzeHeadingImageSyntax(structureSourceText)
     : []
   for (const entry of headingSyntaxEntries) {
+    if (figureSyntaxLineIndexes.has(entry.lineIndex)) continue
     const rawHeading = structureSourceText == null
       ? ''
       : structureSourceText.slice(entry.lineStart, entry.lineEnd)

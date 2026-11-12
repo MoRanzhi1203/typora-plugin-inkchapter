@@ -145,6 +145,11 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   FIGURE_TEXT_MIXED: 534,
   FIGURE_INLINE_FORMAT: 535,
   FIGURE_BLOCK_STRUCTURE_INVALID: 536,
+  // V3 — image syntax completeness (after the structure classes).
+  FIGURE_UNCLOSED_DESTINATION: 537,
+  FIGURE_UNCLOSED_ALT: 538,
+  FIGURE_MALFORMED_SYNTAX: 539,
+  FIGURE_INVALID_DESTINATION: 540,
   // ── table ─────────────────────────────────────────────────────────────────
   TABLE_MISSING_NAME: 600,
   TABLE_DUPLICATE_NAME: 610,
@@ -330,6 +335,10 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   FIGURE_IN_QUOTE: { title: '图片被设置为引用块', description: '图片位于引用块中，图片不能作为引用内容。', suggestion: '移除图片所在段落的全部引用层级，使图片成为独立段落。', dynamicDetail: true },
   FIGURE_IN_TABLE: { title: '图片嵌入表格单元格', description: '图片位于表格单元格中，表格结构不允许独立图片块。', suggestion: '手动将图片移出表格并作为独立段落插入，保持表格其余单元格不变。', dynamicDetail: true },
   FIGURE_INLINE_FORMAT: { title: '图片包含不允许的行内格式', description: '图片被加粗、斜体或删除线等行内格式包裹。', suggestion: '移除图片外层的行内格式标记，并将图片独立成块。', dynamicDetail: true },
+  FIGURE_UNCLOSED_DESTINATION: { title: '图片链接括号未闭合', description: '图片语法的目标路径缺少右圆括号，Typora 无法把它渲染成图片。', suggestion: '在语法结尾补全 `)`；仅在段落结尾且无其他未闭合结构时自动修复，URL 内容保持不变。', dynamicDetail: true },
+  FIGURE_UNCLOSED_ALT: { title: '图片描述方括号未闭合', description: '图片描述的方括号 `]` 未闭合，无法区分描述与路径。', suggestion: '在描述结束处补全 `]`；边界存在歧义时请手动修复。', dynamicDetail: true },
+  FIGURE_MALFORMED_SYNTAX: { title: '图片链接语法不完整', description: '图片链接语法不完整或描述与路径之间的分隔结构不合法。', suggestion: '按 `![描述](路径)` 的完整结构手动补全缺失符号。', dynamicDetail: true },
+  FIGURE_INVALID_DESTINATION: { title: '图片路径语法不合法', description: '图片路径无法解析为有效目标（例如尖括号路径缺少 `>` 或路径后存在无法解析的内容）。', suggestion: '修正图片路径语法，或重新插入图片。', dynamicDetail: true },
   // ── table ─────────────────────────────────────────────────────────────────
   TABLE_MISSING_NAME: { title: '表格缺少表名', description: '表格没有名称。', suggestion: '为表格补充表名。' },
   TABLE_DUPLICATE_NAME: { description: '多张表格使用了相同的表名。', suggestion: '修改表名以互相区分。' },

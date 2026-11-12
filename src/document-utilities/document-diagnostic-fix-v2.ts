@@ -24,11 +24,17 @@ import {
   FIGURE_SYNTAX_IN_HEADING_CODE,
 } from './document-figure-heading-invariant-v1'
 import {
+  FIGURE_UNCLOSED_DESTINATION_CODE,
+  FIGURE_UNCLOSED_ALT_CODE,
+} from './document-figure-syntax-integrity-v1'
+import {
   CODE_LANGUAGE_FIX,
   FIGURE_BLOCK_STRUCTURE_INVALID_FIX,
   FIGURE_INLINE_FORMAT_FIX,
   FIGURE_IN_HEADING_FIX,
   FIGURE_SYNTAX_IN_HEADING_FIX,
+  FIGURE_UNCLOSED_DESTINATION_FIX,
+  FIGURE_UNCLOSED_ALT_FIX,
   FIGURE_EMPTY_SOURCE_FIX,
   FIGURE_IN_LIST_FIX,
   FIGURE_IN_QUOTE_FIX,
@@ -148,6 +154,20 @@ const CAPABILITY_MATRIX: Readonly<Record<string, FixCapabilityDescriptor>> = Obj
     code: FIGURE_SYNTAX_IN_HEADING_CODE,
     capability: 'AUTO_SAFE',
     label: '将图片语法移出标题',
+    actionKind: 'source-patches',
+  },
+  // V3 — missing `)` / `]`: the repair only INSERTS one character at a proven
+  // boundary; the URL / alt bytes are never rewritten.
+  FIGURE_UNCLOSED_DESTINATION: {
+    code: FIGURE_UNCLOSED_DESTINATION_CODE,
+    capability: 'AUTO_SAFE',
+    label: '补全图片链接括号',
+    actionKind: 'source-patches',
+  },
+  FIGURE_UNCLOSED_ALT: {
+    code: FIGURE_UNCLOSED_ALT_CODE,
+    capability: 'AUTO_SAFE',
+    label: '补全图片描述方括号',
     actionKind: 'source-patches',
   },
   // V2 §10.1 — an empty destination has NO reliable default resource: deletion
@@ -312,6 +332,8 @@ const V1_FIXERS: Readonly<Record<string, Fixer>> = Object.freeze({
   FIGURE_INLINE_FORMAT: FIGURE_INLINE_FORMAT_FIX,
   FIGURE_IN_HEADING: FIGURE_IN_HEADING_FIX,
   FIGURE_SYNTAX_IN_HEADING: FIGURE_SYNTAX_IN_HEADING_FIX,
+  FIGURE_UNCLOSED_DESTINATION: FIGURE_UNCLOSED_DESTINATION_FIX,
+  FIGURE_UNCLOSED_ALT: FIGURE_UNCLOSED_ALT_FIX,
   FIGURE_EMPTY_SOURCE: FIGURE_EMPTY_SOURCE_FIX,
   CODE_MISSING_LANGUAGE: CODE_LANGUAGE_FIX,
   FIGURE_MISSING_NAME: FIGURE_NAME_FIX,
