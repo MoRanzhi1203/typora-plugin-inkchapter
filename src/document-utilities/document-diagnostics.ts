@@ -27,6 +27,7 @@ import {
   analyzeFigureStandaloneSourceBlocks,
   beginFigureStructureDiagnosticPass,
   figureStructureUserCopy,
+  isFigureBlockAutoFixable,
   noteFigureStructureDiagnosticPublished,
   FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
   type FigureStandaloneSourceBlock,
@@ -3070,6 +3071,10 @@ export function computeDocumentDiagnostics(
           violationKinds: block.result.violations.join('|'),
           normalBusinessTargetAdmitted: false,
           structuralDiagnosticPublished: true,
+          // The ONE honest auto-fix admission: only a paragraph block can be
+          // split without inventing container semantics. The UI must not offer a
+          // fix button when this is false.
+          autoFixable: isFigureBlockAutoFixable(block),
           sourceStart: block.blockStart,
           sourceEnd: block.blockEnd,
           startLine: block.startLine,

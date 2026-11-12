@@ -102,7 +102,6 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   // ── format integrity (source-level) ───────────────────────────────────────
   LIST_EMPTY_ITEM: 230,
   FORMULA_SINGLE_LINE_BLOCK: 235,
-  FIGURE_MIXED_WITH_TEXT: 240,
   // ── document completeness ─────────────────────────────────────────────────
   DOCUMENT_HEADING_ONLY_NO_BODY: 250,
   DOCUMENT_HEADINGS_ONLY_NO_BODY: 251,
@@ -305,7 +304,7 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   FIGURE_DUPLICATE_NAME: { description: '多张图片使用了相同的图名。', suggestion: '修改图名以互相区分。' },
   FIGURE_LOCAL_IMAGE_MISSING: { description: '图片引用的本地文件无法解析。', suggestion: '检查图片路径，或将图片重新插入文档。' },
   FIGURE_IMAGE_FORMAT_UNSUPPORTED: { title: '图片格式不支持', description: '图片语法引用的文件扩展名明确不是图片格式。', suggestion: '改为 png/jpg/gif/svg/webp 等图片文件，或修正引用路径。' },
-  FIGURE_BLOCK_STRUCTURE_INVALID: { title: '图片必须作为独立块插入', description: '图片不能放在列表项或引用块中。', suggestion: '将图片移动到独立段落。' },
+  FIGURE_BLOCK_STRUCTURE_INVALID: { title: '图片必须作为独立块插入', description: '图片必须独占一个段落，且每个图片块只能包含一张图片；不能与正文或其他图片同段，也不能放在列表项、引用块或表格中。', suggestion: '将图片拆成独立段落：文字一段、每张图片各一段，前后保留空行。' },
   // ── table ─────────────────────────────────────────────────────────────────
   TABLE_MISSING_NAME: { title: '表格缺少表名', description: '表格没有名称。', suggestion: '为表格补充表名。' },
   TABLE_DUPLICATE_NAME: { description: '多张表格使用了相同的表名。', suggestion: '修改表名以互相区分。' },
@@ -317,7 +316,6 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   // ── format integrity (source-level) ───────────────────────────────────────
   LIST_EMPTY_ITEM: { title: '列表项为空', description: '这一行只有列表标记，没有任何内容。', suggestion: '删除空的列表项，或补上内容。' },
   FORMULA_SINGLE_LINE_BLOCK: { title: '单行公式不会被渲染', description: '独立公式写在一行内（$$…$$），Typora 会把它当作普通文字。', suggestion: '拆成 $$、公式、$$ 三行。' },
-  FIGURE_MIXED_WITH_TEXT: { title: '图片与正文混排', description: '图片与文字位于同一段落内，图片不是独立块。', suggestion: '将图片拆成独立段落，文字与图片分开。' },
   TABLE_HEADER_EMPTY: { title: '表头单元格为空', description: '表格存在空的表头单元格。', suggestion: '为空的表头单元格补充列名。' },
   TABLE_HEADER_DUPLICATE: { title: '表头重复', description: '同一表头文字在表格中出现多次。', suggestion: '重命名重复的表头以区分列。' },
   // ── code ──────────────────────────────────────────────────────────────────

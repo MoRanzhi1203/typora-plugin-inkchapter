@@ -20,13 +20,20 @@ import type {
 import { parseFencedCodeBlocks } from './content-block-toolbar-code-source'
 import { isRangeProtected, parseDocumentSourceSyntax } from './document-source-syntax-authority'
 import {
-  FIGURE_MIXED_WITH_TEXT_CODE,
+  FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
+  analyzeFigureStandaloneSourceBlocks,
+  isFigureBlockAutoFixable,
+  isFigureBlockInTableSource,
+  splitStandaloneFigureBlockText,
+  type FigureStandaloneSourceBlock,
+  type StandaloneContainerKind,
+} from './document-standalone-object-block-invariant-v515'
+import { parseImageSourceOccurrences, type ImageSourceOccurrence } from './document-resource-scanner'
+import {
   FORMULA_SINGLE_LINE_BLOCK_CODE,
   LIST_EMPTY_ITEM_CODE,
-  isImageMixedWithText,
   isEmptyListMarker,
   singleLineDisplayFormulaSource,
-  splitImageSegments,
 } from './document-format-integrity-v1'
 
 export type DiagnosticFixSupport = 'AUTO' | 'REQUIRES_INPUT' | 'MANUAL' | 'UNSUPPORTED'
@@ -43,6 +50,7 @@ export type FixBlockerCode =
   | 'PATCH_OUT_OF_BOUNDS'
   | 'PATCH_CONFLICT'
   | 'NOT_APPLICABLE'
+  | 'STRUCTURE_NOT_AUTO_FIXABLE'
   | 'TRANSACTION_AUTHORITY_UNVERIFIED'
 
 export interface FixBlocker {
@@ -58,7 +66,7 @@ export interface DiagnosticFixPatch {
   after: string
   lineStart: number
   lineEnd: number
-  kind: 'delete-lines' | 'replace-tail' | 'insert-language' | 'insert-figure-name' | 'replace-line'
+  kind: 'delete-lines' | 'replace-tail' | 'insert-language' | 'insert-figure-name' | 'replace-line' | 'replace-block'
 }
 
 export interface FixPreviewHunk {
@@ -352,29 +360,102 @@ export const FORMULA_SINGLE_LINE_BLOCK_FIX: Fixer = {
   },
 }
 
-/** `FIGURE_MIXED_WITH_TEXT` — split the paragraph into text / image blocks. */
-export const FIGURE_MIXED_WITH_TEXT_FIX: Fixer = {
-  code: FIGURE_MIXED_WITH_TEXT_CODE,
+/**
+ * Resolve the diagnostic's owning block in the CURRENT Markdown.
+ *
+ * The recorded absolute block span is preferred (it is the locator target), but
+ * the block is always RE-ANALYSED from the live text: a stale span that no
+ * longer describes an invalid image block must never be rewritten.
+ */
+function locateStructureBlock(
+  ctx: FixContext,
+  diagnostic: DocumentDiagnostic,
+): { block: FigureStandaloneSourceBlock; occurrences: ImageSourceOccurrence[] } | { blocker: FixBlocker } {
+  const meta = diagnostic.metadata ?? {}
+  const occurrences = parseImageSourceOccurrences(ctx.markdown)
+  if (occurrences.length === 0) {
+    return { blocker: blocker('STALE_DIAGNOSTIC', '当前文档已没有图片，请重新检测。') }
+  }
+  const blocks = analyzeFigureStandaloneSourceBlocks({ source: ctx.markdown, occurrences })
+  const start = asNumber(meta.sourceStart)
+  const end = asNumber(meta.sourceEnd)
+  if (start != null && end != null) {
+    const exact = blocks.find(b => b.blockStart === start && b.blockEnd === end)
+    if (exact) return { block: exact, occurrences }
+  }
+  const startLine = asNumber(meta.startLine)
+  if (startLine != null) {
+    const byLine = blocks.filter(b => b.startLine === startLine)
+    if (byLine.length === 1) return { block: byLine[0], occurrences }
+  }
+  const identity = typeof meta.owningBlockIdentity === 'string' ? meta.owningBlockIdentity : null
+  if (identity != null) {
+    const byIdentity = blocks.filter(b => b.owningBlockIdentity === identity)
+    if (byIdentity.length === 1) return { block: byIdentity[0], occurrences }
+  }
+  return { blocker: blocker('STALE_DIAGNOSTIC', '目标图片块已变化，请重新检测后再修复。') }
+}
+
+function figureContainerLabel(kind: StandaloneContainerKind): string {
+  if (kind === 'list-item') return '列表项'
+  if (kind === 'blockquote') return '引用块'
+  if (kind === 'table') return '表格单元格'
+  if (kind === 'code') return '代码块'
+  return '段落'
+}
+
+/**
+ * `FIGURE_BLOCK_STRUCTURE_INVALID` — split ONE invalid owning block into
+ * standalone blocks. The block itself is the unit of repair (one diagnostic per
+ * block), so a paragraph carrying two images and text is repaired in ONE write.
+ *
+ * Refusals are explicit: a container payload (list / quote) or a table cell
+ * needs invented container semantics, so it never pretends to be AUTO_SAFE.
+ */
+export const FIGURE_BLOCK_STRUCTURE_INVALID_FIX: Fixer = {
+  code: FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
   support: 'AUTO',
-  label: '图片与文字分段',
+  label: '拆成独立图片块',
   build(diagnostic, ctx) {
-    const located = locateDiagnosticLine(ctx, diagnostic, isImageMixedWithText)
+    const located = locateStructureBlock(ctx, diagnostic)
     if ('blocker' in located) return { blockers: [located.blocker] }
-    const { line, index } = located
-    const segments = splitImageSegments(line.text)
-    if (segments.length < 2) {
-      return { blockers: [blocker('INVALID_FACT', '无需分段的图片行。')] }
+    const { block, occurrences } = located
+    if (block.result.decision === 'VALID_STANDALONE_FIGURE') {
+      return { blockers: [blocker('NOT_APPLICABLE', '该图片块已经独立成块，无需拆分。')] }
     }
-    const eol = documentEol(ctx.markdown)
+    if (block.result.violations.includes('NON_STANDALONE_CONTAINER')) {
+      return {
+        blockers: [blocker(
+          'STRUCTURE_NOT_AUTO_FIXABLE',
+          `图片位于${figureContainerLabel(block.containerKind)}中。自动拆分需要重建容器结构，请手动把图片移到独立段落。`,
+        )],
+      }
+    }
+    if (isFigureBlockInTableSource(block.rawText)) {
+      return {
+        blockers: [blocker(
+          'STRUCTURE_NOT_AUTO_FIXABLE',
+          '图片位于表格内。拆分会破坏表格结构，请手动把图片移到独立段落。',
+        )],
+      }
+    }
+    if (!isFigureBlockAutoFixable(block)) {
+      return { blockers: [blocker('STRUCTURE_NOT_AUTO_FIXABLE', '该图片块的结构无法在不改变语义的前提下自动拆分。')] }
+    }
+    const after = splitStandaloneFigureBlockText({ source: ctx.markdown, block, occurrences })
+    const before = ctx.markdown.slice(block.blockStart, block.blockEnd)
+    if (after === before) {
+      return { blockers: [blocker('NOT_APPLICABLE', '该图片块无需拆分。')] }
+    }
     return {
       patches: [{
-        start: line.start,
-        end: line.start + line.text.length,
-        before: line.text,
-        after: segments.join(`${eol}${eol}`),
-        lineStart: index,
-        lineEnd: index,
-        kind: 'replace-line',
+        start: block.blockStart,
+        end: block.blockEnd,
+        before,
+        after,
+        lineStart: block.startLine,
+        lineEnd: block.endLine,
+        kind: 'replace-block',
       }],
     }
   },
@@ -512,7 +593,7 @@ export function createDefaultDiagnosticFixRegistry(): DiagnosticFixRegistry {
     .register(TRAILING_BLANK_LINES_FIX)
     .register(LIST_EMPTY_ITEM_FIX)
     .register(FORMULA_SINGLE_LINE_BLOCK_FIX)
-    .register(FIGURE_MIXED_WITH_TEXT_FIX)
+    .register(FIGURE_BLOCK_STRUCTURE_INVALID_FIX)
     .register(CODE_LANGUAGE_FIX)
     .register(FIGURE_NAME_FIX)
     .register(CODE_NAME_FIX)

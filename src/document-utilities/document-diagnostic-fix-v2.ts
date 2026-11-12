@@ -22,7 +22,7 @@
 import type { DocumentDiagnostic, DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import {
   CODE_LANGUAGE_FIX,
-  FIGURE_MIXED_WITH_TEXT_FIX,
+  FIGURE_BLOCK_STRUCTURE_INVALID_FIX,
   FIGURE_NAME_FIX,
   FORMULA_SINGLE_LINE_BLOCK_FIX,
   INTERNAL_BLANK_LINES_FIX,
@@ -85,10 +85,10 @@ const CAPABILITY_MATRIX: Readonly<Record<string, FixCapabilityDescriptor>> = Obj
     label: '拆成独立公式块',
     actionKind: 'source-patches',
   },
-  FIGURE_MIXED_WITH_TEXT: {
-    code: 'FIGURE_MIXED_WITH_TEXT',
+  FIGURE_BLOCK_STRUCTURE_INVALID: {
+    code: 'FIGURE_BLOCK_STRUCTURE_INVALID',
     capability: 'AUTO_SAFE',
-    label: '图片与文字分段',
+    label: '拆成独立图片块',
     actionKind: 'source-patches',
   },
   CODE_MISSING_LANGUAGE: {
@@ -237,7 +237,7 @@ const V1_FIXERS: Readonly<Record<string, Fixer>> = Object.freeze({
   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: TRAILING_BLANK_LINES_FIX,
   LIST_EMPTY_ITEM: LIST_EMPTY_ITEM_FIX,
   FORMULA_SINGLE_LINE_BLOCK: FORMULA_SINGLE_LINE_BLOCK_FIX,
-  FIGURE_MIXED_WITH_TEXT: FIGURE_MIXED_WITH_TEXT_FIX,
+  FIGURE_BLOCK_STRUCTURE_INVALID: FIGURE_BLOCK_STRUCTURE_INVALID_FIX,
   CODE_MISSING_LANGUAGE: CODE_LANGUAGE_FIX,
   FIGURE_MISSING_NAME: FIGURE_NAME_FIX,
 })

@@ -223,3 +223,48 @@ console.log({
   })),
 })
 ```
+
+
+---
+
+## 追加：图片独立块规则纠偏（snap-AA → snap-BB / snap-BC）
+
+### A. 结论
+
+- 图片「必须独立成块」只有**一条**诊断入口：`FIGURE_BLOCK_STRUCTURE_INVALID`（error，`source-block` 定位）。
+- 上一轮新增的 `FIGURE_MIXED_WITH_TEXT`（warning）与本规则的 `MIXED_WITH_TEXT` 违规重叠，已整条移除
+  （规则表 / 文案 / 能力矩阵 / 修复注册表 / 生产者 / 冻结计数同步回收）。
+- 原规则此前"只报错不能修"的原因：`buildStandaloneFigureBlockFix()` 只存在于纯函数层，
+  `V1_FIXERS` / `CAPABILITY_MATRIX` 中没有它的条目，UI 因此永远拿不到 `fix` 描述符。
+- 本轮把拆分能力接到原规则的修复器上：`FIGURE_BLOCK_STRUCTURE_INVALID_FIX`（`AUTO_SAFE`，`replace-block`）。
+
+### B. 真实 Typora 验收（snap-BB）
+
+夹具 `test/vault/__figure-structure.md`（1 个 2 图 + 正文段落、1 个图文段落、1 个已独立图片、1 个列表内图片）。
+
+| 阶段 | 结果 |
+|---|---|
+| `FIX_1` | 2 图 + 正文段落一次写回：`文字A` / `![图1]` / `![图2]` / `文字B` 四块；toast「已修复 1 项（Ctrl+Z 可撤销）」 |
+| `FIX_2` | 图文段落一次写回：`只有文字和一张图` / `![图3]` 两块 |
+| `ROWS_AFTER` | 仅剩列表内图片一行，`rowFixButtons=[false]`（不渲染修复按钮） |
+| `UNDO` | `editor.undo.undo()` → Markdown 回到 FIX_1 之后的状态（一次撤销回退整次写回） |
+| `SETTLED` | 两条可修复行重新出现（L10 / L14），列表行仍无按钮 |
+
+全程没有任何 `图片与正文混排` 行；行标题均为 `图片必须作为独立块插入`。
+
+### C. 渲染验收（snap-BC）
+
+修复后 `#write img`：`imgCount=5`、`imgLoaded=5`（4 张正文图 + 1 张已独立图全部加载成功）；
+顶层段落顺序为 `文字A` / `![图1]` / `![图2]` / `文字B` / …，确认按原顺序拆成独立块。
+
+### D. 回归
+
+- 347 文件 / 6032 测试通过；`tsc --noEmit` PASS；`pnpm build` PASS。
+- 新增 12 条定向用例（多图同行 / 三图顺序 / 图文前后 / 中文路径 + title / 已独立不误报 /
+  围栏与行内代码 / 列表与引用拒绝 / 表格拒绝 / 一键多块 / 幂等 / 不重复警告 / 能力矩阵）。
+
+### E. 仍未验收（NEEDS_MANUAL）
+
+1. `Ctrl+Y`（redo）在 `reloadContent` 事务后的行为——本轮只验证了 `editor.undo.undo()` 的撤销。
+2. 列表 / 引用 / 表格图片的"手动修复"路径（本轮按规范明确拒绝自动修复，未提供引导式交互）。
+3. 与上一节相同的 DPI / 主题 / 极窄窗、多文档快速切换等既有未验收项。

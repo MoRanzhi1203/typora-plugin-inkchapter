@@ -523,9 +523,7 @@ export function buildStandaloneFigureBlockFix(source: string): StandaloneFigureB
   const occurrences = parseImageSourceOccurrences(source)
   if (occurrences.length === 0) return { changed: false, output: source, splitBlockCount: 0 }
   const blocks = analyzeFigureStandaloneSourceBlocks({ source, occurrences })
-  const fixable = blocks.filter(b =>
-    !b.result.violations.includes('NON_STANDALONE_CONTAINER')
-    && b.result.decision !== 'VALID_STANDALONE_FIGURE')
+  const fixable = blocks.filter(isFigureBlockAutoFixable)
   if (fixable.length === 0) return { changed: false, output: source, splitBlockCount: 0 }
 
   const byStart = new Map<number, FigureStandaloneSourceBlock>()
@@ -567,6 +565,46 @@ function buildSplitBlockText(
     .split('\n').map(stripContainerMarkers).filter(t => t !== '').join(' ')
   if (tail !== '') parts.push(tail)
   return parts.join(eol + eol)
+}
+
+/**
+ * §11.1 — a GFM table row owns `|` grammar. Splitting a cell would destroy the
+ * table itself, so a table-hosted image is diagnostics-only.
+ */
+export function isFigureBlockInTableSource(rawText: string): boolean {
+  return (rawText ?? '').split('\n').some(line => /^\s*\|.*\|\s*$/.test(line))
+}
+
+/**
+ * §11/§12 — the ONE auto-fix admission decision for an owning block.
+ *
+ * Only a PARAGRAPH block whose violations are "mixed text" / "multiple images"
+ * can be split deterministically. A container payload (list item / blockquote)
+ * or a table cell would need invented container semantics, so it stays a
+ * diagnostic and the fixer must refuse it with an explicit reason.
+ */
+export function isFigureBlockAutoFixable(block: FigureStandaloneSourceBlock): boolean {
+  if (block == null) return false
+  if (block.result.decision === 'VALID_STANDALONE_FIGURE') return false
+  if (block.result.violations.includes('NON_STANDALONE_CONTAINER')) return false
+  if (block.containerKind !== 'paragraph' && block.containerKind !== 'figure') return false
+  if (isFigureBlockInTableSource(block.rawText)) return false
+  return true
+}
+
+/**
+ * §11 — split ONE owning block into standalone blocks. Pure and idempotent:
+ * the image tokens (path / alt / title / order) and every text run are kept
+ * verbatim, only the blank-line block boundaries between them are introduced.
+ */
+export function splitStandaloneFigureBlockText(input: {
+  source: string
+  block: FigureStandaloneSourceBlock
+  occurrences?: readonly ImageSourceOccurrence[]
+}): string {
+  const source = input.source ?? ''
+  const occurrences = input.occurrences ?? parseImageSourceOccurrences(source)
+  return buildSplitBlockText(source, input.block, occurrences, detectEol(source))
 }
 
 // ── §16/§18/§19 — the V5.15 hard gates ─────────────────────────────────────

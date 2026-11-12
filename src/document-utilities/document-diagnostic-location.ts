@@ -801,11 +801,10 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   // Located as a source-range over the WHOLE formula block: the figure
   // `source-block` locator is figure-specific and must not be reused here.
   FORMULA_BLOCK_STRUCTURE_INVALID: rule('FORMULA_BLOCK_STRUCTURE_INVALID', 'formula', 'source-range'),
-  // Format Integrity V1 — source-only排版错误（空列表项 / 单行 $$ 公式 / 图片与正文混排），
+  // Format Integrity V1 — source-only排版错误（空列表项 / 单行 $$ 公式），
   // 全部由一个纯文本生成器产出，位置固定在源码行。
   LIST_EMPTY_ITEM: rule('LIST_EMPTY_ITEM', 'document', 'source-range'),
   FORMULA_SINGLE_LINE_BLOCK: rule('FORMULA_SINGLE_LINE_BLOCK', 'formula', 'source-range'),
-  FIGURE_MIXED_WITH_TEXT: rule('FIGURE_MIXED_WITH_TEXT', 'figure', 'source-range'),
   FORMULA_EMPTY_CONTENT: rule('FORMULA_EMPTY_CONTENT', 'formula', 'source-range', { area: 'document-completeness', scope: 'object' }),
   // B2 §B2-06 — source length / single-line length are opt-in (default off).
   FORMULA_SOURCE_LENGTH_EXCEEDING: rule('FORMULA_SOURCE_LENGTH_EXCEEDING', 'formula', 'source-range', {

@@ -1,14 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
-  FIGURE_MIXED_WITH_TEXT_CODE,
   FORMULA_SINGLE_LINE_BLOCK_CODE,
   LIST_EMPTY_ITEM_CODE,
   computeFormatIntegrityDiagnostics,
-  isImageMixedWithText,
-  splitImageSegments,
 } from './document-format-integrity-v1'
 import {
-  FIGURE_MIXED_WITH_TEXT_FIX,
   FORMULA_SINGLE_LINE_BLOCK_FIX,
   LIST_EMPTY_ITEM_FIX,
   applyPatchesToMarkdown,
@@ -90,40 +86,10 @@ describe('FORMAT-INTEGRITY §2 — single-line display formula', () => {
   })
 })
 
-describe('FORMAT-INTEGRITY §3 — image mixed with text', () => {
-  const mixed = 'before ![B](a.png) after\n'
-
-  it('flags text + image in one paragraph', () => {
-    const found = computeFormatIntegrityDiagnostics({ markdown: mixed, documentKey: 'd' })
-    expect(found).toHaveLength(1)
-    expect(found[0].code).toBe(FIGURE_MIXED_WITH_TEXT_CODE)
-    expect(found[0].metadata?.['segmentCount']).toBe(3)
-  })
-
-  it('splits the paragraph into three blocks (real GUI fix)', () => {
-    const d = computeFormatIntegrityDiagnostics({ markdown: mixed, documentKey: 'd' })[0]
-    expect(applyFix(FIGURE_MIXED_WITH_TEXT_FIX, d, mixed)).toBe('before\n\n![B](a.png)\n\nafter\n')
-  })
-
-  it('splits multiple images one per block', () => {
-    const markdown = 'a ![1](x.png) b ![2](y.png) c\n'
-    const d = computeFormatIntegrityDiagnostics({ markdown, documentKey: 'd' })[0]
-    expect(applyFix(FIGURE_MIXED_WITH_TEXT_FIX, d, markdown))
-      .toBe('a\n\n![1](x.png)\n\nb\n\n![2](y.png)\n\nc\n')
-  })
-
-  it('never flags a standalone image block, a list image or a quote image', () => {
-    expect(codes('![A](a.png)\n')).toEqual([])
-    expect(codes('- ![I](a.png)\n')).toEqual([])
-    expect(codes('> ![J](a.png)\n')).toEqual([])
-  })
-
-  it('never flags an image token inside a code block', () => {
+describe('FORMAT-INTEGRITY §3 — the image rule is NOT duplicated here', () => {
+  it('never emits an image-mixed rule of its own (ONE entry: FIGURE_BLOCK_STRUCTURE_INVALID)', () => {
+    expect(codes('before ![B](a.png) after\n')).toEqual([])
+    expect(codes('![1](x.png) ![2](y.png)\n')).toEqual([])
     expect(codes('```md\nbefore ![B](a.png) after\n```\n')).toEqual([])
-  })
-
-  it('segment splitter keeps token order', () => {
-    expect(splitImageSegments('a ![1](x) b')).toEqual(['a', '![1](x)', 'b'])
-    expect(isImageMixedWithText('![1](x) ![2](y)')).toBe(false)
   })
 })

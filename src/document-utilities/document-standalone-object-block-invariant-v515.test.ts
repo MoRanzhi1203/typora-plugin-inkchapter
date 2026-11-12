@@ -49,6 +49,17 @@ import {
 import { computeDocumentDiagnostics, buildFigureSourceOccurrences } from './document-diagnostics'
 import type { DocumentDiagnosticsInput, DiagnosticLinkFact } from './document-diagnostics'
 import { parseImageSourceOccurrences, parseLocalLinkTargets } from './document-resource-scanner'
+import {
+  FIGURE_BLOCK_STRUCTURE_INVALID_FIX,
+  applyPatchesToMarkdown,
+  type FixContext,
+} from './document-diagnostic-fix-v1'
+import {
+  buildFixedMarkdown,
+  describeFixCapability,
+  planAllAutoFixesV2,
+  selectNonConflictingPlans,
+} from './document-diagnostic-fix-v2'
 
 function inputOf(
   markdown: string,
@@ -596,5 +607,133 @@ describe('V5.15 §20/§34/§36 — the real runtime fixture', () => {
     const twice = buildStandaloneFigureBlockFix(once.output)
     expect(twice.changed).toBe(false)
     expect(twice.output).toBe(once.output)
+  })
+})
+
+// ── §11 — the ONE fix entry for the image structure rule ───────────────────
+
+describe('V5.15 §11 — ONE fix entry: FIGURE_BLOCK_STRUCTURE_INVALID', () => {
+  const DOC_KEY = 'doc:v515'
+
+  function fixCtx(markdown: string): FixContext {
+    return { markdown, snapshotMarkdown: markdown, documentKey: DOC_KEY, snapshot: null, locked: false }
+  }
+
+  function structureDiagnostics(markdown: string) {
+    return diagnosticsOf(markdown, { missing: () => false })
+      .diagnostics.filter(d => d.code === FIGURE_BLOCK_STRUCTURE_INVALID_CODE)
+  }
+
+  function fixMarkdown(markdown: string, index = 0): string {
+    const diagnostic = structureDiagnostics(markdown)[index]
+    expect(diagnostic).toBeTruthy()
+    const built = FIGURE_BLOCK_STRUCTURE_INVALID_FIX.build(diagnostic, fixCtx(markdown))
+    expect(built.blockers ?? []).toEqual([])
+    expect(built.patches ?? []).toHaveLength(1)
+    return applyPatchesToMarkdown(markdown, built.patches ?? [])
+  }
+
+  it('is the ONLY image-structure entry: no FIGURE_MIXED_WITH_TEXT duplicate', () => {
+    const markdown = '前文 ![](a.png) 后文\n'
+    const codes = diagnosticsOf(markdown, { missing: () => false }).diagnostics.map(d => d.code)
+    expect(codes).not.toContain('FIGURE_MIXED_WITH_TEXT')
+    expect(codes.filter(c => c === FIGURE_BLOCK_STRUCTURE_INVALID_CODE)).toHaveLength(1)
+    // ONE row per owning block, never one row per image
+    const multi = diagnosticsOf('a ![](a.png) b ![](b.png) c\n', { missing: () => false }).diagnostics
+    expect(multi.filter(d => d.code === FIGURE_BLOCK_STRUCTURE_INVALID_CODE)).toHaveLength(1)
+  })
+
+  it('the capability matrix exposes a real auto fix for this rule', () => {
+    expect(describeFixCapability(FIGURE_BLOCK_STRUCTURE_INVALID_CODE).capability).toBe('AUTO_SAFE')
+    expect(describeFixCapability(FIGURE_BLOCK_STRUCTURE_INVALID_CODE).actionKind).toBe('source-patches')
+  })
+
+  it('two images on one line become two standalone image blocks', () => {
+    expect(fixMarkdown('![](a.png) ![](b.png)\n')).toBe('![](a.png)\n\n![](b.png)\n')
+  })
+
+  it('three images keep their original order', () => {
+    const fixed = fixMarkdown('![](a.png) ![](b.png) ![](c.png)\n')
+    expect(fixed).toBe('![](a.png)\n\n![](b.png)\n\n![](c.png)\n')
+  })
+
+  it('text before / after / between images is separated', () => {
+    expect(fixMarkdown('前文 ![](a.png)\n')).toBe('前文\n\n![](a.png)\n')
+    expect(fixMarkdown('![](a.png) 后文\n')).toBe('![](a.png)\n\n后文\n')
+    expect(fixMarkdown('文字A ![](a.png) ![图2](b.png) 文字B\n'))
+      .toBe('文字A\n\n![](a.png)\n\n![图2](b.png)\n\n文字B\n')
+  })
+
+  it('preserves alt text, title, link wrapper and a Chinese path byte for byte', () => {
+    const markdown = '前文 ![中文说明](../../assets/图片 名.png "标题") 后文\n'
+    const fixed = fixMarkdown(markdown)
+    expect(fixed).toBe('前文\n\n![中文说明](../../assets/图片 名.png "标题")\n\n后文\n')
+  })
+
+  it('a standalone image is never flagged and never rewritten', () => {
+    expect(structureDiagnostics(`![](${ASSET})\n`)).toEqual([])
+    expect(structureDiagnostics(`![](${ASSET})\n\n![](${ASSET})\n`)).toEqual([])
+  })
+
+  it('image syntax inside fenced / inline code is never a figure', () => {
+    expect(structureDiagnostics('```md\nbefore ![](a.png) after\n```\n')).toEqual([])
+    expect(structureDiagnostics('before `![](a.png)` after\n')).toEqual([])
+  })
+
+  it('a list item / blockquote image is refused with an explicit reason (never rewritten)', () => {
+    for (const markdown of ['- ![](a.png)\n', '> ![](a.png)\n']) {
+      const diagnostic = structureDiagnostics(markdown)[0]
+      expect(diagnostic).toBeTruthy()
+      expect(diagnostic.metadata?.['autoFixable']).toBe(false)
+      const built = FIGURE_BLOCK_STRUCTURE_INVALID_FIX.build(diagnostic, fixCtx(markdown))
+      expect(built.patches ?? []).toEqual([])
+      expect((built.blockers ?? []).map(b => b.code)).toContain('STRUCTURE_NOT_AUTO_FIXABLE')
+    }
+  })
+
+  it('a table image is refused so the table structure is never destroyed', () => {
+    const markdown = '| 列A | 列B |\n| --- | --- |\n| ![](t.png) | x |\n'
+    const diagnostic = structureDiagnostics(markdown)[0]
+    expect(diagnostic).toBeTruthy()
+    expect(diagnostic.metadata?.['autoFixable']).toBe(false)
+    const built = FIGURE_BLOCK_STRUCTURE_INVALID_FIX.build(diagnostic, fixCtx(markdown))
+    expect(built.patches ?? []).toEqual([])
+    expect((built.blockers ?? []).map(b => b.code)).toContain('STRUCTURE_NOT_AUTO_FIXABLE')
+  })
+
+  it('one click fixes every paragraph block, keeps refusals and is idempotent', () => {
+    const markdown = '前文 ![](a.png) 后文\n\n![](b.png) ![](c.png)\n\n- ![](d.png)\n\n> ![](e.png)\n'
+    const out = diagnosticsOf(markdown, { missing: () => false })
+    const snapshot = {
+      documentKey: DOC_KEY,
+      revision: 1,
+      sourceRevision: 1,
+      generatedAt: 1,
+      diagnostics: out.diagnostics,
+      errorCount: out.errorCount,
+      warningCount: out.warningCount,
+      infoCount: out.infoCount,
+      structuralVerified: true,
+    }
+    const plans = planAllAutoFixesV2(
+      { markdown, snapshotMarkdown: markdown, documentKey: DOC_KEY, snapshot, locked: false },
+      { captionAvailable: true },
+    )
+    const { accepted, rejected } = selectNonConflictingPlans(plans)
+    expect(accepted).toHaveLength(2)
+    expect(rejected.map(p => (p.blockers[0]?.code ?? ''))).toEqual([
+      'STRUCTURE_NOT_AUTO_FIXABLE',
+      'STRUCTURE_NOT_AUTO_FIXABLE',
+    ])
+    const { next } = buildFixedMarkdown(markdown, accepted)
+    expect(next).toBe('前文\n\n![](a.png)\n\n后文\n\n![](b.png)\n\n![](c.png)\n\n- ![](d.png)\n\n> ![](e.png)\n')
+    expect(structureDiagnostics(next)).toHaveLength(2)
+    expect(/\n[ \t]*\n[ \t]*\n/.test(next)).toBe(false)
+    // idempotent: the already-fixed blocks never yield another patch
+    const again = planAllAutoFixesV2(
+      { markdown: next, snapshotMarkdown: next, documentKey: DOC_KEY, snapshot, locked: false },
+      { captionAvailable: true },
+    )
+    expect(selectNonConflictingPlans(again).accepted).toHaveLength(0)
   })
 })

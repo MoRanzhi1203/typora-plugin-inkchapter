@@ -25,12 +25,21 @@
 | `DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE` | `AUTO_SAFE` | 源补丁：正文行 EOL 之后的多余换行 | ✅ 同上 | fix-v2 / fix-controller |
 | `CODE_MISSING_LANGUAGE` | `USER_INPUT_REQUIRED` | 源补丁：仅起始围栏 info | ✅ 同上 | fix-v2 / fix-controller |
 | `FIGURE_MISSING_NAME` | `USER_INPUT_REQUIRED` | 源补丁：仅 `![alt]` | ✅ 同上 | fix-v2 |
+| `LIST_EMPTY_ITEM` | `AUTO_SAFE` | 源补丁：删除无内容的列表标记行 | ✅ 同上 | format-integrity-v1 / fix-v2 |
+| `FORMULA_SINGLE_LINE_BLOCK` | `AUTO_SAFE` | 源补丁：`$$x$$` → `$$` / 公式 / `$$` 三行 | ✅ 同上 | format-integrity-v1 / fix-v2 |
+| `FIGURE_BLOCK_STRUCTURE_INVALID` | `AUTO_SAFE` | 源补丁：把**一个**非法 owning block 拆成「文字块 / 每图一块」 | ✅ 同上 | v515 §11 / fix-v2 |
 | `CODE_MISSING_NAME` | `USER_INPUT_REQUIRED` | `CaptionService.setCaption('code', …)` | ✅ 题注服务（不改 Markdown） | fix-v2 / fix-controller |
 | `TABLE_MISSING_NAME` | `USER_INPUT_REQUIRED` | `CaptionService.setCaption('table', …)` | ✅ 题注服务（不改 Markdown） | fix-v2 / fix-controller |
 | 其余全部规则 | `UNAVAILABLE` | 仅「定位 / 说明」 | — | 能力表默认值 |
 
 `CODE_MISSING_NAME` / `TABLE_MISSING_NAME` 在题注服务不可用时会降级为 `UNAVAILABLE`
 （不渲染空按钮）。
+
+`FIGURE_BLOCK_STRUCTURE_INVALID` 的自动修复只覆盖**段落块**：图片位于列表项 / 引用块 /
+表格单元格时，生产者把 `metadata.autoFixable` 记为 `false`，列表行**不渲染修复按钮**，
+修复器本身也以 `STRUCTURE_NOT_AUTO_FIXABLE` 明确拒绝并说明结构原因（Markdown 逐字节不变）。
+同一 owning block 只发布一条诊断，因此「多图同行 + 图文同行」是一次写回。
+图片「必须独立成块」只有这一条诊断入口，不存在第二条图文混排规则。
 
 ## 3. 安全闸门（全部在真实写入前执行）
 

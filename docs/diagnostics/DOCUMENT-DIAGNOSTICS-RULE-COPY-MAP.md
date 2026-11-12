@@ -54,7 +54,7 @@ HINT_FAMILY_COUNT=24
 | `DOCUMENT_TERMINAL_NEWLINE_MISSING` | DOCUMENT_TERMINAL_NEWLINE_MISSING | 警告 | 是 | document-end | SINGLE_TARGET | 末尾缺少换行 | 文档末尾缺少换行符 | Markdown 文档应以一个换行符结束。 | 在文档末尾补充一个换行符。 |
 | `DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE` | DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE | 警告 | 是 | document-end | SINGLE_TARGET | 尾部空行过多 | 文档末尾空行过多 | 文档末尾存在多个连续空行。 | 删除文档末尾多余的空行，仅保留一个换行符。 |
 | `EXCESSIVE_INTERNAL_BLANK_LINES` | EXCESSIVE_INTERNAL_BLANK_LINES | 警告 | 是 | source-range | SINGLE_TARGET | 连续空行过多 | 连续空行过多 | 两个内容块之间存在 2 个及以上连续空行。 | 删除多余的连续空行，块之间保留一个空行即可。 |
-| `FIGURE_BLOCK_STRUCTURE_INVALID` | FIGURE_BLOCK_STRUCTURE_INVALID | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片必须作为独立块插入 | 图片不能放在列表项或引用块中。 | 将图片移动到独立段落。 |
+| `FIGURE_BLOCK_STRUCTURE_INVALID` | FIGURE_BLOCK_STRUCTURE_INVALID | 错误 | 是 | source-block | SINGLE_TARGET | （无映射/动态） | 图片必须作为独立块插入 | 图片必须独占一个段落，且每个图片块只能包含一张图片；不能与正文或其他图片同段，也不能放在列表项、引用块或表格中。 | 将图片拆成独立段落：文字一段、每张图片各一段，前后保留空行。 |
 | `FIGURE_CAPTION_FORMAT_INVALID` | FIGURE_CAPTION_FORMAT_INVALID | 警告 | 是 | caption-projection | SINGLE_TARGET | （无映射/动态） | 图片题注格式不规范 | 题注文字不符合规范格式「图片 编号 名称」。 | 按「图片 编号 名称」格式修改题注。 |
 | `FIGURE_DUPLICATE_NAME` | FIGURE_DUPLICATE_NAME | 警告 | 是 | multi-target | ORDINARY_MULTI_TARGET | 重复图名 | （动态：沿用规则事实标题） | 多张图片使用了相同的图名。 | 修改图名以互相区分。 |
 | `FIGURE_LOCAL_IMAGE_MISSING` | FIGURE_LOCAL_IMAGE_MISSING | 警告 | 是 | figure-occurrence | SINGLE_TARGET | 图片不存在 | （动态：沿用规则事实标题） | 图片引用的本地文件无法解析。 | 检查图片路径，或将图片重新插入文档。 |

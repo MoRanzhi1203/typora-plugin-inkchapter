@@ -1,8 +1,8 @@
 /**
  * Document Diagnostics — Markdown FORMAT Integrity (source-level, V1).
  *
- * Three user-visible排版错误 that Typora silently renders "wrong" (never a
- * structural break, so all are WARNINGs):
+ * Two user-visible排版错误 that Typora silently renders "wrong" (never a
+ * structural break, so both are WARNINGs):
  *
  *  1. `LIST_EMPTY_ITEM` — a list marker line with NO content (`-` / `1.` alone).
  *     Typora renders an empty bullet that carries no information; deleting the
@@ -11,26 +11,28 @@
  *     REAL EVIDENCE (Typora 1.6.7, `runtime/gui-acceptance/snap-Z.json`): it is
  *     rendered as a plain `<p>` with the raw `$$…$$` text — `mathBlockCount=0`.
  *     Typora only renders a display formula when `$$` owns its own line.
- *  3. `FIGURE_MIXED_WITH_TEXT` — an image token sharing a paragraph with正文.
- *     The figure object model requires a standalone block (V5.15 invariant).
  *
- * ALL THREE are pure text rules over the EXACT document text (`eofMarkdown`),
- * never the block-level structural serializer (whose fenced-code bodies are DOM
- * text and whose line numbers shift). Literal ranges (fenced / inline code) are
- * excluded so nothing inside code is ever "fixed".
+ * The image "must be a standalone block" rule is NOT here: its ONE diagnostic
+ * entry is `FIGURE_BLOCK_STRUCTURE_INVALID` (V5.15 standalone object block
+ * invariant), which owns the whole owning block, the merged violation copy and
+ * the deterministic split fix. A second source-level image rule would double
+ * count the same defect.
+ *
+ * BOTH rules below are pure text rules over the EXACT document text
+ * (`eofMarkdown`), never the block-level structural serializer (whose fenced-code
+ * bodies are DOM text and whose line numbers shift). Literal ranges (fenced /
+ * inline code) are excluded so nothing inside code is ever "fixed".
  */
 import type { DiagnosticLocation, DocumentDiagnostic } from './diagnostics-types'
 import { computeMarkdownLiteralRanges, isSourceRangeLiteral, type MarkdownLiteralRange } from './document-markdown-literal-exclusion-v1'
 
 export const LIST_EMPTY_ITEM_CODE = 'LIST_EMPTY_ITEM'
 export const FORMULA_SINGLE_LINE_BLOCK_CODE = 'FORMULA_SINGLE_LINE_BLOCK'
-export const FIGURE_MIXED_WITH_TEXT_CODE = 'FIGURE_MIXED_WITH_TEXT'
 
 /** Registry ↔ producer allow-list (no code outside this list may be emitted). */
 export const FORMAT_INTEGRITY_DIAGNOSTIC_CODES: readonly string[] = [
   LIST_EMPTY_ITEM_CODE,
   FORMULA_SINGLE_LINE_BLOCK_CODE,
-  FIGURE_MIXED_WITH_TEXT_CODE,
 ]
 
 export interface FormatIntegrityInput {
@@ -48,14 +50,10 @@ interface SourceLine {
   end: number
 }
 
-/** `- item` / `* item` / `1. item` / `1) item`, with a leading indent. */
-const LIST_MARKER_RE = /^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+)(.*)$/
-/** A marker line that carries NO content at all. */
+/** A marker line that only carries a list marker (`-` / `1.`), with a leading indent. */
 const EMPTY_LIST_MARKER_RE = /^([ \t]*)([-*+]|\d{1,9}[.)])[ \t]*$/
 /** A display formula written on a single line. */
 const SINGLE_LINE_FORMULA_RE = /^\s*\$\$(?!\$)(.+?)\$\$\s*$/
-/** A Markdown image token (inline / reference-free form). */
-const IMAGE_TOKEN_RE = /!\[[^\]]*\]\([^()\s]*(?:\([^)]*\)[^()\s]*)*\)/g
 
 function splitLines(markdown: string): SourceLine[] {
   const lines: SourceLine[] = []
@@ -149,29 +147,6 @@ function makeDiagnostic(
   }
 }
 
-/** Split one line into alternating text / image segments (whitespace trimmed). */
-export function splitImageSegments(text: string): string[] {
-  const segments: string[] = []
-  let cursor = 0
-  IMAGE_TOKEN_RE.lastIndex = 0
-  let match: RegExpExecArray | null
-  while ((match = IMAGE_TOKEN_RE.exec(text)) != null) {
-    const before = text.slice(cursor, match.index).trim()
-    if (before !== '') segments.push(before)
-    segments.push(match[0])
-    cursor = match.index + match[0].length
-  }
-  const after = text.slice(cursor).trim()
-  if (after !== '') segments.push(after)
-  return segments
-}
-
-/** True when a line carries an image token AND other visible text. */
-export function isImageMixedWithText(text: string): boolean {
-  const segments = splitImageSegments(text)
-  return segments.length > 1 && segments.some(s => !s.startsWith('!['))
-}
-
 /** A list marker line with no content (the ONE empty-item shape). */
 export function isEmptyListMarker(text: string): boolean {
   return EMPTY_LIST_MARKER_RE.test(text)
@@ -236,23 +211,6 @@ export function computeFormatIntegrityDiagnostics(input: FormatIntegrityInput): 
         continue
       }
     }
-
-    // ── 3. Image mixed with text ──────────────────────────────────────────
-    if (line.text.includes('![') && isImageMixedWithText(line.text)) {
-      // List / quote images are owned by the structure rules, never duplicated here.
-      const container = containerMarkerOf(line.text)
-      if (container == null) {
-        const segmentCount = splitImageSegments(line.text).length
-        out.push(makeDiagnostic(input, {
-          code: FIGURE_MIXED_WITH_TEXT_CODE,
-          category: 'figure',
-          message: '图片与正文混排',
-          detail: `第 ${line.index + 1} 行的图片与文字在同一段落内；分段后可拆成 ${segmentCount} 个独立块。`,
-          line,
-          metadata: { reason: 'FIGURE_MIXED_WITH_TEXT', segmentCount },
-        }))
-      }
-    }
   }
 
   return out
@@ -266,11 +224,4 @@ function leadingIndent(text: string): number {
     else break
   }
   return n
-}
-
-/** `-` / `*` / `+` / `1.` / `>` prefix, or null when the line is a plain paragraph. */
-function containerMarkerOf(text: string): string | null {
-  if (LIST_MARKER_RE.test(text)) return 'list'
-  if (/^\s*>/.test(text)) return 'quote'
-  return null
 }

@@ -23475,6 +23475,10 @@ export class DocumentUtilityOverlayHost {
         category: diagnostic?.category ?? null,
       })
       const capability = describeFixCapability(projection.ruleId, captionPortAvailable)
+      // The producer may veto an auto fix for THIS item only (e.g. an image
+      // hosted by a list item / blockquote / table cell). A vetoed item keeps
+      // its error and gets NO fix button — never a button that cannot work.
+      const fixVetoed = diagnostic?.metadata?.['autoFixable'] === false
       return {
         id: projection.diagnosticId,
         severity: (projection.severity === 'error' || projection.severity === 'warning' ? projection.severity : 'info') as 'error' | 'warning' | 'hint' | 'info',
@@ -23484,7 +23488,7 @@ export class DocumentUtilityOverlayHost {
         ruleId: projection.ruleId,
         targetIndex: projection.targetIndex,
         targetCount: projection.targetCount,
-        ...(capability.capability === 'UNAVAILABLE'
+        ...(capability.capability === 'UNAVAILABLE' || fixVetoed
           ? {}
           : {
               fix: {
