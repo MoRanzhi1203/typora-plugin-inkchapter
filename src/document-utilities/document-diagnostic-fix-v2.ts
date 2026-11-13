@@ -43,7 +43,9 @@ import {
   FIGURE_TEXT_MIXED_FIX,
   FORMULA_SINGLE_LINE_BLOCK_FIX,
   INTERNAL_BLANK_LINES_FIX,
+  LEADING_BLANK_LINES_FIX,
   LIST_EMPTY_ITEM_FIX,
+  TERMINAL_NEWLINE_FIX,
   TRAILING_BLANK_LINES_FIX,
   applyPatchesToMarkdown,
   buildFixPreview,
@@ -93,6 +95,18 @@ const CAPABILITY_MATRIX: Readonly<Record<string, FixCapabilityDescriptor>> = Obj
     code: 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE',
     capability: 'AUTO_SAFE',
     label: '删除文末多余空行',
+    actionKind: 'source-patches',
+  },
+  DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE: {
+    code: 'DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE',
+    capability: 'AUTO_SAFE',
+    label: '删除文首多余空行',
+    actionKind: 'source-patches',
+  },
+  DOCUMENT_TERMINAL_NEWLINE_MISSING: {
+    code: 'DOCUMENT_TERMINAL_NEWLINE_MISSING',
+    capability: 'AUTO_SAFE',
+    label: '补齐末尾换行',
     actionKind: 'source-patches',
   },
   LIST_EMPTY_ITEM: {
@@ -321,6 +335,8 @@ function buildPlanFromV1(
 
 const V1_FIXERS: Readonly<Record<string, Fixer>> = Object.freeze({
   EXCESSIVE_INTERNAL_BLANK_LINES: INTERNAL_BLANK_LINES_FIX,
+  DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE: LEADING_BLANK_LINES_FIX,
+  DOCUMENT_TERMINAL_NEWLINE_MISSING: TERMINAL_NEWLINE_FIX,
   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: TRAILING_BLANK_LINES_FIX,
   LIST_EMPTY_ITEM: LIST_EMPTY_ITEM_FIX,
   FORMULA_SINGLE_LINE_BLOCK: FORMULA_SINGLE_LINE_BLOCK_FIX,

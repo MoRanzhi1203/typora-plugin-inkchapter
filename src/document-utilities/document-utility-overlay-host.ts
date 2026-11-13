@@ -703,6 +703,13 @@ import {
   internalBlankLineVisibleDetail,
   type DocumentEditingMode,
 } from './document-diagnostic-internal-blank-decision-v1'
+// ADJACENT BLANK-LINE POLICY MATRIX V1 — the ONE per-pair allowance + copy.
+import {
+  blankAdjacencyDetail,
+  resolveAdjacentBlankPolicyByKind,
+  toBlankAdjacencyKind,
+  type BlankAdjacencyKind,
+} from './document-diagnostic-blank-adjacency-policy-v1'
 // TRAE — the RENDERED BLANK ROW AUTHORITY (source candidate → rendered DOM
 // blank rows) + the split boundary decision algebra + the §39–§44 gates.
 import {
@@ -15215,7 +15222,8 @@ export class DocumentUtilityOverlayHost {
         sourceRevision: this.snapshot?.sourceRevision ?? null,
         decision: 'UNRESOLVED_SOURCE',
       })
-    } else if (renderedBlankRows.decision === 'VERIFIED' && visibleBlankLineCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold) {
+    } else if (renderedBlankRows.decision === 'VERIFIED'
+      && visibleBlankLineCount > this.internalBlankPairAllowanceOf(meta)) {
       // §3 — the Drawer copy + the count label state the VISIBLE blank-line count
       // (the number the publication decision was made on), never the source count.
       this.renderedBlankRowAuthority.set(gapTargetIdentity, {
@@ -15396,7 +15404,7 @@ export class DocumentUtilityOverlayHost {
         + `width:${Math.round(box.width)}px;height:${Math.round(box.height)}px;pointer-events:none;`
       // 几何不变时不写 style（幂等：重复提交不引起样式重算 / 过渡重放）。
       if (container.style.cssText !== nextCss) container.style.cssText = nextCss
-      const allowance = INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines
+      const allowance = this.internalBlankPairAllowanceOf(meta)
       const fragEls = this.reconcileBlankRowFragmentEls(container, fragmentGeometry.fragments, allowance, severity)
       this.ensureBlankMarkerRail(container, gutterLocal)
       // M1-RENDER-COUNT §4/§5 — the label states the RENDERED count, never the
@@ -15489,7 +15497,7 @@ export class DocumentUtilityOverlayHost {
         //   · the painted fragments equal the rendered rows (geometry);
         //   · the SOURCE axis stays consistent and is NEVER dressed as the visible one.
         const consistency = staleActiveVisualCount === 0
-          && visibleBlankLineCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold
+          && visibleBlankLineCount > allowance
           && publishedBlankCount === visibleBlankLineCount
           && renderedCounts.countConfidence === 'VERIFIED'
           && activeLabelBlankCount === visibleBlankLineCount
@@ -15513,7 +15521,7 @@ export class DocumentUtilityOverlayHost {
           ACTIVE_LABEL_BLANK_COUNT: activeLabelBlankCount,
           ACTIVE_PAINTED_FRAGMENT_COUNT: paintedFragmentCount,
           SOURCE_STATED_AS_VISIBLE_COUNT: sourceStatedAsVisibleCount,
-          RULE_VISIBLE_EXCESSIVE: visibleBlankLineCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+          RULE_VISIBLE_EXCESSIVE: visibleBlankLineCount > allowance,
           STALE_ACTIVE_VISUAL_COUNT: staleActiveVisualCount,
           STALE_ACTIVE_VISUAL_FACT_DIFF: staleFactDiff || 'NONE',
           FINAL_BLANK_VISUAL_CONSISTENCY: consistency,
@@ -15858,8 +15866,8 @@ export class DocumentUtilityOverlayHost {
       renderedBlankRowRectCount: renderedBlankRows.rows.filter(r => r.rect != null).length,
       renderedBlankRows: renderedBlankRows.rows.map(r => ({ index: r.index, rect: r.rect, physicalVerified: r.physicalVerified, editableVerified: r.editableVerified, pluginOwned: r.pluginOwned })),
       displayedBlankRowCount: renderedRowCount,
-      threshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
-      allowMaxBlankLines: INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
+      threshold: this.internalBlankPairAllowanceOf(meta) + 1,
+      allowMaxBlankLines: this.internalBlankPairAllowanceOf(meta),
       // §2.2 — the business decision is the SOURCE count ONLY. A missing source fact is
       // `UNRESOLVED_SOURCE`, never a rendered-count-derived WARNING.
       sourceCountAuthority: actualBlankLines == null ? 'UNRESOLVED_SOURCE' : 'SOURCE',
@@ -15867,8 +15875,8 @@ export class DocumentUtilityOverlayHost {
       renderedMismatchExpected: actualBlankLines != null && actualBlankLines !== renderedRowCount,
       warningDecision: actualBlankLines == null
         ? 'UNRESOLVED_SOURCE'
-        : (actualBlankLines >= INTERNAL_BLANK_LINE_POLICY.warningThreshold ? 'WARNING' : 'PASS'),
-      renderedRowWarningDecision: renderedRowCount >= INTERNAL_BLANK_LINE_POLICY.warningThreshold ? 'WARNING' : 'PASS',
+        : (visibleBlankLineCount > this.internalBlankPairAllowanceOf(meta) ? 'WARNING' : 'PASS'),
+      renderedRowWarningDecision: visibleBlankLineCount > this.internalBlankPairAllowanceOf(meta) ? 'WARNING' : 'PASS',
       scrollTargetKind: this.blockGapScrollTargetRect ? RENDERED_BLANK_GAP_SCROLL_TARGET : null,
       scrollTargetCenterY: this.blockGapScrollTargetRect
         ? (this.blockGapScrollTargetRect.top + this.blockGapScrollTargetRect.bottom) / 2 : null,
@@ -17593,7 +17601,7 @@ export class DocumentUtilityOverlayHost {
     const visible = rows.visibleBlankLineCount
     // A member that now MEASURES as compliant is correctly left unpainted: it is
     // no longer excessive, so there is nothing to highlight (not a paint failure).
-    if (visible < INTERNAL_BLANK_LINE_POLICY.warningThreshold) return { kind: 'COMPLIANT' }
+    if (visible <= this.internalBlankPairAllowanceOf(meta)) return { kind: 'COMPLIANT' }
     const local = convertRenderedRowsToLocal({
       rows: rows.rows.map(r => ({ rect: r.rect })),
       inputCoordinateSpace: 'VIEWPORT',
@@ -17820,6 +17828,9 @@ export class DocumentUtilityOverlayHost {
       const targetIdentity = String((d as { targetIdentity?: string }).targetIdentity ?? '')
       const meta = (d.metadata ?? {}) as Record<string, unknown>
       const sourceBlankLines = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null
+      // ADJACENT BLANK-LINE POLICY MATRIX V1 — the RENDERED allowance of THIS
+      // pair: 1 only for paragraph→paragraph, 0 for every other pair.
+      const pairAllowance = this.internalBlankPairAllowanceOf(meta)
       if (targetIdentity === '' || sourceBlankLines == null) {
         // §7 — the SOURCE gap itself is unresolved: request ONE bounded re-parse;
         // never publish a guess (the visible count cannot be proven either).
@@ -17871,6 +17882,7 @@ export class DocumentUtilityOverlayHost {
         mode,
         measuredVisibleBlankLineCount: measuredVisible,
         sourceBlankLineCount: sourceBlankLines,
+        maxVisibleBlankLines: pairAllowance,
       })
       emitRuntimeAudit(INTERNAL_BLANK_DECISION_AUDIT_EVENT, {
         documentKey: snapshot.documentKey ?? null,
@@ -17918,22 +17930,30 @@ export class DocumentUtilityOverlayHost {
       // §3/§4 — the published rule states the VISIBLE count; the SOURCE count is
       // kept ONLY for source parsing / position mapping / debugging.
       const visible = decision.visibleBlankLineCount ?? decision.displayBlankLineCount
+      // ADJACENT BLANK-LINE POLICY MATRIX V1 — the Drawer copy names the REAL
+      // block pair and its own allowance (正文→正文 保留 1；其余清除为 0).
+      const pairDetail = blankAdjacencyDetail(
+        this.internalBlankKindOf(meta, 'previous'),
+        this.internalBlankKindOf(meta, 'next'),
+        decision.displayBlankLineCount,
+      )
       kept.push({
         ...d,
-        detail: internalBlankLineVisibleDetail(decision.displayBlankLineCount),
+        detail: pairDetail,
         metadata: {
           ...meta,
           [INTERNAL_BLANK_SOURCE_COUNT_META_KEY]: sourceBlankLines,
           [INTERNAL_BLANK_PUBLISHED_COUNT_META_KEY]: decision.displayBlankLineCount,
           [INTERNAL_BLANK_DECISION_MODE_META_KEY]: mode,
           visibleBlankLineCount: visible,
+          blankPairAllowance: pairAllowance,
         },
       })
       // §3 — the DISPLAY count (Drawer copy + Active label) is the VISIBLE count:
       // the SAME number the decision was made on.
       this.renderedBlankRowAuthority.set(targetIdentity, {
         renderedBlankRowCount: result?.renderedBlankRowCount ?? 0,
-        displayDetail: internalBlankLineVisibleDetail(decision.displayBlankLineCount),
+        displayDetail: pairDetail,
         warning: true,
         layoutEpoch: this.currentDocumentLayoutEpoch,
       })
@@ -18174,6 +18194,27 @@ export class DocumentUtilityOverlayHost {
         try { el.remove() } catch { /* noop */ }
       }
     }
+  }
+
+  /** The policy kind of one side of a blank gap. */
+  private internalBlankKindOf(
+    meta: Record<string, unknown>,
+    side: 'previous' | 'next',
+  ): BlankAdjacencyKind {
+    const raw = side === 'previous' ? meta.previousBlockKind : meta.nextBlockKind
+    return toBlankAdjacencyKind(typeof raw === 'string' ? raw : null)
+  }
+
+  /**
+   * ADJACENT BLANK-LINE POLICY MATRIX V1 — the RENDERED allowance for ONE gap.
+   * A legacy record without both kinds keeps the historical allowance (1) so no
+   * existing diagnostic is silently re-classified.
+   */
+  private internalBlankPairAllowanceOf(meta: Record<string, unknown>): number {
+    const previous = typeof meta.previousBlockKind === 'string' ? meta.previousBlockKind : null
+    const next = typeof meta.nextBlockKind === 'string' ? meta.nextBlockKind : null
+    if (previous == null || next == null) return INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines
+    return resolveAdjacentBlankPolicyByKind(previous, next).maxRenderedBlankLines
   }
 
   /** §8 — resolve the rendered blank rows for ONE gap record's carried metadata. */

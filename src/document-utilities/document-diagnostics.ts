@@ -102,6 +102,17 @@ import {
   internalBlankGapIdentity,
   internalBlankLineDetail,
 } from './document-diagnostic-internal-blank-lines-v1'
+// ADJACENT BLANK-LINE POLICY MATRIX V1 — the ONE per-pair allowance authority.
+import {
+  resolveAdjacentBlankPolicyByKind,
+} from './document-diagnostic-blank-adjacency-policy-v1'
+// LEADING BLANK-LINE POLICY V1 — the document-start blank run.
+import {
+  DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE_CODE,
+  DOCUMENT_LEADING_BLANK_LINES_RULE_ID,
+  analyzeLeadingBlankLines,
+  leadingBlankLineDetail,
+} from './document-diagnostic-leading-blank-lines-v1'
 // Phase G — the DOM-side caption-integrity producer's emitted codes (the SAME
 // single allow-list mirrored below; the caption producer is not a second registry).
 import { CAPTION_INTEGRITY_DIAGNOSTIC_CODES } from './document-diagnostics-caption-integrity-v1'
@@ -838,6 +849,7 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   HEADING_MANUAL_NUMBER_PREFIX_CODE,
   'DOCUMENT_TERMINAL_NEWLINE_MISSING',
   'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE',
+  DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE_CODE,
   EXCESSIVE_INTERNAL_BLANK_LINES_CODE,
   // latent ATX (LEVEL_n — one representative per emitted level 1..6)
   'LATENT_ATX_HEADING_MARKER_LEVEL_1',
@@ -1206,9 +1218,13 @@ export function buildInternalBlankLineDiagnostics(
   const out: DocumentDiagnostic[] = []
   for (const gap of analyzeInternalBlankLineGaps(input.markdown)) {
     const gapIdentity = internalBlankGapIdentity(gap)
+    // ADJACENT BLANK-LINE POLICY MATRIX V1 — the pair decides the allowance. The
+    // metadata carries BOTH the rendered allowance (0 / 1) and the structural
+    // source separator (1), so a zero allowance never deletes every newline.
+    const pairPolicy = resolveAdjacentBlankPolicyByKind(gap.previousBlockKind, gap.nextBlockKind)
     out.push(
       makeDiagnostic(input, 'document', EXCESSIVE_INTERNAL_BLANK_LINES_CODE, '连续空行过多', {
-        detail: internalBlankLineDetail(gap.actualBlankLines),
+        detail: internalBlankLineDetail(gap.actualBlankLines, pairPolicy.maxRenderedBlankLines),
         kind: 'document',
         targetIdentity: gapIdentity,
         metadata: {
@@ -1244,6 +1260,11 @@ export function buildInternalBlankLineDiagnostics(
           actualBlankLines: gap.actualBlankLines,
           passMaxBlankLines: INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines,
           warningThreshold: INTERNAL_BLANK_LINE_POLICY.warningThreshold,
+          // ADJACENT BLANK-LINE POLICY MATRIX V1 — the pair's RENDERED allowance
+          // (0 for every pair except paragraph→paragraph) plus the structural
+          // source separator the fixer must always keep.
+          blankPairAllowance: pairPolicy.maxRenderedBlankLines,
+          blankPairStructuralSourceBlankLines: pairPolicy.structuralSourceBlankLines,
         },
         // §22/§23 — the blank area itself owns no DOM node. The scroll anchor
         // (and the active target) is the NEXT block: its proven VISIBLE text
@@ -2828,6 +2849,31 @@ export function computeDocumentDiagnostics(
             },
             locator: { kind: 'document', targetElement: null, action: 'GO_BOTTOM' },
             location: { kind: 'document-end' },
+          }),
+        )
+      }
+    }
+
+    // ── LEADING BLANK-LINE POLICY V1 — the document START owns 0 extra blank
+    //    lines. The EOF rules above own the end; the internal rule owns only
+    //    gaps BETWEEN blocks. A fully blank document is DOCUMENT_EMPTY.
+    if (input.markdown != null) {
+      const leading = analyzeLeadingBlankLines(input.markdown)
+      if (leading != null) {
+        push(
+          makeDiagnostic(input, 'document', DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE_CODE,
+            '文档开头空行过多', {
+            detail: leadingBlankLineDetail(leading.leadingBlankLines),
+            kind: 'document',
+            targetIdentity: 'document:leading-blank-lines-excessive',
+            metadata: {
+              ruleId: DOCUMENT_LEADING_BLANK_LINES_RULE_ID,
+              reason: 'EXCESSIVE_LEADING_BLANK_LINES',
+              leadingBlankLineCount: leading.leadingBlankLines,
+              firstContentLine: leading.firstContentLine,
+            },
+            locator: { kind: 'document', targetElement: null, action: 'GO_TOP' },
+            location: { kind: 'document-start' },
           }),
         )
       }

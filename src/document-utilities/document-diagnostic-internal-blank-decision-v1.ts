@@ -71,6 +71,12 @@ export interface InternalBlankPublicationInput {
   /** The source blank-line count — carried for the SOURCE mode, never a WYSIWYG decision input. */
   sourceBlankLineCount: number
   policy?: InternalBlankLinePolicy
+  /**
+   * ADJACENT BLANK-LINE POLICY MATRIX V1 — the RENDERED allowance of THIS block
+   * pair (1 for paragraph→paragraph, 0 for every other pair). Absent → the
+   * legacy global allowance (`passMaxBlankLines`).
+   */
+  maxVisibleBlankLines?: number
 }
 
 export interface InternalBlankPublicationDecision {
@@ -93,6 +99,9 @@ export function decideInternalBlankPublication(
   input: InternalBlankPublicationInput,
 ): InternalBlankPublicationDecision {
   const policy = input.policy ?? INTERNAL_BLANK_LINE_POLICY
+  const allowance = input.maxVisibleBlankLines == null
+    ? policy.passMaxBlankLines
+    : Math.max(0, Math.floor(input.maxVisibleBlankLines))
   const source = Math.max(0, Math.floor(input.sourceBlankLineCount))
 
   let visible: number | null = null
@@ -118,7 +127,7 @@ export function decideInternalBlankPublication(
       reason: `VISIBLE_UNMEASURABLE_${dataSource}`,
     }
   }
-  if (visible < policy.warningThreshold) {
+  if (visible <= allowance) {
     return {
       publish: false,
       mode: input.mode,

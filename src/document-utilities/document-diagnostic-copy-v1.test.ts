@@ -131,10 +131,11 @@ describe('copy V1 — the Drawer presentation consumes the copy authority', () =
 })
 
 describe('copy V1 — 内部空行阈值与文案一致', () => {
-  it('EXCESSIVE_INTERNAL_BLANK_LINES 的说明采用策略阈值（2），不是硬编码 3', () => {
+  it('EXCESSIVE_INTERNAL_BLANK_LINES 的说明采用相邻块策略矩阵，不是硬编码阈值', () => {
     const spec = DOCUMENT_DIAGNOSTIC_COPY_TABLE.EXCESSIVE_INTERNAL_BLANK_LINES
     expect(INTERNAL_BLANK_LINE_POLICY.warningThreshold).toBe(2)
-    expect(spec.description).toContain(`${INTERNAL_BLANK_LINE_POLICY.warningThreshold} 个及以上`)
+    expect(spec.description).toContain('正文之间最多保留 1 个')
+    expect(spec.description).toContain('其余块之间应为 0 个')
     expect(spec.description).not.toContain('3 个及以上')
   })
 })

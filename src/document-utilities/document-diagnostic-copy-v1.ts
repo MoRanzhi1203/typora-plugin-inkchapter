@@ -97,6 +97,7 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   STRICT_SINGLE_H1_MULTIPLE_H1: 150,
   // ── document format (blank-space policy) ──────────────────────────────────
   DOCUMENT_TERMINAL_NEWLINE_MISSING: 200,
+  DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE: 205,
   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: 210,
   EXCESSIVE_INTERNAL_BLANK_LINES: 220,
   // ── format integrity (source-level) ───────────────────────────────────────
@@ -292,8 +293,9 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   STRICT_FIRST_H1_SOURCE_UNAVAILABLE: { title: '无法校验 H1', description: '无法读取文档源码，无法校验首行 H1。', suggestion: '稍后重试。' },
   // ── document format (blank-space policy) ──────────────────────────────────
   DOCUMENT_TERMINAL_NEWLINE_MISSING: { title: '文档末尾缺少换行符', description: 'Markdown 文档应以一个换行符结束。', suggestion: '在文档末尾补充一个换行符。' },
+  DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE: { title: '文档开头空行过多', description: '文档开头存在多余空行，正文前应保持 0 个额外空行。', suggestion: '删除文档开头的多余空行，使首个内容块位于第一行。' },
   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: { title: '文档末尾空行过多', description: '文档末尾存在多个连续空行。', suggestion: '删除文档末尾多余的空行，仅保留一个换行符。' },
-  EXCESSIVE_INTERNAL_BLANK_LINES: { title: '连续空行过多', description: `两个内容块之间存在 ${INTERNAL_BLANK_LINE_POLICY.warningThreshold} 个及以上连续空行。`, suggestion: '删除多余的连续空行，块之间保留一个空行即可。' },
+  EXCESSIVE_INTERNAL_BLANK_LINES: { title: '连续空行过多', description: '相邻内容块之间存在超过规范允许数量的额外空行：正文之间最多保留 1 个，其余块之间应为 0 个。', suggestion: '删除多余的连续空行，并保留 Markdown 必需的结构分隔。' },
   // ── document completeness ─────────────────────────────────────────────────
   DOCUMENT_HEADING_ONLY_NO_BODY: { title: '文档仅包含标题', description: '当前文档只有一个标题，尚无正文内容。', suggestion: '补充标题下的正文内容。' },
   DOCUMENT_HEADINGS_ONLY_NO_BODY: { title: '文档仅包含标题结构', description: '当前文档包含多个标题，但尚无正文内容。', suggestion: '为各级标题补充正文内容。' },

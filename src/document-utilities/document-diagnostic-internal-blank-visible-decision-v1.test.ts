@@ -271,7 +271,8 @@ describe('B — 边界提交：可视数量决定发布（真实 host 管线）'
     expect(meta.publishedBlankLineCount).toBe(2)          // the displayed / decision count
     expect(meta.visibleBlankLineCount).toBe(2)
     expect(meta.sourceBlankLineCount).toBe(4)             // the SOURCE count (not the decision)
-    expect(String(kept[0].detail ?? '')).toContain('2 个可视连续空行')
+    expect(String(kept[0].detail ?? '')).toContain('2 个额外空行')
+    expect(String(kept[0].detail ?? '')).toContain('保留 1 个')
     expect(String(kept[0].detail ?? '')).not.toContain('源码中存在 4')
   })
 

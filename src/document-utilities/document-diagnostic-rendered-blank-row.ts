@@ -47,7 +47,7 @@ export const RENDERED_BLANK_ROW_AUTHORITY = 'RENDERED_DOM_BLANK_ROWS_V1'
  * count. The Drawer NEVER falls back to the SOURCE count.
  */
 export const RENDERED_BLANK_ROW_PENDING_DETAIL =
-  '当前两个内容块之间存在过多连续空行，待运行时确认可见空行数，建议压缩为 1 个空行。'
+  '当前两个内容块之间存在过多连续空行，待运行时确认可见空行数，建议压缩至规范允许的数量。'
 
 // ── §4/§12 — the boundary decision algebra ─────────────────────────────────
 

@@ -77,7 +77,7 @@ describe('Internal Blank-Line Policy V1 — threshold authority', () => {
       expect((ds[0].metadata as Record<string, unknown>).actualBlankLines).toBe(n)
       // §3 — the copy states the actual source count AND the recommended kept count.
       expect(String(ds[0].detail ?? '')).toContain(`存在 ${n} 个连续空行`)
-      expect(String(ds[0].detail ?? '')).toContain('建议压缩为 1 个空行')
+      expect(String(ds[0].detail ?? '')).toContain('建议保留 1 个结构空行')
     }
   })
 

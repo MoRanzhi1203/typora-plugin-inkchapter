@@ -262,3 +262,27 @@ describe('EOF marker surface gate — left rail / endpoint are real paint', () =
     expect(HOST).toContain('pluginOwnedBorderCount: fillFacts.pluginOwnedBorderCount')
   })
 })
+
+describe('ADJACENT BLANK-LINE MATRIX — marker count uses the VISIBLE excess', () => {
+  it('paragraph → paragraph: visible 2 over the 1 allowance states excess 1', () => {
+    expect(resolveInternalExcessCount({
+      actualBlankLines: 9, publishedBlankLineCount: 2, blankPairAllowance: 1,
+    })).toBe(1)
+  })
+
+  it('heading → paragraph: the 0 allowance states the full visible excess', () => {
+    expect(resolveInternalExcessCount({
+      actualBlankLines: 6, publishedBlankLineCount: 1, blankPairAllowance: 0,
+    })).toBe(1)
+  })
+
+  it('a visible count within the allowance has no marker at all', () => {
+    expect(resolveInternalExcessCount({
+      actualBlankLines: 4, publishedBlankLineCount: 1, blankPairAllowance: 1,
+    })).toBeNull()
+  })
+
+  it('legacy records without a published count fall back to the source count', () => {
+    expect(resolveInternalExcessCount({ actualBlankLines: 4, passMaxBlankLines: 1 })).toBe(3)
+  })
+})

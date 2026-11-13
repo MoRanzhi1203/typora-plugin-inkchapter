@@ -1,4 +1,4 @@
-# 三类空行标记 + 检测面板白底 UI — Trae 任务账本
+﻿# 三类空行标记 + 检测面板白底 UI — Trae 任务账本
 
 > 分支：`feature/diagnostics-trae-ui-quick-fix`（未合并 main、未推送远端）
 > 任务：三类空行标记统一 + 检测面板白底黑灰精修
@@ -490,3 +490,36 @@ console.log({
 - `pnpm run build`（prod）：PASS，`dist/main.js` = `68B31D88…`。
 - `pnpm run docs:verify`：PASS（`DOC_BROKEN_LINK_COUNT=0`、`STALE_PROMPT_REFERENCE_COUNT=0`）。
 
+
+---
+
+## 追加：全类型空行策略矩阵 V1（本轮）
+
+### A. 统一矩阵
+
+| 前一个块 | 后一个块 | 允许的额外渲染空段 | 修复目标 |
+|---|---|---:|---:|
+| 正文 | 正文 | 1 | 保留 1 |
+| 任意其他普通块组合（正文/标题/图片/代码块/公式块/表格/列表/引用块） | 任意其他普通块组合 | 0 | 清除为 0 |
+| 文档开头 | 任意块 | 0 | 清除为 0 |
+| 任意块 | 文档末尾 | 1（严格） | 补齐或删减为 1 个换行 |
+
+- 判定轴：Typora 真实渲染空段落（`visibleBlankLineCount`）；源码换行数只用于修复与位置映射。
+- 修复始终保留 1 个源码结构空行，因此 0 目标不会合并相邻正文，也不会破坏围栏、公式、表格、列表或引用结构。
+- 普通正文之间只做超额删减，不补齐缺失空行；只有文档末尾允许补齐。
+
+### B. 模块
+
+- `document-diagnostic-blank-adjacency-policy-v1.ts`：矩阵、块类型映射、块对文案、超额判定（唯一权威）。
+- `document-diagnostic-internal-blank-decision-v1.ts`：发布判定改为 `visible > 当前块对允许值`。
+- `document-diagnostics.ts`：诊断 metadata 增加 `blankPairAllowance` / `blankPairStructuralSourceBlankLines`。
+- `document-diagnostic-leading-blank-lines-v1.ts`：新增 `DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE`（文首 0，源级检测）。
+- `document-diagnostic-fix-v1.ts`：新增文首空行删除与 `DOCUMENT_TERMINAL_NEWLINE_MISSING` 自动补齐。
+- `document-diagnostic-blank-marker-v1.ts`：标记数量 = `publishedBlankLineCount − blankPairAllowance`。
+
+### C. 门禁
+
+- 全量 Vitest：**355 文件 / 6155 用例全部通过**。
+- `tsc --noEmit`：PASS；`pnpm run build`（prod）：PASS，`dist/main.js` = `9004C7DA…`。
+- 新增矩阵测试 7 项、文首规则/集成测试 9 项、修复测试 7 项、标记计数测试 4 项。
+- 真实 Typora 1.6.7：已加载 `mainJsSha256=9004C7DA…`（`loadSource=vault`，`initializationCount=1`）并打开 `Blank-Line-Matrix-Runtime-Test.md` 夹具。

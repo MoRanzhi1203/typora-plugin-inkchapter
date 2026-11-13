@@ -863,8 +863,11 @@ export function firstContentSourceLine(markdown: string | null | undefined): num
  * VISIBLE blank-line count — a source count must never be presented as the visible
  * display count. Kept here because the scanner still owns the raw source fact.
  */
-export function internalBlankLineDetail(actualBlankLines: number): string {
-  return `源码中存在 ${actualBlankLines} 个连续空行，建议压缩为 1 个空行。`
+export function internalBlankLineDetail(actualBlankLines: number, allowanceBlankLines = 1): string {
+  if (Math.max(0, Math.floor(allowanceBlankLines)) === 1) {
+    return `源码中存在 ${actualBlankLines} 个连续空行，建议保留 1 个结构空行。`
+  }
+  return `源码中存在 ${actualBlankLines} 个连续空行，建议删除多余空行，仅保留必要的结构空行。`
 }
 
 // ── §35 — the hard gates ───────────────────────────────────────────────────

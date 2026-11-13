@@ -53,12 +53,12 @@
 
 > 来源：`TRAE-DOCUMENT-DIAGNOSTICS-SYNTAX-FOOTNOTE-REFERENCE-FRONTMATTER-EXPANSION-V3` §15。
 > 这些能力本轮**只登记、不实现**，不进入 `DOCUMENT_DIAGNOSTIC_RULE_REGISTRY`（避免为凑数而注册）。
+> 已实现项已移出本表：`DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE`（空行矩阵 V1，含文首自动修复与源级检测）。
 
 | 组 | Runtime Code（候选） | 现状 | 依赖 |
 |---|---|---|---|
 | List | `LIST_ITEM_EMPTY` / `LIST_NESTING_LEVEL_JUMP` / `TASK_LIST_ITEM_EMPTY` / `ORDERED_LIST_NUMBER_SEQUENCE_INVALID` | P2 / 未实现 | 列表结构 source authority |
 | Accessibility | `IMAGE_ALT_TEXT_EMPTY` | P2 / 未实现 | 复用 `DocumentInlineLinkAuthority` 的 image alt |
-| Leading Blank | `DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE` | P2 / 未实现 | 现有 EOF / 空白策略扩展 |
 | Code | `CODE_LANGUAGE_UNKNOWN` | P2 / 未实现 | 代码块 info string authority |
 | Source Hygiene | `TRAILING_WHITESPACE` / `MIXED_LINE_ENDINGS` / `TAB_INDENTATION` / `BOM_PRESENT` | P2 / 未实现 | 源码级 hygiene 通道（不走诊断 DOM） |
 | Front Matter Later | `FRONTMATTER_DUPLICATE_KEY` / `FRONTMATTER_EMPTY` / `FRONTMATTER_NOT_AT_DOCUMENT_START` | P2 / 未实现 | canonical YAML parser（与 `FRONTMATTER_MALFORMED` 同源阻塞） |

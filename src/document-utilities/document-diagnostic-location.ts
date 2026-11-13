@@ -590,6 +590,8 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   DOCUMENT_SOURCE_UNAVAILABLE: rule('DOCUMENT_SOURCE_UNAVAILABLE', 'document', 'document-start', { area: 'document-state', diagnosticKind: 'STATE_GUARD' }),
   DOCUMENT_TERMINAL_NEWLINE_MISSING: rule('DOCUMENT_TERMINAL_NEWLINE_MISSING', 'document', 'document-end', { area: 'document-state' }),
   DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE: rule('DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE', 'document', 'document-end', { area: 'document-state' }),
+  // Leading Blank-Line Policy V1 — the document START owns 0 extra blank lines.
+  DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE: rule('DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE', 'document', 'document-start', { area: 'document-state' }),
   // Internal Blank-Line Policy V1 §1/§24 — 3+ consecutive blank lines between
   // two sibling CONTENT blocks. A document-FORMAT warning, scoped to the block
   // gap (scope=block), with NO reason chip (a body-wide format warning must not

@@ -19,6 +19,8 @@ import type {
 } from './diagnostics-types'
 import { parseFencedCodeBlocks } from './content-block-toolbar-code-source'
 import { isRangeProtected, parseDocumentSourceSyntax } from './document-source-syntax-authority'
+// R9 — the ONE whitespace contract shared with the source scanner / marker.
+import { isWhitespaceOnlyText } from './document-diagnostic-whitespace-semantics-v1'
 import {
   FIGURE_BLOCK_STRUCTURE_INVALID_CODE,
   FIGURE_INLINE_FORMAT_CODE,
@@ -233,7 +235,7 @@ export const INTERNAL_BLANK_LINES_FIX: Fixer = {
       return { blockers: [blocker('NOT_APPLICABLE', '首部空行不属于内部空行规则。')] }
     }
     for (let i = first; i <= last; i++) {
-      if (lines[i].text.trim() !== '') {
+      if (!isWhitespaceOnlyText(lines[i].text)) {
         return { blockers: [blocker('INVALID_FACT', `第 ${i + 1} 行不是空行，拒绝批量删除。`)] }
       }
     }
@@ -260,6 +262,65 @@ export const INTERNAL_BLANK_LINES_FIX: Fixer = {
   },
 }
 
+export const LEADING_BLANK_LINES_FIX: Fixer = {
+  code: 'DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE',
+  support: 'AUTO',
+  label: '删除文首多余空行',
+  build(diagnostic, ctx) {
+    const meta = diagnostic.metadata ?? {}
+    const count = asNumber(meta.leadingBlankLineCount)
+    if (count == null || count <= 0) {
+      return { blockers: [blocker('NOT_APPLICABLE', '文首没有多余空行。')] }
+    }
+    const lines = splitFixLines(ctx.markdown)
+    if (count >= lines.length) {
+      // A fully blank document is DOCUMENT_EMPTY, never a leading-blank repair.
+      return { blockers: [blocker('INVALID_FACT', '文档没有正文行。')] }
+    }
+    for (let i = 0; i < count; i++) {
+      if (!isWhitespaceOnlyText(lines[i].text)) {
+        return { blockers: [blocker('INVALID_FACT', `第 ${i + 1} 行不是空行，拒绝删除。`)] }
+      }
+    }
+    const end = lines[count].start
+    return {
+      patches: [{
+        start: 0,
+        end,
+        before: ctx.markdown.slice(0, end),
+        after: '',
+        lineStart: 0,
+        lineEnd: count - 1,
+        kind: 'delete-lines',
+      }],
+    }
+  },
+}
+
+export const TERMINAL_NEWLINE_FIX: Fixer = {
+  code: 'DOCUMENT_TERMINAL_NEWLINE_MISSING',
+  support: 'AUTO',
+  label: '补齐末尾换行',
+  build(_diagnostic, ctx) {
+    const md = ctx.markdown
+    if (md === '') return { blockers: [blocker('NOT_APPLICABLE', '空文档没有可补齐的末尾换行。')] }
+    if (md.endsWith('\n')) return { blockers: [blocker('NOT_APPLICABLE', '文档已经以换行结束。')] }
+    const lines = splitFixLines(md)
+    const last = Math.max(0, lines.length - 1)
+    return {
+      patches: [{
+        start: md.length,
+        end: md.length,
+        before: '',
+        after: '\n',
+        lineStart: last,
+        lineEnd: last,
+        kind: 'replace-tail',
+      }],
+    }
+  },
+}
+
 export const TRAILING_BLANK_LINES_FIX: Fixer = {
   code: 'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE',
   support: 'AUTO',
@@ -271,7 +332,7 @@ export const TRAILING_BLANK_LINES_FIX: Fixer = {
     const lines = splitFixLines(ctx.markdown)
     let lastContent = -1
     for (let i = lines.length - 1; i >= 0; i--) {
-      if (lines[i].text.trim() !== '') { lastContent = i; break }
+      if (!isWhitespaceOnlyText(lines[i].text)) { lastContent = i; break }
     }
     if (lastContent < 0) return { blockers: [blocker('INVALID_FACT', '文档没有正文行。')] }
     // Normal `text\n` has one trailing empty line; >1 means extra blanks.
@@ -957,6 +1018,8 @@ export class DiagnosticFixRegistry {
 export function createDefaultDiagnosticFixRegistry(): DiagnosticFixRegistry {
   return new DiagnosticFixRegistry()
     .register(INTERNAL_BLANK_LINES_FIX)
+    .register(LEADING_BLANK_LINES_FIX)
+    .register(TERMINAL_NEWLINE_FIX)
     .register(TRAILING_BLANK_LINES_FIX)
     .register(LIST_EMPTY_ITEM_FIX)
     .register(FORMULA_SINGLE_LINE_BLOCK_FIX)

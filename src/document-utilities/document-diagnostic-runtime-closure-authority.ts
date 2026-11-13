@@ -206,14 +206,16 @@ export const DOCUMENT_DIAGNOSTIC_BASELINE = {
   // V2 §5.5 adds FIGURE_SYNTAX_IN_HEADING (+1 implemented family / code).
   // V3 adds the image SYNTAX completeness family set (+4): unclosed destination /
   // unclosed alt / malformed / invalid destination.
-  registeredRuleFamilyCount: 116,
-  resolvedDiagnosticCodeCount: 122,
-  userVisibleDiagnosticTypeCount: 112,
-  implementedFamilyCount: 112,
+  // Blank-Line Matrix V1 adds the LEADING blank-line family (+1): the document
+  // start owns 0 extra blank lines and its own auto-fix.
+  registeredRuleFamilyCount: 117,
+  resolvedDiagnosticCodeCount: 123,
+  userVisibleDiagnosticTypeCount: 113,
+  implementedFamilyCount: 113,
   deferredFamilyCount: 4,
   plannedFamilyCount: 0,
   stateGuardCodeCount: 5,
-  contentDiagnosticCodeCount: 117,
+  contentDiagnosticCodeCount: 118,
 } as const
 
 // ── Internal authorities ────────────────────────────────────────────────────

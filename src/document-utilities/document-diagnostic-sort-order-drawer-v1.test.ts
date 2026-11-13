@@ -497,8 +497,8 @@ describe('空行显示数量 — 可视空行数判决（source 与 visible 背�
     internals(host).renderDrawer()
     await flushRaf()
     const labels = rows().map(r => r.getAttribute('aria-label') ?? '')
-    expect(labels.some(l => l.includes('2 个可视连续空行'))).toBe(true)   // VISIBLE count
-    expect(labels.some(l => l.includes('4 个可视连续空行'))).toBe(false)  // the SOURCE count is NEVER stated as the visible one
+    expect(labels.some(l => l.includes('2 个额外空行'))).toBe(true)   // VISIBLE count
+    expect(labels.some(l => l.includes('4 个额外空行'))).toBe(false)  // the SOURCE count is NEVER stated as the visible one
     expect(labels.some(l => l.includes('源码中存在 4 个连续空行'))).toBe(false)
   })
 })

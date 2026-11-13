@@ -248,3 +248,65 @@ describe('fix planner V1 — stale / lock / conflicts', () => {
       .resolves.toEqual({ ok: false, reason: 'TRANSACTION_AUTHORITY_UNVERIFIED' })
   })
 })
+
+describe('fix planner V1 — document-start / terminal-newline blank rules', () => {
+  it('leading blank lines are removed to zero and keep the first content line', () => {
+    const markdown = '\n\n\n# 标题\n\n正文\n'
+    const d = diag('DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE', { leadingBlankLineCount: 3 }, undefined, 'leading')
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(true)
+    expect(plan.support).toBe('AUTO')
+    expect(applyPatchesToMarkdown(markdown, plan.patches)).toBe('# 标题\n\n正文\n')
+  })
+
+  it('preserves CRLF when deleting the leading run', () => {
+    const markdown = '\r\n\r\n# 标题\r\n'
+    const d = diag('DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE', { leadingBlankLineCount: 2 }, undefined, 'leading-crlf')
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(true)
+    expect(applyPatchesToMarkdown(markdown, plan.patches)).toBe('# 标题\r\n')
+  })
+
+  it('never deletes a content line even when the fact is stale', () => {
+    const markdown = '正文\n\n\n尾\n'
+    const d = diag('DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE', { leadingBlankLineCount: 2 }, undefined, 'leading-stale')
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(false)
+    expect(plan.blockers.map(b => b.code)).toContain('INVALID_FACT')
+  })
+
+  it('appends exactly ONE terminal newline', () => {
+    const markdown = '# H1\n\nBody'
+    const d = diag('DOCUMENT_TERMINAL_NEWLINE_MISSING', {}, undefined, 'eof-missing')
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(true)
+    expect(plan.support).toBe('AUTO')
+    expect(applyPatchesToMarkdown(markdown, plan.patches)).toBe('# H1\n\nBody\n')
+  })
+
+  it('is a no-op when the terminal newline already exists', () => {
+    const markdown = '# H1\n'
+    const d = diag('DOCUMENT_TERMINAL_NEWLINE_MISSING', {}, undefined, 'eof-present')
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(false)
+    expect(plan.blockers.map(b => b.code)).toContain('NOT_APPLICABLE')
+  })
+
+  it('a trailing excess run still keeps exactly one terminal newline', () => {
+    const markdown = '正文\n\n\n\n'
+    const d = diag('DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE', { extraTrailingBlankLineCount: 3 }, undefined, 'trailing-excess')
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(true)
+    expect(applyPatchesToMarkdown(markdown, plan.patches)).toBe('正文\n')
+  })
+})
+
+describe('fix planner V1 — invisible-only leading blanks', () => {
+  it('removes leading lines holding only U+200B / U+00A0 (shared whitespace contract)', () => {
+    const markdown = '\u200B\n\u00A0\n# 标题\n'
+    const d = diag('DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE', { leadingBlankLineCount: 2 }, undefined, 'leading-invisible')
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(true)
+    expect(applyPatchesToMarkdown(markdown, plan.patches)).toBe('# 标题\n')
+  })
+})

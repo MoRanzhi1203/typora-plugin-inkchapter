@@ -35,16 +35,25 @@ function metaOf(metadata: Record<string, unknown> | null | undefined): Record<st
 }
 
 /**
- * INTERNAL_EXCESS — `actualBlankLines` minus the policy allowance.
- * The policy allowance travels on the SAME diagnostic (`passMaxBlankLines`), so
- * this is a subtraction of two authoritative fields, not a guessed threshold.
+ * INTERNAL_EXCESS — the VISIBLE excess over THIS PAIR's allowance.
+ *
+ * ADJACENT BLANK-LINE POLICY MATRIX V1 — the label must state the rendered
+ * paragraphs the user really sees, so the count is
+ * `publishedBlankLineCount − blankPairAllowance` (1 only for paragraph→
+ * paragraph, 0 otherwise). The source `actualBlankLines − passMaxBlankLines`
+ * is kept ONLY as a legacy fallback for records produced before the matrix.
  */
 export function resolveInternalExcessCount(metadata: Record<string, unknown> | null | undefined): number | null {
   const meta = metaOf(metadata)
+  const published = intOf(meta['publishedBlankLineCount']) ?? intOf(meta['visibleBlankLineCount'])
+  const allowance = intOf(meta['blankPairAllowance']) ?? intOf(meta['passMaxBlankLines'])
+  if (published != null && allowance != null) {
+    const excess = published - allowance
+    return excess > 0 ? excess : null
+  }
   const actual = intOf(meta['actualBlankLines'])
-  const pass = intOf(meta['passMaxBlankLines'])
-  if (actual == null || pass == null) return null
-  const excess = actual - pass
+  if (actual == null || allowance == null) return null
+  const excess = actual - allowance
   return excess > 0 ? excess : null
 }
 
