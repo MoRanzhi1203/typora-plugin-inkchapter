@@ -480,12 +480,12 @@ describe('空行显示数量 — 可视空行数判决（source 与 visible 背�
     expect(decided.warningCount).toBe(0)
   })
 
-  it('source=4 / visible=2：发布警告，Drawer 文案写可视数量 2（不是源码 4）', async () => {
+  it('source=4 / visible=3：发布警告，Drawer 文案写额外空行 2（不是源码 4）', async () => {
     host = await openWith([blankDiag(4)], { markdown: '正文一。\n\n\n\n\n正文二。\n' })
     const h = host as unknown as ReconcileHost
     h.resolveRenderedBlankRowsForMeta = () => ({
-      sourceBlankLineCount: 4, renderedBlankRowCount: 2, visibleBlankLineCount: 2,
-      rows: [{ index: 0 }, { index: 1 }], decision: 'VERIFIED', authority: 'RENDERED_DOM_BLANK_ROWS_V1', probe: null,
+      sourceBlankLineCount: 4, renderedBlankRowCount: 3, visibleBlankLineCount: 3,
+      rows: [{ index: 0 }, { index: 1 }, { index: 2 }], decision: 'VERIFIED', authority: 'RENDERED_DOM_BLANK_ROWS_V1', probe: null,
     })
     const decided = h.reconcileInternalBlankLineDiagnostics({
       documentKey: 'doc:key', revision: 1, sourceRevision: 1,

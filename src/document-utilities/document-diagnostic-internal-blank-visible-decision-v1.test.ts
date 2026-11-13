@@ -258,9 +258,30 @@ describe('B — 边界提交：可视数量决定发布（真实 host 管线）'
     expect(decided.warningCount).toBe(0)
   })
 
-  it('source=4 / visible=2 → 1 条 warning，且元数据记录可视数量与源码数量', () => {
+  it('a normal single structural separator between code and paragraph is NOT excessive', () => {
+    host = makeWorld('正文一。\n\n\n\n正文二。\n')
+    stubVisible(host, 1)
+    const d = blankDiag(2)
+    ;(d.metadata as Record<string, unknown>).previousBlockKind = 'code'
+    ;(d.metadata as Record<string, unknown>).nextBlockKind = 'paragraph'
+    const decided = (host as unknown as HostInternals).reconcileInternalBlankLineDiagnostics(
+      snapshotOf([d]),
+    )!
+    expect(decided.diagnostics.filter(x => x.code === CODE)).toHaveLength(0)
+  })
+
+  it('paragraph → paragraph allows one EXTRA visible blank (visible=2) beyond the separator', () => {
     host = makeWorld('正文一。\n\n\n\n\n正文二。\n')
     stubVisible(host, 2)
+    const decided = (host as unknown as HostInternals).reconcileInternalBlankLineDiagnostics(
+      snapshotOf([blankDiag(4)]),
+    )!
+    expect(decided.diagnostics.filter(x => x.code === CODE)).toHaveLength(0)
+  })
+
+  it('source=4 / visible=3 → 1 条 warning，且元数据记录可视数量与源码数量', () => {
+    host = makeWorld('正文一。\n\n\n\n\n正文二。\n')
+    stubVisible(host, 3)
     const decided = (host as unknown as HostInternals).reconcileInternalBlankLineDiagnostics(
       snapshotOf([blankDiag(4)]),
     )!
@@ -268,36 +289,36 @@ describe('B — 边界提交：可视数量决定发布（真实 host 管线）'
     expect(kept).toHaveLength(1)
     expect(decided.warningCount).toBe(1)
     const meta = kept[0].metadata as Record<string, unknown>
-    expect(meta.publishedBlankLineCount).toBe(2)          // the displayed / decision count
-    expect(meta.visibleBlankLineCount).toBe(2)
+    expect(meta.publishedBlankLineCount).toBe(3)          // the displayed / decision count
+    expect(meta.visibleBlankLineCount).toBe(3)
     expect(meta.sourceBlankLineCount).toBe(4)             // the SOURCE count (not the decision)
     expect(String(kept[0].detail ?? '')).toContain('2 个额外空行')
     expect(String(kept[0].detail ?? '')).toContain('保留 1 个')
     expect(String(kept[0].detail ?? '')).not.toContain('源码中存在 4')
   })
 
-  it('可视 2 → 1（编辑/撤销）：诊断被移除且清理已完成', () => {
+  it('可视 3 → 2（编辑/撤销）：诊断被移除且清理已完成', () => {
     host = makeWorld('正文一。\n\n\n\n\n正文二。\n')
     const h = host as unknown as HostInternals
     h.lastRawAdmittedSnapshot = snapshotOf([blankDiag(4)])
-    stubVisible(host, 2)
+    stubVisible(host, 3)
     const published = h.reconcileInternalBlankLineDiagnostics(h.lastRawAdmittedSnapshot!)!
     expect(published.diagnostics.filter(d => d.code === CODE)).toHaveLength(1)
-    // the raw snapshot is unchanged; now the visible bands collapse to 1
-    stubVisible(host, 1)
+    // the raw snapshot is unchanged; now the visible bands collapse to 2
+    stubVisible(host, 2)
     const removed = h.reconcileInternalBlankLineDiagnostics(h.lastRawAdmittedSnapshot!)!
     expect(removed.diagnostics.filter(d => d.code === CODE)).toHaveLength(0)
     expect(removed.warningCount).toBe(0)
   })
 
-  it('可视 1 → 2（输入/撤销回来）：诊断实时重新出现', () => {
+  it('可视 2 → 3（输入/撤销回来）：诊断实时重新出现', () => {
     host = makeWorld('正文一。\n\n\n\n\n正文二。\n')
     const h = host as unknown as HostInternals
     h.lastRawAdmittedSnapshot = snapshotOf([blankDiag(4)])
-    stubVisible(host, 1)
+    stubVisible(host, 2)
     expect(h.reconcileInternalBlankLineDiagnostics(h.lastRawAdmittedSnapshot!)!.diagnostics
       .filter(d => d.code === CODE)).toHaveLength(0)
-    stubVisible(host, 2)
+    stubVisible(host, 3)
     expect(h.reconcileInternalBlankLineDiagnostics(h.lastRawAdmittedSnapshot!)!.diagnostics
       .filter(d => d.code === CODE)).toHaveLength(1)
   })

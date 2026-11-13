@@ -195,7 +195,7 @@ describe('WC-BLANK source layer — split / merge / boundaries', () => {
 
 describe('WC-BLANK host publication — common-level measurement + bounded retry', () => {
   it('same-parent split publishes BOTH warnings', () => {
-    const md = '甲。\n\n\n乙。\n\n\n丙。\n'
+    const md = '甲。\n\n\n\n乙。\n\n\n\n丙。\n'
     const { host } = makeWorld(md)
     const decided = (host as unknown as { reconcileInternalBlankLineDiagnostics: (s: unknown) => DocumentDiagnosticsSnapshot }).reconcileInternalBlankLineDiagnostics(snapshotOf(md))
     const targets = publishedTargets(decided)
@@ -205,19 +205,20 @@ describe('WC-BLANK host publication — common-level measurement + bounded retry
   })
 
   it('a WRAPPED boundary (different DOM level) still publishes BOTH warnings', () => {
-    const md = '甲。\n\n\n乙。\n\n\n丙。\n'
-    const { host } = makeWorld(md, { wrapLine: 3 })
+    const md = '甲。\n\n\n\n乙。\n\n\n\n丙。\n'
+    const { host } = makeWorld(md, { wrapLine: 4 })
     const decided = (host as unknown as { reconcileInternalBlankLineDiagnostics: (s: unknown) => DocumentDiagnosticsSnapshot }).reconcileInternalBlankLineDiagnostics(snapshotOf(md))
     expect(publishedTargets(decided)).toHaveLength(2)
     host.dispose()
   })
 
   it('an unmeasurable gap is re-decided once the blank rows exist', () => {
-    const md = '甲。\n\n\n乙。\n\n\n丙。\n'
+    const md = '甲。\n\n\n\n乙。\n\n\n\n丙。\n'
     const { host, write } = makeWorld(md)
     // Simulate the split's FIRST gap still rendering: its blank rows are absent.
     write.querySelector('[data-line="1"]')?.remove()
     write.querySelector('[data-line="2"]')?.remove()
+    write.querySelector('[data-line="3"]')?.remove()
 
     const raw = snapshotOf(md, 37)
     rafQueue = [] // ignore mount-time geometry frames; only the retry matters here
@@ -232,7 +233,7 @@ describe('WC-BLANK host publication — common-level measurement + bounded retry
     expect(rafQueue.length).toBe(1)
 
     // The DOM finishes rendering the split's blank rows.
-    addBlankRows(write, 1, 2)
+    addBlankRows(write, 1, 3)
     const retry = rafQueue.shift()!
     retry(0)
 
@@ -245,15 +246,16 @@ describe('WC-BLANK host publication — common-level measurement + bounded retry
   })
 
   it('one recovered side removes only that side (no stale authority)', () => {
-    const split = '甲。\n\n\nX。\n\n\n乙。\n'
+    const split = '甲。\n\n\n\nX。\n\n\n\n乙。\n'
     const { host, write } = makeWorld(split)
     const reconcile = (host as unknown as { reconcileInternalBlankLineDiagnostics: (s: unknown) => DocumentDiagnosticsSnapshot }).reconcileInternalBlankLineDiagnostics.bind(host)
     const first = reconcile(snapshotOf(split, 36))
     expect(publishedTargets(first)).toHaveLength(2)
 
-    const recovered = '甲。\n\n\nX。\n\n乙。\n'
-    // The recovered document has ONE blank line between X and 乙 → drop one row.
-    write.querySelector('[data-line="5"]')?.remove()
+    const recovered = '甲。\n\n\n\nX。\n\n乙。\n'
+    // The recovered document has ONE blank line between X and 乙 → drop two rows.
+    write.querySelector('[data-line="6"]')?.remove()
+    write.querySelector('[data-line="7"]')?.remove()
     const second = reconcile(snapshotOf(recovered, 37))
     expect(publishedTargets(second)).toEqual(['blank-gap:paragraph:甲。#0>>paragraph:X。#0'])
     const authority = (host as unknown as { renderedBlankRowAuthority: Map<string, unknown> }).renderedBlankRowAuthority
@@ -262,7 +264,7 @@ describe('WC-BLANK host publication — common-level measurement + bounded retry
   })
 
   it('a stale active diagnostic id is retired when the split invalidates it', () => {
-    const md = '甲。\n\n\n乙。\n\n\n丙。\n'
+    const md = '甲。\n\n\n\n乙。\n\n\n\n丙。\n'
     const { host } = makeWorld(md)
     const internals = host as unknown as {
       lastLocatedDiagnosticId: string | null
@@ -280,7 +282,7 @@ describe('WC-BLANK host publication — common-level measurement + bounded retry
   })
 
   it('sidebar width / narrow layout never changes the gap decision', () => {
-    const md = '甲。\n\n\n乙。\n\n\n丙。\n'
+    const md = '甲。\n\n\n\n乙。\n\n\n\n丙。\n'
     const wide = makeWorld(md, { width: 1400 })
     const wideTargets = publishedTargets(
       (wide.host as unknown as { reconcileInternalBlankLineDiagnostics: (s: unknown) => DocumentDiagnosticsSnapshot })

@@ -43,8 +43,15 @@ export interface BlankAdjacencyPolicy {
   /** Only the document END may fill a missing blank; every other pair never does. */
   fillMissing: boolean
   /**
+   * The STRUCTURAL rendered blank row that Markdown/Typora itself paints as the
+   * separator between two sibling blocks. It is NOT an "extra" blank paragraph:
+   * a normal document uses exactly one blank source line between blocks and must
+   * never be reported. 1 for every in-body pair, 0 at the document start.
+   */
+  structuralRenderedBlankLines: number
+  /**
    * Source blank lines that are the structural Markdown separator. They render
-   * as 0 extra paragraphs and must NEVER be removed by a blank-line repair.
+   * as the one structural row and must NEVER be removed by a blank-line repair.
    */
   structuralSourceBlankLines: number
 }
@@ -95,15 +102,15 @@ export function resolveAdjacentBlankPolicy(
 ): BlankAdjacencyPolicy {
   const base = { before, after, structuralSourceBlankLines: 1 }
   if (before === 'document-start') {
-    return { ...base, maxRenderedBlankLines: 0, repairTarget: 0, fillMissing: false }
+    return { ...base, maxRenderedBlankLines: 0, repairTarget: 0, fillMissing: false, structuralRenderedBlankLines: 0 }
   }
   if (after === 'document-end') {
-    return { ...base, maxRenderedBlankLines: 1, repairTarget: 1, fillMissing: true }
+    return { ...base, maxRenderedBlankLines: 1, repairTarget: 1, fillMissing: true, structuralRenderedBlankLines: 1 }
   }
   if (before === 'paragraph' && after === 'paragraph') {
-    return { ...base, maxRenderedBlankLines: 1, repairTarget: 1, fillMissing: false }
+    return { ...base, maxRenderedBlankLines: 1, repairTarget: 1, fillMissing: false, structuralRenderedBlankLines: 1 }
   }
-  return { ...base, maxRenderedBlankLines: 0, repairTarget: 0, fillMissing: false }
+  return { ...base, maxRenderedBlankLines: 0, repairTarget: 0, fillMissing: false, structuralRenderedBlankLines: 1 }
 }
 
 /** Convenience: the policy for two scanner / diagnostic kind tokens. */
@@ -114,12 +121,29 @@ export function resolveAdjacentBlankPolicyByKind(
   return resolveAdjacentBlankPolicy(toBlankAdjacencyKind(before), toBlankAdjacencyKind(after))
 }
 
-/** Does a measured VISIBLE count exceed the pair allowance? */
+/** The TOTAL visible blank rows a pair may show (structural separator + extra). */
+export function allowedVisibleBlankLines(policy: BlankAdjacencyPolicy): number {
+  return policy.structuralRenderedBlankLines + policy.maxRenderedBlankLines
+}
+
+/**
+ * The EXTRA rendered blank paragraphs beyond the structural separator. This is
+ * the number the diagnostic copy and the marker state — a normal single
+ * separator blank row is never counted as "extra".
+ */
+export function extraRenderedBlankLines(
+  visibleBlankLineCount: number,
+  policy: BlankAdjacencyPolicy,
+): number {
+  return Math.max(0, Math.floor(visibleBlankLineCount) - policy.structuralRenderedBlankLines)
+}
+
+/** Does a measured VISIBLE count exceed the pair's TOTAL allowance? */
 export function isRenderedBlankCountExcessive(
   visibleBlankLineCount: number,
   policy: BlankAdjacencyPolicy,
 ): boolean {
-  return Math.max(0, Math.floor(visibleBlankLineCount)) > policy.maxRenderedBlankLines
+  return Math.max(0, Math.floor(visibleBlankLineCount)) > allowedVisibleBlankLines(policy)
 }
 
 /**
@@ -132,7 +156,7 @@ export function blankAdjacencyDetail(
   visibleBlankLineCount: number,
   policy: BlankAdjacencyPolicy = resolveAdjacentBlankPolicy(before, after),
 ): string {
-  const n = Math.max(0, Math.floor(visibleBlankLineCount))
+  const n = extraRenderedBlankLines(visibleBlankLineCount, policy)
   if (before === 'document-start') {
     return `文档开头存在 ${n} 个额外空行，应清除为 0 个。`
   }

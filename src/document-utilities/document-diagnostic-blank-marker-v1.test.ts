@@ -264,21 +264,27 @@ describe('EOF marker surface gate — left rail / endpoint are real paint', () =
 })
 
 describe('ADJACENT BLANK-LINE MATRIX — marker count uses the VISIBLE excess', () => {
-  it('paragraph → paragraph: visible 2 over the 1 allowance states excess 1', () => {
+  it('paragraph → paragraph: visible 3 over the 1 extra allowance states excess 1', () => {
     expect(resolveInternalExcessCount({
-      actualBlankLines: 9, publishedBlankLineCount: 2, blankPairAllowance: 1,
+      actualBlankLines: 9, publishedBlankLineCount: 3, blankPairAllowance: 1, blankPairStructuralRenderedBlankLines: 1,
     })).toBe(1)
   })
 
-  it('heading → paragraph: the 0 allowance states the full visible excess', () => {
+  it('a single structural separator row is never an excess', () => {
     expect(resolveInternalExcessCount({
-      actualBlankLines: 6, publishedBlankLineCount: 1, blankPairAllowance: 0,
+      actualBlankLines: 1, publishedBlankLineCount: 1, blankPairAllowance: 0, blankPairStructuralRenderedBlankLines: 1,
+    })).toBeNull()
+  })
+
+  it('heading → paragraph: the 0 extra allowance reports the extra beyond the separator', () => {
+    expect(resolveInternalExcessCount({
+      actualBlankLines: 6, publishedBlankLineCount: 2, blankPairAllowance: 0, blankPairStructuralRenderedBlankLines: 1,
     })).toBe(1)
   })
 
   it('a visible count within the allowance has no marker at all', () => {
     expect(resolveInternalExcessCount({
-      actualBlankLines: 4, publishedBlankLineCount: 1, blankPairAllowance: 1,
+      actualBlankLines: 4, publishedBlankLineCount: 1, blankPairAllowance: 1, blankPairStructuralRenderedBlankLines: 1,
     })).toBeNull()
   })
 

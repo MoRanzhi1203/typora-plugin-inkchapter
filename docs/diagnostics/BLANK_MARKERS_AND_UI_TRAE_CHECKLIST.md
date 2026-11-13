@@ -505,6 +505,7 @@ console.log({
 | 任意块 | 文档末尾 | 1（严格） | 补齐或删减为 1 个换行 |
 
 - 判定轴：Typora 真实渲染空段落（`visibleBlankLineCount`）；源码换行数只用于修复与位置映射。
+- **结构基线**：每个块之间由 Markdown/Typora 自身绘制的 1 个结构分隔空行不计入“额外空行”。允许值 = 结构基线 1 + 块对额外允许值（正文对 1，其余 0）。
 - 修复始终保留 1 个源码结构空行，因此 0 目标不会合并相邻正文，也不会破坏围栏、公式、表格、列表或引用结构。
 - 普通正文之间只做超额删减，不补齐缺失空行；只有文档末尾允许补齐。
 
@@ -519,7 +520,7 @@ console.log({
 
 ### C. 门禁
 
-- 全量 Vitest：**355 文件 / 6155 用例全部通过**。
-- `tsc --noEmit`：PASS；`pnpm run build`（prod）：PASS，`dist/main.js` = `9004C7DA…`。
+- 全量 Vitest：**355 文件 / 6159 用例全部通过**。
+- `tsc --noEmit`：PASS；`pnpm run build`（prod）：PASS，`dist/main.js` = `FAEEB5B3…`。
 - 新增矩阵测试 7 项、文首规则/集成测试 9 项、修复测试 7 项、标记计数测试 4 项。
-- 真实 Typora 1.6.7：已加载 `mainJsSha256=9004C7DA…`（`loadSource=vault`，`initializationCount=1`）并打开 `Blank-Line-Matrix-Runtime-Test.md` 夹具。
+- 真实 Typora 1.6.7：已加载 `mainJsSha256=FAEEB5B3…`（`loadSource=vault`，`initializationCount=1`）并打开 `Blank-Line-Matrix-Runtime-Test.md` 夹具。

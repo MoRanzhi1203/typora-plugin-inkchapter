@@ -1249,7 +1249,7 @@ describe('REALTIME V3 — 拆分/合并后的组成员级快速 patch', () => {
     expect(fragmentsOf(right!)).toBe(3)
   })
 
-  it('V3-SPLIT-RIGHT 拆分后右块删除空行：只更新右块容器，左块不变', () => {
+  it('V3-SPLIT-RIGHT 拆分后右块删除空行：右块降到允许范围即退役，左块不变', () => {
     const scene = makeSplitScene()
     installGroup(scene)
     const carriers = groupCarriers()
@@ -1257,12 +1257,15 @@ describe('REALTIME V3 — 拆分/合并后的组成员级快速 patch', () => {
     const right = carriers.find(el => el.getAttribute('data-gap-member') === String(scene.a2Diag.id))!
     const leftBefore = fragmentsOf(left)
     expect(leftBefore).toBe(3)
+    expect(fragmentsOf(right)).toBe(3)
 
+    // 3 → 2 visible rows = structural separator + 1 extra, which paragraph→
+    // paragraph allows. The right member is therefore compliant and retires.
     scene.a2Rows[2].remove()
 
     expect(patch(scene.world)).toBe(true)
-    expect(groupCarriers()).toHaveLength(2)
-    expect(fragmentsOf(right)).toBe(2)
+    expect(groupCarriers()).toHaveLength(1)
+    expect(groupCarriers()[0].getAttribute('data-gap-member')).toBe(String(scene.a1Diag.id))
     expect(fragmentsOf(left)).toBe(leftBefore)
   })
 
@@ -1324,7 +1327,10 @@ describe('REALTIME V3 — 拆分/合并后的组成员级快速 patch', () => {
 
     expect(patch(scene.world)).toBe(true)
     expect(i.blankFastOwnerResolution).toBe('GROUP_READY')
-    expect(groupCarriers()).toHaveLength(2)
+    // The right gap dropped to 2 visible rows (allowed for paragraph→paragraph),
+    // so only the still-excessive left member owns a carrier.
+    expect(groupCarriers()).toHaveLength(1)
+    expect(groupCarriers()[0].getAttribute('data-gap-member')).toBe(String(scene.a1Diag.id))
   })
 
   it('V4-TARGET-ONE-MEMBER 脏区间只覆盖左块：组 patch 只测量 1 个成员', () => {

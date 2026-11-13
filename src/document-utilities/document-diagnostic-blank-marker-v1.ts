@@ -39,16 +39,20 @@ function metaOf(metadata: Record<string, unknown> | null | undefined): Record<st
  *
  * ADJACENT BLANK-LINE POLICY MATRIX V1 — the label must state the rendered
  * paragraphs the user really sees, so the count is
- * `publishedBlankLineCount − blankPairAllowance` (1 only for paragraph→
- * paragraph, 0 otherwise). The source `actualBlankLines − passMaxBlankLines`
- * is kept ONLY as a legacy fallback for records produced before the matrix.
+ * `publishedBlankLineCount − blankPairAllowance − structuralRenderedBlankLines`
+ * (the one structural separator row is never an "extra" blank; the extra
+ * allowance is 1 only for paragraph→paragraph, 0 otherwise). The source
+ * `actualBlankLines − passMaxBlankLines` is kept ONLY as a legacy fallback for
+ * records produced before the matrix.
  */
 export function resolveInternalExcessCount(metadata: Record<string, unknown> | null | undefined): number | null {
   const meta = metaOf(metadata)
   const published = intOf(meta['publishedBlankLineCount']) ?? intOf(meta['visibleBlankLineCount'])
   const allowance = intOf(meta['blankPairAllowance']) ?? intOf(meta['passMaxBlankLines'])
   if (published != null && allowance != null) {
-    const excess = published - allowance
+    // The structural separator row is NOT an extra blank: subtract it too.
+    const structural = intOf(meta['blankPairStructuralRenderedBlankLines']) ?? 0
+    const excess = published - allowance - structural
     return excess > 0 ? excess : null
   }
   const actual = intOf(meta['actualBlankLines'])

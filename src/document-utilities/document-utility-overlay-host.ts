@@ -705,10 +705,12 @@ import {
 } from './document-diagnostic-internal-blank-decision-v1'
 // ADJACENT BLANK-LINE POLICY MATRIX V1 — the ONE per-pair allowance + copy.
 import {
+  allowedVisibleBlankLines,
   blankAdjacencyDetail,
   resolveAdjacentBlankPolicyByKind,
   toBlankAdjacencyKind,
   type BlankAdjacencyKind,
+  type BlankAdjacencyPolicy,
 } from './document-diagnostic-blank-adjacency-policy-v1'
 // TRAE — the RENDERED BLANK ROW AUTHORITY (source candidate → rendered DOM
 // blank rows) + the split boundary decision algebra + the §39–§44 gates.
@@ -17829,8 +17831,10 @@ export class DocumentUtilityOverlayHost {
       const meta = (d.metadata ?? {}) as Record<string, unknown>
       const sourceBlankLines = typeof meta.actualBlankLines === 'number' ? meta.actualBlankLines : null
       // ADJACENT BLANK-LINE POLICY MATRIX V1 — the RENDERED allowance of THIS
-      // pair: 1 only for paragraph→paragraph, 0 for every other pair.
+      // pair: one structural separator row + the pair's extra allowance (1 only
+      // for paragraph→paragraph, 0 for every other pair).
       const pairAllowance = this.internalBlankPairAllowanceOf(meta)
+      const pairPolicy = this.internalBlankPairPolicyOf(meta)
       if (targetIdentity === '' || sourceBlankLines == null) {
         // §7 — the SOURCE gap itself is unresolved: request ONE bounded re-parse;
         // never publish a guess (the visible count cannot be proven either).
@@ -17946,7 +17950,8 @@ export class DocumentUtilityOverlayHost {
           [INTERNAL_BLANK_PUBLISHED_COUNT_META_KEY]: decision.displayBlankLineCount,
           [INTERNAL_BLANK_DECISION_MODE_META_KEY]: mode,
           visibleBlankLineCount: visible,
-          blankPairAllowance: pairAllowance,
+          blankPairAllowance: pairPolicy?.maxRenderedBlankLines ?? pairAllowance,
+          blankPairStructuralRenderedBlankLines: pairPolicy?.structuralRenderedBlankLines ?? 0,
         },
       })
       // §3 — the DISPLAY count (Drawer copy + Active label) is the VISIBLE count:
@@ -18206,15 +18211,26 @@ export class DocumentUtilityOverlayHost {
   }
 
   /**
-   * ADJACENT BLANK-LINE POLICY MATRIX V1 — the RENDERED allowance for ONE gap.
-   * A legacy record without both kinds keeps the historical allowance (1) so no
-   * existing diagnostic is silently re-classified.
+   * ADJACENT BLANK-LINE POLICY MATRIX V1 — the policy for ONE gap. A legacy
+   * record without both kinds returns null (the caller keeps the historical
+   * allowance) so no existing diagnostic is silently re-classified.
    */
-  private internalBlankPairAllowanceOf(meta: Record<string, unknown>): number {
+  private internalBlankPairPolicyOf(meta: Record<string, unknown>): BlankAdjacencyPolicy | null {
     const previous = typeof meta.previousBlockKind === 'string' ? meta.previousBlockKind : null
     const next = typeof meta.nextBlockKind === 'string' ? meta.nextBlockKind : null
-    if (previous == null || next == null) return INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines
-    return resolveAdjacentBlankPolicyByKind(previous, next).maxRenderedBlankLines
+    if (previous == null || next == null) return null
+    return resolveAdjacentBlankPolicyByKind(previous, next)
+  }
+
+  /**
+   * The pair's TOTAL visible allowance = the one structural separator row plus
+   * the pair's extra allowance. A normal single blank line between two blocks is
+   * never "excessive".
+   */
+  private internalBlankPairAllowanceOf(meta: Record<string, unknown>): number {
+    const policy = this.internalBlankPairPolicyOf(meta)
+    if (policy == null) return INTERNAL_BLANK_LINE_POLICY.passMaxBlankLines
+    return allowedVisibleBlankLines(policy)
   }
 
   /** §8 — resolve the rendered blank rows for ONE gap record's carried metadata. */
