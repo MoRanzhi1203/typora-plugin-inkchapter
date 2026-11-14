@@ -61,6 +61,12 @@ import {
   isEmptyListMarker,
   singleLineDisplayFormulaSource,
 } from './document-format-integrity-v1'
+// CURRENT-DOCUMENT RE-LOCATION — the gap is re-derived from the live Markdown by
+// its STABLE block identity, never from a possibly stale line range.
+import {
+  analyzeInternalBlankLineGaps,
+  internalBlankGapIdentity,
+} from './document-diagnostic-internal-blank-lines-v1'
 
 export type DiagnosticFixSupport = 'AUTO' | 'REQUIRES_INPUT' | 'MANUAL' | 'UNSUPPORTED'
 
@@ -214,16 +220,56 @@ function sourceStartOf(location: DiagnosticLocation | null): number | null {
 
 // ── Fixers ─────────────────────────────────────────────────────────────────
 
+export interface CurrentInternalBlankRange {
+  first: number
+  last: number
+  actual: number
+}
+
+/**
+ * Re-locate ONE internal blank gap in the CURRENT Markdown by its stable
+ * block-pair identity (`targetIdentity`). Returns null when the document no
+ * longer owns that gap.
+ *
+ * This is the authoritative fix-time location: the recorded `firstBlankLine` /
+ * `lastBlankLine` may belong to an older revision (unsaved-buffer edits,
+ * debounced diagnostics), so they can never be used to delete text on their own.
+ */
+export function resolveCurrentInternalBlankRange(
+  diagnostic: DocumentDiagnostic,
+  markdown: string,
+): CurrentInternalBlankRange | null {
+  const identity = typeof diagnostic.targetIdentity === 'string' ? diagnostic.targetIdentity : null
+  if (identity == null) return null
+  const match = analyzeInternalBlankLineGaps(markdown)
+    .find(g => internalBlankGapIdentity(g) === identity)
+  if (match == null) return null
+  return { first: match.firstBlankLine, last: match.lastBlankLine, actual: match.actualBlankLines }
+}
+
 export const INTERNAL_BLANK_LINES_FIX: Fixer = {
   code: 'EXCESSIVE_INTERNAL_BLANK_LINES',
   support: 'AUTO',
   label: '压缩连续空行',
   build(diagnostic, ctx) {
     const meta = diagnostic.metadata ?? {}
-    const first = asNumber(meta.firstBlankLine)
-    const last = asNumber(meta.lastBlankLine)
-    const actual = asNumber(meta.actualBlankLines)
+    let first = asNumber(meta.firstBlankLine)
+    let last = asNumber(meta.lastBlankLine)
+    let actual = asNumber(meta.actualBlankLines)
     const pass = asNumber(meta.passMaxBlankLines) ?? 1
+    const identity = typeof diagnostic.targetIdentity === 'string' ? diagnostic.targetIdentity : null
+    if (identity != null) {
+      const located = resolveCurrentInternalBlankRange(diagnostic, ctx.markdown)
+      if (located == null) {
+        // The semantic gap is gone (the document was fixed / re-structured).
+        // NEVER fall back to the stale range: deleting by an old line number is
+        // exactly how a non-blank line gets targeted.
+        return { blockers: [blocker('STALE_DIAGNOSTIC', '当前文档已不存在该空行区间，诊断已刷新，请重新检测。')] }
+      }
+      first = located.first
+      last = located.last
+      actual = located.actual
+    }
     if (first == null || last == null || actual == null || last < first) {
       return { blockers: [blocker('INVALID_FACT', '空行区间元数据缺失或不合法。')] }
     }

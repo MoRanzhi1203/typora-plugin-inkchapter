@@ -8,6 +8,7 @@ import {
   type DiagnosticFixUi,
 } from './document-diagnostic-fix-controller'
 import type { FixPanelHandlers, FixPanelPreviewState, FixPanelState } from './document-diagnostic-fix-panel'
+import { analyzeInternalBlankLineGaps, internalBlankGapIdentity } from './document-diagnostic-internal-blank-lines-v1'
 
 function diag(
   code: string,
@@ -340,5 +341,38 @@ describe('fix controller — interactive input fixes', () => {
     h.ui.handlers?.onConfirm('ts')
     expect(h.ui.state?.phase).toBe('input')
     expect(h.notify).not.toHaveBeenCalled()
+  })
+})
+
+describe('fix controller — stale snapshot vs shifted editor buffer (L26 / line 12)', () => {
+  it('re-locates by identity against the LIVE markdown and writes the correct repair', () => {
+    const oldParagraph = Array.from({ length: 10 }, (_, i) => `旧段落第 ${i + 1} 行。`).join('\n')
+    const oldMarkdown = `${oldParagraph}\n\n\n\n# 标题\n\n正文\n`
+    const gap = analyzeInternalBlankLineGaps(oldMarkdown)[0]
+    expect(gap).toBeDefined()
+
+    const prefix = `## 新增节\n\n${Array.from({ length: 12 }, (_, i) => `新增内容第 ${i + 1} 行。`).join('\n')}\n\n`
+    const newMarkdown = `${prefix}${oldMarkdown}`
+    const fixed = `${prefix}${oldParagraph}\n\n# 标题\n\n正文\n`
+
+    // Stale diagnostic: lines from the OLD revision; the editor buffer is NEW.
+    const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: 11, lastBlankLine: 12, actualBlankLines: 2, passMaxBlankLines: 1,
+    }, blankLocation, 'stale-l26', internalBlankGapIdentity(gap))
+
+    const h = createHarness({
+      markdown: newMarkdown,
+      diagnostics: [d],
+      onRecheck: (state) => {
+        state.markdown = fixed
+        state.snapshot = snapshot([])
+      },
+    })
+    h.controller.startDiagnostic(d.id)
+    expect(h.state.writes).toEqual([fixed])
+    expect(h.state.writes[0]).toContain('新增内容第 12 行。')
+    expect(h.state.writes[0]).toContain('旧段落第 10 行。')
+    expect(h.state.writes[0]).toContain('# 标题')
+    expect(h.notify).toHaveBeenLastCalledWith('已修复 1 项（Ctrl+Z 可撤销）', 'info')
   })
 })

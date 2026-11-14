@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import type { DocumentDiagnostic, DocumentDiagnosticsSnapshot } from './diagnostics-types'
-import { analyzeInternalBlankLineGaps } from './document-diagnostic-internal-blank-lines-v1'
+import { analyzeInternalBlankLineGaps, internalBlankGapIdentity } from './document-diagnostic-internal-blank-lines-v1'
 import {
   applyPatchesToMarkdown,
   CODE_LANGUAGE_FIX,
@@ -308,5 +308,68 @@ describe('fix planner V1 — invisible-only leading blanks', () => {
     const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
     expect(plan.ok).toBe(true)
     expect(applyPatchesToMarkdown(markdown, plan.patches)).toBe('# 标题\n')
+  })
+})
+
+describe('fix planner V1 — stale line range re-location by stable identity', () => {
+  it('fixes the CURRENT gap even when the recorded lines point at non-blank text', () => {
+    const markdown = '# 标题\n\n\n\n\n正文\n'
+    const gap = analyzeInternalBlankLineGaps(markdown)[0]
+    expect(gap).toBeDefined()
+    const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: 11, lastBlankLine: 12, actualBlankLines: 2, passMaxBlankLines: 1,
+    }, undefined, 'stale-lines')
+    d.targetIdentity = internalBlankGapIdentity(gap)
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(true)
+    expect(plan.blockers).toHaveLength(0)
+    expect(applyPatchesToMarkdown(markdown, plan.patches)).toBe('# 标题\n\n正文\n')
+  })
+
+  it('refuses with STALE_DIAGNOSTIC when the gap no longer exists (never deletes a stale range)', () => {
+    const markdown = '# 标题\n\n正文\n'
+    const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: 11, lastBlankLine: 12, actualBlankLines: 2, passMaxBlankLines: 1,
+    }, undefined, 'stale-gone')
+    d.targetIdentity = 'blank-gap:none>>none'
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(false)
+    expect(plan.blockers.map(b => b.code)).toContain('STALE_DIAGNOSTIC')
+    expect(plan.patches).toHaveLength(0)
+  })
+
+  it('keeps the legacy recorded-range path when a diagnostic carries no identity', () => {
+    const markdown = '# 标题\n\n\n\n正文\n'
+    const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: 1, lastBlankLine: 3, actualBlankLines: 3, passMaxBlankLines: 1,
+    }, undefined, 'legacy-lines')
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(true)
+    expect(applyPatchesToMarkdown(markdown, plan.patches)).toBe('# 标题\n\n正文\n')
+  })
+})
+
+describe('fix planner V1 — L26 vs stale line 12 (document grew before the fix)', () => {
+  it('re-locates the SAME gap after a new section is inserted above it', () => {
+    const oldParagraph = Array.from({ length: 10 }, (_, i) => `旧段落第 ${i + 1} 行。`).join('\n')
+    const oldMarkdown = `${oldParagraph}\n\n\n\n# 标题\n\n正文\n`
+    const gap = analyzeInternalBlankLineGaps(oldMarkdown)[0]
+    expect(gap).toBeDefined()
+
+    // 14 untouched lines are inserted ABOVE the same paragraph + heading pair.
+    const prefix = `## 新增节\n\n${Array.from({ length: 12 }, (_, i) => `新增内容第 ${i + 1} 行。`).join('\n')}\n\n`
+    const newMarkdown = `${prefix}${oldMarkdown}`
+    const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: 11, lastBlankLine: 12, actualBlankLines: 2, passMaxBlankLines: 1,
+    }, undefined, 'grown-document')
+    d.targetIdentity = internalBlankGapIdentity(gap)
+
+    const plan = planDiagnosticFix(registry, d.id, ctx(newMarkdown, [d]))
+    expect(plan.ok).toBe(true)
+    const fixed = applyPatchesToMarkdown(newMarkdown, plan.patches)
+    expect(fixed).toBe(`${prefix}${oldParagraph}\n\n# 标题\n\n正文\n`)
+    // every original paragraph line and the heading survive
+    expect(fixed).toContain('旧段落第 10 行。')
+    expect(fixed).toContain('# 标题')
   })
 })

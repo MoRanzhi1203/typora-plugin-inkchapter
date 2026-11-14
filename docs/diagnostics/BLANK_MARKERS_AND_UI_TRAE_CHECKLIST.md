@@ -524,3 +524,12 @@ console.log({
 - `tsc --noEmit`：PASS；`pnpm run build`（prod）：PASS，`dist/main.js` = `FAEEB5B3…`。
 - 新增矩阵测试 7 项、文首规则/集成测试 9 项、修复测试 7 项、标记计数测试 4 项。
 - 真实 Typora 1.6.7：已加载 `mainJsSha256=FAEEB5B3…`（`loadSource=vault`，`initializationCount=1`）并打开 `Blank-Line-Matrix-Runtime-Test.md` 夹具。
+
+### D. 修复位置一致性（L26 / 第 12 行专项）
+
+- 修复计划不再信任诊断快照里的 `firstBlankLine` / `lastBlankLine`；执行前用 `targetIdentity`（稳定块对身份）在**当前编辑器 Markdown** 中重新定位空行区间。
+- 重新定位失败（区间已被修复或结构变化）时返回 `STALE_DIAGNOSTIC`，保留诊断且不产生任何删除补丁；绝不回退到旧行号。
+- 无身份的历史诊断仍走原区间路径，并保留逐行非空校验。
+- 覆盖：未保存缓冲区、检测后插入新章节（行号整体后移）、文档增长、区间消失、旧诊断失效。
+- 全量回归：**355 文件 / 6164 用例通过**；构建 `2B4BA301…`。
+- 真实 Typora GUI：新构建已加载（`loadSource=vault`、`initializationCount=1`）；GUI 自动点击修复因系统前台焦点被 Trae IDE / Edge 持续抢占而未能完成，记录为未完成项。
