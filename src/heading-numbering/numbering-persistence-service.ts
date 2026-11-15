@@ -18,6 +18,7 @@ import type { HeadingNumberingSettings, UnnumberedCounterPolicy } from './headin
 import {
   parseMarkdownHeadings,
   planHeadingNumberPersistence,
+  type HeadingNumberPersistenceFacts,
   type HeadingNumberPersistencePlan,
   type HeadingNumberPlanStats,
   type NumberingPersistenceSettings,
@@ -179,6 +180,50 @@ export class NumberingPersistenceService {
       overrideEntries: overrides.entries,
       counterPolicy: overrides.counterPolicy,
     })
+  }
+
+  /** R09 — the snapshot consumed by the central diagnostics panel (PURE read). */
+  getDiagnosticsFacts(): HeadingNumberPersistenceFacts {
+    const headingSettings = this.deps.getHeadingSettings()
+    const persistence = this.getSettings()
+    const overrides = this.deps.getSourceOverrideEntries()
+    return {
+      enabled: headingSettings.enabled === true,
+      storageMode: persistence.storageMode,
+      policy: persistence.existingNumberPolicy,
+      dedupeProjectedNumbers: persistence.dedupeProjectedNumbers,
+      settings: headingSettings,
+      overrideEntries: overrides.entries,
+      counterPolicy: overrides.counterPolicy,
+      ownership: getDocumentOwnership(this.getConfig(), this.deps.getDocumentKey()),
+    }
+  }
+
+  /** R09 — compact status for the settings card (mode / adopted / conflicts). */
+  getStatusSummary(): {
+    storageMode: NumberingPersistenceSettings['storageMode']
+    policy: NumberingPersistenceSettings['existingNumberPolicy']
+    syncTiming: NumberingPersistenceSettings['syncTiming']
+    adoptedCount: number
+    managedCount: number
+    conflictCount: number
+    errorCount: number
+    hasConflicts: boolean
+  } {
+    const settings = this.getSettings()
+    const ownership = getDocumentOwnership(this.getConfig(), this.deps.getDocumentKey())
+    const records = Object.values(ownership)
+    const report = this.checkConflicts()
+    return {
+      storageMode: settings.storageMode,
+      policy: settings.existingNumberPolicy,
+      syncTiming: settings.syncTiming,
+      adoptedCount: records.filter(r => r.ownership === 'adopted' || r.ownership === 'user-preserved').length,
+      managedCount: records.filter(r => r.ownership === 'inkchapter' || r.ownership === 'adopted').length,
+      conflictCount: report?.issues.length ?? 0,
+      errorCount: report?.errorCount ?? 0,
+      hasConflicts: report?.hasConflict ?? false,
+    }
   }
 
   /** Preview used by the settings card: source before/after for the current document. */

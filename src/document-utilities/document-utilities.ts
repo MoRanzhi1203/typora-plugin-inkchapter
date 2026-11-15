@@ -86,6 +86,11 @@ export interface DocumentUtilitiesSources {
     isEffectiveForElement: (element: HTMLElement | null) => boolean
   }
   /**
+   * R09 — the R08 number-persistence authority snapshot. Optional: absent ⇒
+   * the legacy manual-prefix / auto-conflict blocks keep their semantics.
+   */
+  getHeadingNumberPersistenceFacts?: () => import('./document-diagnostics-heading-number-v1').HeadingNumberPersistenceFacts | null
+  /**
    * Numbering Integrity V2 (spec §9/§21) — the ONE canonical effective-number
    * fact provider (owned by the caption service / formula planner), keyed by the
    * object's DOM element. Optional: absent ⇒ every number rule stays silent.
@@ -442,6 +447,8 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     // Heading Auto-Number Conflict V1 §2/§4 — the ONE per-heading heading
     // auto-numbering EFFECTIVENESS authority (owned by the numbering service).
     getHeadingAutoNumberingEffectiveFacts: sources.getHeadingAutoNumberingEffectiveFacts,
+    // R09 — the R08 persistence snapshot consumed by the central number rules.
+    getHeadingNumberPersistenceFacts: sources.getHeadingNumberPersistenceFacts,
     // Heading Auto-Number Conflict V1.2 §21/§22 — the post-commit report sink.
     onHeadingConflictReportCapture: sources.onHeadingConflictReportCapture,
     // Heading Auto-Number Conflict V1.2 §21/§22 — the ONE recompute-time bridge

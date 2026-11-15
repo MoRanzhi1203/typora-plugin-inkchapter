@@ -88,8 +88,14 @@ async function runAcceptance() {
           projectedNumberCount: report.domAfterWrite.projectedNumberCount,
           headingTexts: report.domAfterWrite.headingTexts,
           projectedLabels: report.domAfterWrite.projectedLabels,
+          outlineRootFound: report.domAfterWrite.outlineRootFound,
+          outlineItemCount: report.domAfterWrite.outlineItemCount,
+          outlineTexts: report.domAfterWrite.outlineTexts,
+          outlineProjectedLabels: report.domAfterWrite.outlineProjectedLabels,
         }
       : null,
+    diagnosticsBefore: report.diagnosticsBefore,
+    diagnosticsAfterFix: report.diagnosticsAfterFix,
     undoApi: report.undoApi,
     steps: (report.steps ?? []).map((step) => ({
       id: step.id,

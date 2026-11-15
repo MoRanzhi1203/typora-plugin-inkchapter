@@ -48,6 +48,25 @@ const TIMING_OPTIONS: Array<{ value: HeadingNumberSyncTiming; label: string; hin
   { value: 'save', label: '保存时同步', hint: '保存文档前统一写入' },
 ]
 
+const STORAGE_LABEL: Record<HeadingNumberStorageMode, string> = {
+  render: '渲染层编号',
+  source: '源码持久化',
+  export: '导出时固化',
+}
+
+const POLICY_LABEL: Record<ExistingHeadingNumberPolicy, string> = {
+  adopt: '接管并同步',
+  replace: '移除并重新生成',
+  preserve: '保留且不叠加',
+  'detect-only': '只检测',
+}
+
+const TIMING_LABEL: Record<HeadingNumberSyncTiming, string> = {
+  manual: '手动同步',
+  edit: '编辑后自动同步',
+  save: '保存时同步',
+}
+
 export function renderNumberingManagementCard(deps: NumberingManagementCardDeps): void {
   const { container, persistence } = deps
   const settings = persistence.getSettings()
@@ -100,6 +119,27 @@ export function renderNumberingManagementCard(deps: NumberingManagementCardDeps)
   hint.textContent = currentHint(settings)
   body.appendChild(hint)
 
+  // R09 — current state at a glance (mode / policy / managed / conflicts).
+  const summaryEl = document.createElement('div')
+  summaryEl.style.cssText = 'font-size:12px;color:#333;background:#fafafa;border:1px solid #eee;border-radius:4px;padding:6px 8px;line-height:1.6;'
+  body.appendChild(summaryEl)
+
+  function refreshStatus(): void {
+    try {
+      const summary = persistence.getStatusSummary()
+      const mode = STORAGE_LABEL[summary.storageMode]
+      const policy = POLICY_LABEL[summary.policy]
+      const timing = TIMING_LABEL[summary.syncTiming]
+      const conflict = summary.hasConflicts
+        ? `冲突 ${summary.conflictCount}（错误 ${summary.errorCount}）`
+        : '无编号冲突'
+      summaryEl.textContent = `${mode} · ${policy} · ${timing} · 已接管 ${summary.adoptedCount} · 墨章管理 ${summary.managedCount} · ${conflict}`
+    } catch {
+      summaryEl.textContent = ''
+    }
+  }
+  refreshStatus()
+
   // ── actions ─────────────────────────────────────────
   const actions = document.createElement('div')
   actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;'
@@ -140,12 +180,14 @@ export function renderNumberingManagementCard(deps: NumberingManagementCardDeps)
       return
     }
     renderConflicts(conflictList, report)
+    refreshStatus()
   })
   addButton(actions, '导出带编号的 Markdown', () => {
     const result = persistence.exportNumberedMarkdown()
     status.textContent = result.ok
       ? (result.detail ?? '已导出编号副本')
       : (result.detail ?? '导出失败')
+    refreshStatus()
   })
 
   // ── live preview ────────────────────────────────────
@@ -157,6 +199,7 @@ export function renderNumberingManagementCard(deps: NumberingManagementCardDeps)
     const data = persistence.getPreview()
     conflictList.textContent = ''
     renderPreview(preview, data.before, data.changed, data.stats)
+    refreshStatus()
   }
 
   refresh()

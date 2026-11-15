@@ -1855,6 +1855,9 @@ export default class extends Plugin<InkChapterSettings> {
         // effective settings + the numbering engine; never a second rule).
         getHeadingAutoNumberingEffectiveFacts: () => this.numberingService?.getHeadingAutoNumberingEffectiveFacts()
           ?? { enabled: false, h1NumberingEnabled: false, styleKey: '', isEffectiveForElement: () => false },
+        // R09 — the R08 persistence snapshot drives the SIX unified numbering
+        // rules inside the CENTRAL diagnostics producer (single rule authority).
+        getHeadingNumberPersistenceFacts: () => this.numberingPersistence?.getDiagnosticsFacts() ?? null,
         // Heading Auto-Number Conflict V1.2 §21/§22 — the ONE post-commit report
         // sink: the diagnostics authority calls it at the END of a committed
         // recompute (never right after a setter), and main.ts owns the file IO.
@@ -2054,12 +2057,81 @@ export default class extends Plugin<InkChapterSettings> {
             const headings = root
               ? Array.from(root.querySelectorAll<HTMLHeadingElement>('h1, h2, h3, h4, h5, h6'))
               : []
+            // R09 — independent OUTLINE evidence (never a second calculation).
+            const outlineRoot = (() => {
+              for (const selector of [
+                '#outline-content',
+                '.outline-content',
+                '.outline-panel',
+                '.sidebar-outline',
+                '.ty-outline',
+                '[data-outline]',
+              ]) {
+                const found = document.querySelector(selector) as HTMLElement | null
+                if (found) return found
+              }
+              return null
+            })()
+            const outlineItems = outlineRoot
+              ? Array.from(new Set([
+                  ...outlineRoot.querySelectorAll<HTMLElement>('.outline-item-wrapper'),
+                  ...outlineRoot.querySelectorAll<HTMLElement>('.outline-item'),
+                ]))
+              : []
+            const outlineNumberEls = outlineItems.map(item =>
+              item.hasAttribute('data-inkchapter-number')
+                ? item
+                : item.querySelector<HTMLElement>('[data-inkchapter-number]'))
             return {
               headingCount: headings.length,
               projectedNumberCount: headings.filter(el => el.hasAttribute('data-inkchapter-heading-number')).length,
               headingTexts: headings.map(el => el.textContent ?? ''),
               projectedLabels: headings.map(el => el.getAttribute('data-inkchapter-heading-number')),
+              outlineRootFound: outlineRoot != null,
+              outlineItemCount: outlineItems.length,
+              outlineTexts: outlineItems.map(item => item.textContent ?? ''),
+              outlineProjectedLabels: outlineNumberEls.map(el => el?.getAttribute('data-inkchapter-number') ?? null),
             }
+          },
+          readDiagnostics: () => {
+            const snapshot = this.documentUtilities?.getSnapshot()
+            if (!snapshot) return null
+            const linesByCode: Record<string, number[]> = {}
+            for (const diagnostic of snapshot.diagnostics) {
+              const metaLine = typeof diagnostic.metadata?.['numberingLine'] === 'number'
+                ? diagnostic.metadata['numberingLine'] as number
+                : null
+              const locationLine = diagnostic.location?.kind === 'source-range'
+                ? diagnostic.location.startLine + 1
+                : null
+              const line = metaLine ?? locationLine
+              if (line == null) continue
+              ;(linesByCode[diagnostic.code] ??= []).push(line)
+            }
+            return {
+              codes: [...new Set(snapshot.diagnostics.map(d => d.code))],
+              linesByCode,
+              revision: snapshot.revision,
+            }
+          },
+          prepareOutline: () => {
+            try {
+              if (document.querySelector('.outline-item-wrapper, .outline-item')) return
+              const selectors = [
+                '[data-action="switch-outline"]',
+                '[data-type="outline"]',
+                '#outline-tab',
+                '.sidebar-tabs .tab[data-type="outline"]',
+              ]
+              for (const selector of selectors) {
+                const tab = document.querySelector(selector) as HTMLElement | null
+                if (!tab) continue
+                const opts = { bubbles: true, cancelable: true, view: window }
+                tab.dispatchEvent(new MouseEvent('mousedown', opts))
+                tab.dispatchEvent(new MouseEvent('mouseup', opts))
+                tab.dispatchEvent(new MouseEvent('click', opts))
+              }
+            } catch { /* test-only best effort */ }
           },
           undo: () => invokeEditorUndo(editor as unknown as TyporaUndoApi),
           redo: () => invokeEditorRedo(editor as unknown as TyporaUndoApi),

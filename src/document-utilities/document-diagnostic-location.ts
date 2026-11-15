@@ -358,6 +358,13 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   TABLE_BLOCK_STRUCTURE_INVALID: 'error',
   FORMULA_BLOCK_STRUCTURE_INVALID: 'error',
   HEADING_AUTO_NUMBER_CONFLICT: 'error',
+  // R09 — unified heading-number rules (mirrors resolveDocumentDiagnosticSeverity).
+  HEADING_DOUBLE_NUMBER_PREFIX: 'error',
+  HEADING_NUMBER_MISMATCH: 'error',
+  HEADING_NUMBER_MISSING: 'warning',
+  HEADING_NUMBER_ORDER_ANOMALY: 'error',
+  HEADING_NUMBER_FORMAT_INCONSISTENT: 'warning',
+  HEADING_NUMBER_OWNERSHIP_CONFLICT: 'warning',
   FIGURE_LOCAL_IMAGE_MISSING: 'warning',
   FIGURE_IMAGE_FORMAT_UNSUPPORTED: 'warning',
   EXCESSIVE_INTERNAL_BLANK_LINES: 'warning',
@@ -698,6 +705,26 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
     scope: 'heading',
     reasonChip: true,
     activeVisualMode: 'text-tight-single-target',
+  }),
+  // R09 — the six unified persistence rules. Same heading scope / visual contract
+  // as HEADING_AUTO_NUMBER_CONFLICT; each has its own rule id + name.
+  HEADING_DOUBLE_NUMBER_PREFIX: rule('HEADING_DOUBLE_NUMBER_PREFIX', 'heading', 'canonical-node', {
+    area: 'caption-numbering', scope: 'heading', reasonChip: true, activeVisualMode: 'text-tight-single-target',
+  }),
+  HEADING_NUMBER_MISMATCH: rule('HEADING_NUMBER_MISMATCH', 'heading', 'canonical-node', {
+    area: 'caption-numbering', scope: 'heading', reasonChip: true, activeVisualMode: 'text-tight-single-target',
+  }),
+  HEADING_NUMBER_MISSING: rule('HEADING_NUMBER_MISSING', 'heading', 'canonical-node', {
+    area: 'caption-numbering', scope: 'heading',
+  }),
+  HEADING_NUMBER_ORDER_ANOMALY: rule('HEADING_NUMBER_ORDER_ANOMALY', 'heading', 'canonical-node', {
+    area: 'caption-numbering', scope: 'heading', reasonChip: true, activeVisualMode: 'text-tight-single-target',
+  }),
+  HEADING_NUMBER_FORMAT_INCONSISTENT: rule('HEADING_NUMBER_FORMAT_INCONSISTENT', 'heading', 'canonical-node', {
+    area: 'caption-numbering', scope: 'heading',
+  }),
+  HEADING_NUMBER_OWNERSHIP_CONFLICT: rule('HEADING_NUMBER_OWNERSHIP_CONFLICT', 'heading', 'canonical-node', {
+    area: 'caption-numbering', scope: 'heading',
   }),
   // Figure / table / code / formula / link (block node)
   FIGURE_MISSING_NAME: rule('FIGURE_MISSING_NAME', 'figure', 'figure-occurrence'),

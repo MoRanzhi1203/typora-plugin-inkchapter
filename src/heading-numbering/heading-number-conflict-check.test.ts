@@ -88,6 +88,15 @@ describe('R08 — numbering conflict detection', () => {
     expect(result.issues.map(i => i.code)).toContain(NUMBERING_CONFLICT_CODES.numberFormatInconsistent)
   })
 
+  it('never treats 1 and 1.1 as different formats (same decimal family)', () => {
+    const result = report(
+      ['# 文档', '## 1 A', '### 1.1 B'].join('\n'),
+      {},
+      { numberingEnabled: true, storageMode: 'source', policy: 'adopt' },
+    )
+    expect(result.issues.map(i => i.code)).not.toContain(NUMBERING_CONFLICT_CODES.numberFormatInconsistent)
+  })
+
   it('reports ownership conflicts against the ledger', () => {
     const markdown = ['# 文档', '## 研究背景'].join('\n')
     const first = planHeadingNumberPersistence(markdown, settings(), {

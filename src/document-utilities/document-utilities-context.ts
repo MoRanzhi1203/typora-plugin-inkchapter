@@ -246,6 +246,8 @@ export function collectDiagnosticsInput(
      * effectiveness facts (the PER-HEADING verdict travels on each heading fact).
      */
     headingAutoNumbering?: DocumentDiagnosticsInput['headingAutoNumbering']
+    /** R09 — the R08 number-persistence authority snapshot (optional). */
+    headingNumberPersistence?: DocumentDiagnosticsInput['headingNumberPersistence']
   },
 ): DocumentDiagnosticsInput {
   // Phase 7R.3.11.8B.9 — conditional strict-policy activation. When the
@@ -326,6 +328,7 @@ export function collectDiagnosticsInput(
       ...(ctx.authority.getObjectNumberingEnabled?.() ?? {}),
     },
     headingAutoNumbering: structural.headingAutoNumbering,
+    headingNumberPersistence: structural.headingNumberPersistence,
     // Numbering Integrity V2 (spec §9/§21) — the canonical effective-number
     // snapshot (joined to the diagnostics' OWN `block:<kind>:<ordinal>`
     // identity). Absent/empty ⇒ the number rules stay silent.

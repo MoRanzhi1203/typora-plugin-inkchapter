@@ -119,6 +119,13 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   // ── numbering (heading / objects) ─────────────────────────────────────────
   HEADING_MANUAL_NUMBER_PREFIX: 400,
   HEADING_AUTO_NUMBER_CONFLICT: 410,
+  // R09 — unified heading-number rules (specific first).
+  HEADING_DOUBLE_NUMBER_PREFIX: 411,
+  HEADING_NUMBER_MISMATCH: 412,
+  HEADING_NUMBER_ORDER_ANOMALY: 413,
+  HEADING_NUMBER_MISSING: 414,
+  HEADING_NUMBER_FORMAT_INCONSISTENT: 415,
+  HEADING_NUMBER_OWNERSHIP_CONFLICT: 416,
   FIGURE_MANUAL_NUMBER_PREFIX: 420,
   TABLE_MANUAL_NUMBER_PREFIX: 421,
   CODE_MANUAL_NUMBER_PREFIX: 422,
@@ -311,6 +318,12 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   // ── numbering ─────────────────────────────────────────────────────────────
   HEADING_MANUAL_NUMBER_PREFIX: { title: '标题包含手工编号', description: '标题目录已开启自动编号，标题文字中仍带有手工编号。', suggestion: '删除标题中的手工编号，或关闭该层级的自动编号。' },
   HEADING_AUTO_NUMBER_CONFLICT: { title: '标题编号冲突', description: '标题的自动编号已生效，Markdown 源码中仍带有手工编号。', suggestion: '删除标题中的手工编号，或关闭该标题级别的自动编号。' },
+  HEADING_DOUBLE_NUMBER_PREFIX: { title: '标题存在重复编号', description: '标题开头出现了两套编号，通常来自旧编号与墨章编号叠加。', suggestion: '移除重复编号，只保留一套。' },
+  HEADING_NUMBER_MISMATCH: { title: '标题编号与当前方案不一致', description: '源码中的标题编号与当前编号方案计算出的结果不同。', suggestion: '按当前方案同步该标题编号。' },
+  HEADING_NUMBER_MISSING: { title: '标题缺少规定编号', description: '源码持久化已开启，但该标题没有写入当前方案规定的编号。', suggestion: '补齐该标题编号。' },
+  HEADING_NUMBER_ORDER_ANOMALY: { title: '标题编号顺序异常', description: '标题编号重复或顺序与文档结构不一致。', suggestion: '按当前方案重新编号。' },
+  HEADING_NUMBER_FORMAT_INCONSISTENT: { title: '标题编号格式不一致', description: '该标题的编号格式与文档中的主流编号格式不同。', suggestion: '转换为当前方案的编号格式。' },
+  HEADING_NUMBER_OWNERSHIP_CONFLICT: { title: '标题编号管理状态异常', description: '编号归属记录与源码中的实际编号不一致。', suggestion: '重新同步编号以修正归属。' },
   FIGURE_MANUAL_NUMBER_PREFIX: { title: '图名包含手工编号', description: '图片已开启自动编号，图名中仍带有手工编号。', suggestion: '删除图名中的手工编号。' },
   TABLE_MANUAL_NUMBER_PREFIX: { title: '表名包含手工编号', description: '表格已开启自动编号，表名中仍带有手工编号。', suggestion: '删除表名中的手工编号。' },
   CODE_MANUAL_NUMBER_PREFIX: { title: '代码块名称包含手工编号', description: '代码块已开启自动编号，名称中仍带有手工编号。', suggestion: '删除代码块名称中的手工编号。' },

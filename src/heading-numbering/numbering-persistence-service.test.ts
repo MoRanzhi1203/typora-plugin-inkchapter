@@ -29,6 +29,7 @@ interface Harness {
   writes: string[]
   markdown: () => string
   setMarkdown: (value: string) => void
+  setDocumentKey: (key: string) => void
   fireEdit: () => void
   fireSave: () => void
   fireSwitch: () => void
@@ -46,6 +47,7 @@ function createHarness(initial: string, options: { heading?: Partial<HeadingNumb
   } as unknown as PluginSettings<InkChapterSettings>
 
   let markdown = initial
+  let documentKey = 'docs/doc.md'
   const writes: string[] = []
   const exported: Array<{ fileName: string; content: string }> = []
   const editListeners: Array<() => void> = []
@@ -54,7 +56,7 @@ function createHarness(initial: string, options: { heading?: Partial<HeadingNumb
 
   const deps: NumberingPersistenceDeps = {
     settings,
-    getDocumentKey: () => 'docs/doc.md',
+    getDocumentKey: () => documentKey,
     getMarkdown: () => markdown,
     getHeadingSettings: () => headingSettings(options.heading),
     getSourceOverrideEntries: () => ({ entries: [], counterPolicy: 'skip' }),
@@ -101,6 +103,7 @@ function createHarness(initial: string, options: { heading?: Partial<HeadingNumb
     writes,
     markdown: () => markdown,
     setMarkdown: value => { markdown = value },
+    setDocumentKey: value => { documentKey = value },
     fireEdit: () => { for (const listener of editListeners) listener() },
     fireSave: () => { for (const listener of saveListeners) listener() },
     fireSwitch: () => { for (const listener of switchListeners) listener() },
@@ -256,5 +259,95 @@ describe('R08 — number persistence runtime service', () => {
     const b = a + '\n\n正文'
     expect(computeHeadingStructureSignature(a)).toBe(computeHeadingStructureSignature(b))
     expect(hashMarkdown(a)).not.toBe(hashMarkdown(b))
+  })
+
+  // ── R09-03 — user-edited source numbers / ownership / mode switching ──────
+
+  it('re-syncs a MANAGED heading after the user edits its number (exactly once)', () => {
+    const harness = createHarness(['# 文档', '## 研究背景'].join('\n'))
+    harness.service.writeNumbersToSource()
+    harness.service.setSettings({ syncTiming: 'edit' })
+    const before = harness.writes.length
+
+    // The user rewrites the managed number.
+    harness.setMarkdown(['# 文档', '## 2.5 研究背景'].join('\n'))
+    harness.fireEdit()
+    vi.advanceTimersByTime(1000)
+
+    expect(harness.writes.length).toBe(before + 1)
+    expect(harness.markdown()).toBe(['# 文档', '## 1 研究背景'].join('\n'))
+    // No ping-pong: the corrected state produces no further write.
+    harness.fireEdit()
+    vi.advanceTimersByTime(2000)
+    expect(harness.writes.length).toBe(before + 1)
+  })
+
+  it('keeps a USER-PRESERVED number after the user edits it', () => {
+    const harness = createHarness(['# 文档', '## 研究背景'].join('\n'))
+    harness.service.setSettings({ storageMode: 'source', existingNumberPolicy: 'preserve', syncTiming: 'edit' })
+    harness.service.resynchronizeAll()
+    const before = harness.writes.length
+
+    harness.setMarkdown(['# 文档', '## 2.5 研究背景'].join('\n'))
+    harness.fireEdit()
+    vi.advanceTimersByTime(1000)
+
+    expect(harness.writes.length).toBe(before)
+    expect(harness.markdown()).toContain('## 2.5 研究背景')
+  })
+
+  it('mode switches never delete persisted source numbers', () => {
+    const harness = createHarness(['# 文档', '## 研究背景'].join('\n'))
+    harness.service.writeNumbersToSource()
+    const numbered = harness.markdown()
+    const before = harness.writes.length
+
+    harness.service.setSettings({ storageMode: 'render' })
+    expect(harness.service.resynchronizeAll().status).toBe('SKIPPED')
+    expect(harness.markdown()).toBe(numbered)
+
+    harness.service.setSettings({ storageMode: 'export' })
+    expect(harness.service.resynchronizeAll().status).toBe('SKIPPED')
+    expect(harness.markdown()).toBe(numbered)
+
+    harness.service.setSettings({ storageMode: 'source' })
+    expect(harness.service.resynchronizeAll().status).toBe('UNCHANGED')
+    expect(harness.writes.length).toBe(before)
+    expect(harness.markdown()).toBe(numbered)
+  })
+
+  it('export → source switching still writes a numbered copy only', () => {
+    const original = ['# 文档', '## 研究背景'].join('\n')
+    const harness = createHarness(original)
+    harness.service.setSettings({ storageMode: 'export' })
+    const exported = harness.service.exportNumberedMarkdown()
+    expect(exported.ok).toBe(true)
+    expect(harness.markdown()).toBe(original)
+
+    harness.service.setSettings({ storageMode: 'source', existingNumberPolicy: 'adopt' })
+    const result = harness.service.resynchronizeAll()
+    expect(result.status).toBe('APPLIED')
+    expect(harness.markdown()).toBe(['# 文档', '## 1 研究背景'].join('\n'))
+  })
+
+  it('isolates ownership between documents', () => {
+    const harness = createHarness(['# 文档', '## 研究背景'].join('\n'))
+    harness.service.writeNumbersToSource()
+    const docAWrites = harness.writes.length
+
+    harness.setDocumentKey('docs/other.md')
+    harness.fireSwitch()
+    harness.setMarkdown(['# 其他文档', '## 研究背景'].join('\n'))
+    harness.service.writeNumbersToSource()
+    expect(harness.writes.length).toBe(docAWrites + 1)
+    expect(harness.markdown()).toBe(['# 其他文档', '## 1 研究背景'].join('\n'))
+
+    // Back to doc A: its own document override (source/adopt) still applies and
+    // the already-correct file needs no write.
+    harness.setDocumentKey('docs/doc.md')
+    harness.setMarkdown(['# 文档', '## 1 研究背景'].join('\n'))
+    const beforeBack = harness.writes.length
+    expect(harness.service.resynchronizeAll().status).toBe('UNCHANGED')
+    expect(harness.writes.length).toBe(beforeBack)
   })
 })

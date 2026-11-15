@@ -33,6 +33,18 @@ export interface NumberingAcceptanceDomFacts {
   projectedNumberCount: number
   headingTexts: string[]
   projectedLabels: Array<string | null>
+  /** R09 — independent OUTLINE evidence (0 = the outline panel is not mounted). */
+  outlineRootFound: boolean
+  outlineItemCount: number
+  outlineTexts: string[]
+  outlineProjectedLabels: Array<string | null>
+}
+
+export interface NumberingAcceptanceDiagnosticsFacts {
+  codes: string[]
+  /** code → 1-based heading lines reported by the central panel. */
+  linesByCode: Record<string, number[]>
+  revision: number
 }
 
 export interface NumberingAcceptanceDeps {
@@ -42,6 +54,10 @@ export interface NumberingAcceptanceDeps {
   replaceContent(markdown: string): void
   persistence: NumberingPersistenceService
   readDomFacts(): NumberingAcceptanceDomFacts
+  /** R09 — the CURRENT central diagnostics snapshot (never a second list). */
+  readDiagnostics(): NumberingAcceptanceDiagnosticsFacts | null
+  /** R09 — make the sidebar outline visible so its DOM can be sampled (test only). */
+  prepareOutline?(): void
   undo(): { ok: boolean; reason?: string }
   redo(): { ok: boolean; reason?: string }
   undoStackLength(): number | null
@@ -74,6 +90,8 @@ export interface NumberingAcceptanceReport {
   sourceAfterSecondSync: string
   sourceAfterRemove: string
   domAfterWrite: NumberingAcceptanceDomFacts | null
+  diagnosticsBefore: NumberingAcceptanceDiagnosticsFacts | null
+  diagnosticsAfterFix: NumberingAcceptanceDiagnosticsFacts | null
   undoApi: { available: boolean; undoStackLengthStart: number | null; undoStackLengthEnd: number | null }
   steps: NumberingAcceptanceStep[]
   failures: string[]
@@ -121,6 +139,8 @@ function writeReport(vaultRoot: string, report: NumberingAcceptanceReport | null
     sourceAfterSecondSync: '',
     sourceAfterRemove: '',
     domAfterWrite: null,
+    diagnosticsBefore: null,
+    diagnosticsAfterFix: null,
     undoApi: { available: false, undoStackLengthStart: null, undoStackLengthEnd: null },
     steps: [],
     failures: ['编号验收未执行：编辑器桥不可用'],
@@ -213,6 +233,8 @@ async function runAcceptance(deps: NumberingAcceptanceDeps, token: string): Prom
   let sourceAfterSecondSync = ''
   let sourceAfterRemove = ''
   let domAfterWrite: NumberingAcceptanceDomFacts | null = null
+  let diagnosticsBefore: NumberingAcceptanceDiagnosticsFacts | null = null
+  let diagnosticsAfterFix: NumberingAcceptanceDiagnosticsFacts | null = null
   const undoStackLengthStart = deps.undoStackLength()
 
   /** Record a step and aggregate EVERY failed assertion into the verdict. */
@@ -224,6 +246,35 @@ async function runAcceptance(deps: NumberingAcceptanceDeps, token: string): Prom
   }
 
   try {
+    // ── Step 0 — the CENTRAL panel already reports the conflicts ────────
+    diagnosticsBefore = await pollDiagnostics(
+      deps,
+      facts => facts.codes.includes('HEADING_DOUBLE_NUMBER_PREFIX'),
+    )
+    pushStep({
+      id: 'diagnostics-before',
+      label: '中央检测面板出现编号冲突',
+      assertions: [
+        { id: 'diagnostics.snapshot', ok: diagnosticsBefore != null, detail: diagnosticsBefore == null ? '无诊断快照' : 'ok' },
+        {
+          id: 'diagnostics.double-present',
+          ok: diagnosticsBefore?.codes.includes('HEADING_DOUBLE_NUMBER_PREFIX') === true,
+          detail: (diagnosticsBefore?.codes ?? []).join(',') || 'none',
+        },
+        {
+          id: 'diagnostics.double-line',
+          ok: (diagnosticsBefore?.linesByCode['HEADING_DOUBLE_NUMBER_PREFIX'] ?? []).includes(3),
+          detail: (diagnosticsBefore?.linesByCode['HEADING_DOUBLE_NUMBER_PREFIX'] ?? []).join(',') || 'none',
+        },
+        {
+          id: 'diagnostics.mismatch-present',
+          ok: diagnosticsBefore?.codes.includes('HEADING_NUMBER_MISMATCH') === true,
+          detail: (diagnosticsBefore?.codes ?? []).join(',') || 'none',
+        },
+      ],
+      result: { status: 'UNCHANGED', reason: 'diagnostics-read', patchCount: 0 },
+    })
+
     deps.persistence.setSettings({
       storageMode: 'source',
       existingNumberPolicy: 'adopt',
@@ -257,7 +308,10 @@ async function runAcceptance(deps: NumberingAcceptanceDeps, token: string): Prom
     })
 
     // ── Step 3 — body/outline projection dedupe ─────────
-    await wait(700)
+    // The outline panel is sampled independently: the acceptance switches the
+    // sidebar to the outline view (test-only UI action), then reads its DOM.
+    deps.prepareOutline?.()
+    await wait(900)
     domAfterWrite = deps.readDomFacts()
     // Only a CONFIRMED number prefix counts as "from source"; the weak year
     // prefix in `2026 年研究报告` stays eligible for a projected number.
@@ -266,6 +320,12 @@ async function runAcceptance(deps: NumberingAcceptanceDeps, token: string): Prom
     const numberedHeadings = domAfterWrite.headingTexts.filter(isSourceNumbered)
     const stillProjected = domAfterWrite.headingTexts
       .filter((text, index) => isSourceNumbered(text) && domAfterWrite?.projectedLabels[index] != null)
+    const bodyTitles = numberedHeadings.map(text => scanHeadingNumber(text).title)
+    const outlineSourceNumbered = domAfterWrite.outlineTexts.filter(isSourceNumbered)
+    const outlineProjected = domAfterWrite.outlineTexts
+      .filter((text, index) => isSourceNumbered(text) && domAfterWrite?.outlineProjectedLabels[index] != null)
+    const outlineParity = bodyTitles.every(title =>
+      domAfterWrite != null && domAfterWrite.outlineTexts.some(text => text.includes(title)))
     pushStep({
       id: 'dedupe',
       label: '正文/大纲不叠加第二套编号',
@@ -274,8 +334,32 @@ async function runAcceptance(deps: NumberingAcceptanceDeps, token: string): Prom
         { id: 'dedupe.numbered-from-source', ok: numberedHeadings.length > 0, detail: String(numberedHeadings.length) },
         { id: 'dedupe.no-projected-duplicate', ok: stillProjected.length === 0, detail: `重复投影 ${stillProjected.length} 个` },
         { id: 'dedupe.no-double-prefix-in-dom', ok: domAfterWrite.headingTexts.every(text => !hasDoublePrefix(text)), detail: 'DOM 标题不得出现双重编号' },
+        { id: 'outline.sampled', ok: domAfterWrite.outlineItemCount > 0, detail: domAfterWrite.outlineRootFound ? String(domAfterWrite.outlineItemCount) : 'OUTLINE_ROOT_NOT_MOUNTED' },
+        { id: 'outline.source-number-visible', ok: outlineSourceNumbered.length > 0, detail: String(outlineSourceNumbered.length) },
+        { id: 'outline.no-projected-duplicate', ok: outlineProjected.length === 0, detail: `大纲重复投影 ${outlineProjected.length} 个` },
+        { id: 'outline.body-parity', ok: outlineParity, detail: '正文与大纲标题必须一致' },
       ],
       result: pick(second),
+    })
+
+    // ── Step 3b — the central panel retires the repaired conflicts ─────
+    diagnosticsAfterFix = await pollDiagnostics(
+      deps,
+      facts => !facts.codes.includes('HEADING_DOUBLE_NUMBER_PREFIX')
+        && !facts.codes.includes('HEADING_NUMBER_MISMATCH'),
+      6000,
+    )
+    const remainingNumberingCodes = (diagnosticsAfterFix?.codes ?? []).filter(isNumberingDiagnosticCode)
+    pushStep({
+      id: 'diagnostics-after',
+      label: '修复后编号诊断消失',
+      assertions: [
+        { id: 'diagnostics.after-snapshot', ok: diagnosticsAfterFix != null, detail: diagnosticsAfterFix == null ? '无诊断快照' : 'ok' },
+        { id: 'diagnostics.double-cleared', ok: diagnosticsAfterFix?.codes.includes('HEADING_DOUBLE_NUMBER_PREFIX') === false, detail: remainingNumberingCodes.join(',') || 'none' },
+        { id: 'diagnostics.mismatch-cleared', ok: diagnosticsAfterFix?.codes.includes('HEADING_NUMBER_MISMATCH') === false, detail: remainingNumberingCodes.join(',') || 'none' },
+        { id: 'diagnostics.no-numbering-issues', ok: remainingNumberingCodes.length === 0, detail: remainingNumberingCodes.join(',') || 'none' },
+      ],
+      result: { status: 'UNCHANGED', reason: 'diagnostics-read', patchCount: 0 },
     })
 
     // ── Step 4 — Undo / Redo ────────────────────────────
@@ -328,6 +412,8 @@ async function runAcceptance(deps: NumberingAcceptanceDeps, token: string): Prom
       sourceAfterSecondSync,
       sourceAfterRemove,
       domAfterWrite,
+      diagnosticsBefore,
+      diagnosticsAfterFix,
       undoApi: { available: undoStackLengthStart != null, undoStackLengthStart, undoStackLengthEnd: deps.undoStackLength() },
       steps,
       failures: [`exception: ${error instanceof Error ? error.message : String(error)}`],
@@ -349,6 +435,8 @@ async function runAcceptance(deps: NumberingAcceptanceDeps, token: string): Prom
     sourceAfterSecondSync,
     sourceAfterRemove,
     domAfterWrite,
+    diagnosticsBefore,
+    diagnosticsAfterFix,
     undoApi: { available: undoStackLengthStart != null, undoStackLengthStart, undoStackLengthEnd: deps.undoStackLength() },
     steps,
     failures,
@@ -359,6 +447,41 @@ async function runAcceptance(deps: NumberingAcceptanceDeps, token: string): Prom
 
 function pick(result: NumberingSyncResult): NumberingAcceptanceStep['result'] {
   return { status: result.status, reason: result.reason, patchCount: result.patchCount }
+}
+
+const NUMBERING_DIAGNOSTIC_CODES: ReadonlySet<string> = new Set([
+  'HEADING_DOUBLE_NUMBER_PREFIX',
+  'HEADING_NUMBER_MISMATCH',
+  'HEADING_NUMBER_MISSING',
+  'HEADING_NUMBER_ORDER_ANOMALY',
+  'HEADING_NUMBER_FORMAT_INCONSISTENT',
+  'HEADING_NUMBER_OWNERSHIP_CONFLICT',
+  'HEADING_MANUAL_NUMBER_PREFIX',
+  'HEADING_AUTO_NUMBER_CONFLICT',
+])
+
+function isNumberingDiagnosticCode(code: string): boolean {
+  return NUMBERING_DIAGNOSTIC_CODES.has(code)
+}
+
+/**
+ * Poll the CENTRAL snapshot (never a second list). Returns the last observed
+ * facts even on timeout so the report can show what the panel actually held.
+ */
+async function pollDiagnostics(
+  deps: NumberingAcceptanceDeps,
+  predicate: (facts: NumberingAcceptanceDiagnosticsFacts) => boolean,
+  timeoutMs = 5000,
+): Promise<NumberingAcceptanceDiagnosticsFacts | null> {
+  const deadline = Date.now() + timeoutMs
+  let last: NumberingAcceptanceDiagnosticsFacts | null = null
+  for (;;) {
+    const facts = deps.readDiagnostics()
+    if (facts) last = facts
+    if (facts && predicate(facts)) return facts
+    if (Date.now() >= deadline) return last
+    await wait(400)
+  }
 }
 
 function hasDoublePrefix(markdown: string): boolean {

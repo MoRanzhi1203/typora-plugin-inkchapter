@@ -189,6 +189,12 @@ export interface DocumentDiagnosticsProviders {
     isEffectiveForElement: (element: HTMLElement | null) => boolean
   }
   /**
+   * R09 — the R08 persistence authority snapshot for the central numbering
+   * diagnostics. Optional: absent ⇒ the legacy manual-prefix / auto-conflict
+   * blocks keep their own semantics (pure/legacy callers).
+   */
+  getHeadingNumberPersistenceFacts?: () => import('./document-diagnostics-heading-number-v1').HeadingNumberPersistenceFacts | null
+  /**
    * Heading Auto-Number Conflict V1.2 §21/§22 — the ONE dev/test bridge
    * consumption point. Invoked at the START of every recompute (the toolbar
    * 「重新检查文档」 button drives it deterministically), so the bridge never
@@ -1332,6 +1338,8 @@ export class DocumentDiagnosticsAuthority {
     links: DiagnosticLinkFact[]
     /** Heading Auto-Number Conflict V1 §2/§4 — global effectiveness audit facts. */
     headingAutoNumbering: { enabled: boolean; h1NumberingEnabled: boolean; styleKey?: string }
+    /** R09 — the R08 persistence snapshot consumed by the central number rules. */
+    headingNumberPersistence?: import('./document-diagnostics-heading-number-v1').HeadingNumberPersistenceFacts
   } {
     const root = resolveBusinessContentRoot()
     const figures: DiagnosticObjectFact[] = []
@@ -1589,7 +1597,22 @@ export class DocumentDiagnosticsAuthority {
       }
     }
 
-    return { headings, h1Facts, headingAuthority, latentAtxMarkers, figures, figureSourceOccurrences, tables, codes, formulas, formulaRenderFacts, links, headingAutoNumbering }
+    return {
+      headings,
+      h1Facts,
+      headingAuthority,
+      latentAtxMarkers,
+      figures,
+      figureSourceOccurrences,
+      tables,
+      codes,
+      formulas,
+      formulaRenderFacts,
+      links,
+      headingAutoNumbering,
+      // R09 — the ONE R08 persistence snapshot consumed by the central rules.
+      headingNumberPersistence: this.providers.getHeadingNumberPersistenceFacts?.() ?? undefined,
+    }
   }
 
   /** Phase 7R.3.11.8B.4.1 — LATENT-ATX marker transition log (state-deduped). */

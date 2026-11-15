@@ -100,6 +100,13 @@ export const INLINE_HINT_BY_CODE_V514R5: Readonly<Record<string, string>> = {
   // Heading Auto-Number Conflict V1 §27 — the short chip for the heading
   // auto-number conflict (existing heading-Error presentation, no new style).
   HEADING_AUTO_NUMBER_CONFLICT: '编号冲突',
+  // R09 — unified heading-number chips (each problem keeps its own short name).
+  HEADING_DOUBLE_NUMBER_PREFIX: '重复编号',
+  HEADING_NUMBER_MISMATCH: '编号不一致',
+  HEADING_NUMBER_MISSING: '缺少编号',
+  HEADING_NUMBER_ORDER_ANOMALY: '编号错序',
+  HEADING_NUMBER_FORMAT_INCONSISTENT: '编号格式不一致',
+  HEADING_NUMBER_OWNERSHIP_CONFLICT: '编号归属异常',
   // objects
   TABLE_MISSING_NAME: '缺少表名',
   TABLE_DUPLICATE_NAME: '重复表名',

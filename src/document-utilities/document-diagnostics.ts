@@ -22,6 +22,9 @@ import { parseLocalAnchorTargets } from './document-resource-scanner'
 // TRAE §2.4 — the SINGLE-SOURCE document-end trailing-blank threshold (0~1 extra
 // blank lines are legal), shared with the visual + newline-marker resolvers.
 import { DOCUMENT_END_TRAILING_BLANK_MIN_EXCESS } from './document-diagnostic-document-end-newline-marker-v1'
+import {
+  computeHeadingNumberDiagnosticFacts,
+} from './document-diagnostics-heading-number-v1'
 // V5.15 — Standalone Object Block Invariant (figure structure gate).
 import {
   analyzeFigureStandaloneSourceBlocks,
@@ -430,6 +433,17 @@ export function resolveDocumentDiagnosticSeverity(
     // two numbering authorities WILL coexist. Fixed ERROR (never mode-dependent).
     case 'HEADING_AUTO_NUMBER_CONFLICT':
       return 'error'
+    // R09 — unified heading-number rules. A double prefix / scheme mismatch /
+    // order anomaly breaks the document's numbering identity → ERROR. Missing,
+    // format drift and an ownership mismatch are recoverable warnings.
+    case 'HEADING_DOUBLE_NUMBER_PREFIX':
+    case 'HEADING_NUMBER_MISMATCH':
+    case 'HEADING_NUMBER_ORDER_ANOMALY':
+      return 'error'
+    case 'HEADING_NUMBER_MISSING':
+    case 'HEADING_NUMBER_FORMAT_INCONSISTENT':
+    case 'HEADING_NUMBER_OWNERSHIP_CONFLICT':
+      return 'warning'
     // ── Constant WARNING rules ──
     // V5.12-R8 §9 — a missing local image is a resource-level WARNING (the
     // document structure is intact; only a referenced asset is absent), never
@@ -669,6 +683,13 @@ export interface DocumentDiagnosticsInput {
     /** Heading Auto-Number Conflict V1.2 §13 — the effective STYLE identity. */
     styleKey?: string
   }
+  /**
+   * R09 — the R08 number-persistence authority snapshot. When present, the
+   * SIX R09 numbering rules become the document's single numbering-conflict
+   * authority and the legacy manual-prefix / auto-conflict blocks are replaced
+   * (same rule ids, no duplicate root cause).
+   */
+  headingNumberPersistence?: import('./document-diagnostics-heading-number-v1').HeadingNumberPersistenceFacts
 }
 
 export interface DocumentDiagnosticsComputed {
@@ -704,6 +725,30 @@ export const HEADING_MANUAL_NUMBER_PREFIX_CODE = 'HEADING_MANUAL_NUMBER_PREFIX'
  * this is an ERROR (never a warning/hint).
  */
 export const HEADING_AUTO_NUMBER_CONFLICT_CODE = 'HEADING_AUTO_NUMBER_CONFLICT'
+
+/**
+ * R09 — user-facing names for the unified heading-number rules. Each problem
+ * keeps its OWN name so the panel never presents two different defects with the
+ * same title (§4.3).
+ */
+export function headingNumberDiagnosticTitle(code: string): string {
+  switch (code) {
+    case 'HEADING_DOUBLE_NUMBER_PREFIX': return '标题存在重复编号'
+    case 'HEADING_NUMBER_MISMATCH': return '标题编号与当前方案不一致'
+    case 'HEADING_NUMBER_MISSING': return '标题缺少规定编号'
+    case 'HEADING_NUMBER_ORDER_ANOMALY': return '标题编号顺序异常'
+    case 'HEADING_NUMBER_FORMAT_INCONSISTENT': return '标题编号格式不一致'
+    case 'HEADING_NUMBER_OWNERSHIP_CONFLICT': return '标题编号管理状态异常'
+    case 'HEADING_MANUAL_NUMBER_PREFIX': return '标题包含未接管的手动编号'
+    case 'HEADING_AUTO_NUMBER_CONFLICT': return '标题编号冲突'
+    default: return '标题编号问题'
+  }
+}
+
+/** Stable rule id (audit / matrix) for each R09 heading-number code. */
+export function headingNumberDiagnosticRuleId(code: string): string {
+  return code.replace(/_/g, '-')
+}
 /** §24 — a figure name carrying a manual number prefix while auto-numbering is ON. */
 export const FIGURE_MANUAL_NUMBER_PREFIX_CODE = 'FIGURE_MANUAL_NUMBER_PREFIX'
 /** Phase H (spec §9) — a table name carrying a manual number prefix while auto-numbering is ON. */
@@ -847,6 +892,13 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   SECTION_ONLY_SUBHEADINGS_CODE,
   HEADING_AUTO_NUMBER_CONFLICT_CODE,
   HEADING_MANUAL_NUMBER_PREFIX_CODE,
+  // R09 — unified heading-number rules (central panel authority).
+  'HEADING_DOUBLE_NUMBER_PREFIX',
+  'HEADING_NUMBER_MISMATCH',
+  'HEADING_NUMBER_MISSING',
+  'HEADING_NUMBER_ORDER_ANOMALY',
+  'HEADING_NUMBER_FORMAT_INCONSISTENT',
+  'HEADING_NUMBER_OWNERSHIP_CONFLICT',
   'DOCUMENT_TERMINAL_NEWLINE_MISSING',
   'DOCUMENT_TRAILING_BLANK_LINES_EXCESSIVE',
   DOCUMENT_LEADING_BLANK_LINES_EXCESSIVE_CODE,
@@ -2697,6 +2749,24 @@ export function computeDocumentDiagnostics(
         }
       }
 
+      // ── R09 — unified heading-number persistence diagnostics ─────────────
+      // The R08 planner + checker become the ONE numbering-conflict authority
+      // for this document. Legacy manual-prefix / auto-conflict blocks below are
+      // DISABLED for the whole document while this snapshot is present, so the
+      // same root cause can never be reported twice (§4.4).
+      const headingNumberFacts = input.headingNumberPersistence
+        ? computeHeadingNumberDiagnosticFacts({
+            markdown: input.markdown,
+            headings: input.headings.map(h => ({
+              level: h.level,
+              text: h.text,
+              stableIdentity: h.stableIdentity,
+            })),
+            facts: input.headingNumberPersistence,
+          })
+        : null
+      const headingNumberAuthorityActive = input.headingNumberPersistence != null
+
       // ── Heading Auto-Number Conflict V1 §1/§2/§3/§5/§12/§13/§17/§18/§19 ───
       // ONE Error per heading:
       //   isAutoNumberingEffectiveForHeading(heading) === true   (§2/§4/§15 —
@@ -2709,7 +2779,7 @@ export function computeDocumentDiagnostics(
       // identity (never the auto number / style / value), so a renumber or a
       // numbering-style switch can never move the diagnosticId.
       const conflictedHeadingFacts = new Set<DiagnosticHeadingFact>()
-      if (input.headingAutoNumbering?.enabled === true) {
+      if (input.headingAutoNumbering?.enabled === true && !headingNumberAuthorityActive) {
         for (const heading of input.headings) {
           if (heading.autoNumberingEffective !== true) continue
           const prefix = resolveHeadingManualNumberPrefix(heading.text)
@@ -2760,7 +2830,7 @@ export function computeDocumentDiagnostics(
       // HEADING_AUTO_NUMBER_CONFLICT must NOT also raise this generic warning:
       // the two rules share ONE root cause, so the warning is suppressed for
       // exactly those headings (never for the whole document).
-      if (input.numberingEnabled?.heading === true) {
+      if (input.numberingEnabled?.heading === true && !headingNumberAuthorityActive) {
         for (const heading of input.headings) {
           if (conflictedHeadingFacts.has(heading)) continue
           const match = detectManualNumberPrefix(heading.text)
@@ -2789,6 +2859,53 @@ export function computeDocumentDiagnostics(
                 matched: match.matched,
               },
               locator: heading.element
+                ? { kind: 'heading', targetElement: heading.element }
+                : { kind: 'document', targetElement: null, action: 'GO_TOP' },
+              location,
+            }),
+          )
+        }
+      }
+
+      // ── R09 — emit the unified heading-number diagnostics ────────────────
+      // ONE issue per heading (the producer already applied §4.4 priority).
+      // Line + identity + fix target come from the SAME R08 plan that produced
+      // the source, so a click locates the heading and a repair rewrites exactly
+      // this line.
+      if (headingNumberFacts != null && headingNumberFacts.length > 0) {
+        const headingIndexByLine = new Map<number, number>()
+        input.headings.forEach((heading, index) => {
+          const raw = heading.element?.getAttribute?.('data-line')
+          const parsed = raw != null && raw !== '' ? Number.parseInt(raw, 10) : NaN
+          if (Number.isInteger(parsed)) headingIndexByLine.set(parsed, index)
+        })
+        for (const fact of headingNumberFacts) {
+          const headingIndex = headingIndexByLine.get(fact.line - 1) ?? fact.headingIndex
+          const heading = headingIndex >= 0 ? input.headings[headingIndex] : undefined
+          const identity = normalizeIdentity(heading?.stableIdentity)
+          const location: DiagnosticLocation = identity !== ''
+            ? { kind: 'canonical-node', nodeKind: 'heading', stableIdentity: identity }
+            : { kind: 'source-range', startLine: fact.line - 1, startColumn: 0, rawText: fact.beforeLine }
+          push(
+            makeDiagnostic(input, 'heading', fact.code, headingNumberDiagnosticTitle(fact.code), {
+              detail: fact.message,
+              kind: 'heading',
+              stableIdentity: identity || undefined,
+              element: heading?.element ?? null,
+              targetIdentity: `numbering:${fact.code}:${identity !== '' ? identity : `line:${fact.line}`}`,
+              metadata: {
+                ruleId: headingNumberDiagnosticRuleId(fact.code),
+                reason: fact.code,
+                ruleCategory: 'heading-numbering',
+                headingLevel: heading?.level ?? fact.headingLevel,
+                numberingLine: fact.line,
+                numberingBefore: fact.beforeLine,
+                numberingAfter: fact.afterLine,
+                numberingFix: fact.fix,
+                expectedLabel: fact.expectedLabel,
+                detectedNumber: fact.detectedNumber,
+              },
+              locator: heading?.element
                 ? { kind: 'heading', targetElement: heading.element }
                 : { kind: 'document', targetElement: null, action: 'GO_TOP' },
               location,

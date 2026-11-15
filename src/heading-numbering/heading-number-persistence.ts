@@ -67,6 +67,22 @@ export interface NumberingPersistenceSettings {
   dedupeProjectedNumbers: boolean
 }
 
+/**
+ * R09 — the snapshot the CENTRAL diagnostics panel consumes. Produced by the
+ * runtime service, consumed by the document-utilities producer; it carries the
+ * same settings + override + ownership inputs the source planner used.
+ */
+export interface HeadingNumberPersistenceFacts {
+  enabled: boolean
+  storageMode: HeadingNumberStorageMode
+  policy: ExistingHeadingNumberPolicy
+  dedupeProjectedNumbers: boolean
+  settings: HeadingNumberingSettings
+  overrideEntries: readonly SourceOverrideEntry[]
+  counterPolicy: UnnumberedCounterPolicy
+  ownership: Record<string, HeadingNumberOwnershipRecord>
+}
+
 export interface SourceOverrideEntry {
   level: HeadingLevel
   /** Title with confirmed number prefixes stripped. */
@@ -290,7 +306,7 @@ export function planHeadingNumberPersistence(
       templateSuffix: slot?.templateSuffix,
     })
     const detected = scan.first
-    const previous = options.ownership?.[item.identity]
+    const previous = resolveOwnershipRecord(options.ownership, item.identity, item.title, detected)
     const plan = decideHeadingAction({
       heading: item.heading,
       identity: item.identity,
@@ -446,6 +462,41 @@ function resolvePassiveOwnership(
   if (previous && previous.ownership !== 'none') return previous.ownership
   if (!detected) return 'none'
   return detected.confidence === 'weak' ? 'unresolved' : 'user-preserved'
+}
+
+/**
+ * Resolve the previous ledger record for a heading.
+ *
+ * Exact identity first. A heading whose LEVEL or parent changed gets a new
+ * identity, so a tolerant fallback matches the SAME title + SAME number text —
+ * this is what lets "modify heading level" / "move heading" keep ownership
+ * instead of preserving a stale number forever.
+ */
+export function resolveOwnershipRecord(
+  ownership: Record<string, HeadingNumberOwnershipRecord> | undefined,
+  identity: string,
+  title: string,
+  detected: ExistingHeadingNumber | null,
+): HeadingNumberOwnershipRecord | undefined {
+  if (!ownership) return undefined
+  const exact = ownership[identity]
+  if (exact) return exact
+  if (!detected) return undefined
+  const normalizedTitle = normalizeHeadingTitle(title)
+  const numberText = canonicalNumberLabel(detected.numberText)
+  for (const record of Object.values(ownership)) {
+    if (record.ownership !== 'inkchapter' && record.ownership !== 'adopted') continue
+    if (canonicalNumberLabel(record.numberText) !== numberText) continue
+    if (recordIdentityTitle(record.identity) === normalizedTitle) return record
+  }
+  return undefined
+}
+
+/** `level|parent|title#occurrence` → normalized title. */
+function recordIdentityTitle(identity: string): string {
+  const withoutOccurrence = identity.replace(/#\d+$/, '')
+  const parts = withoutOccurrence.split('|')
+  return parts.length > 0 ? parts[parts.length - 1] : ''
 }
 
 /** A prefix is plugin-managed only when a record says so AND the text matches. */

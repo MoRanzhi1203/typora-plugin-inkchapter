@@ -115,7 +115,8 @@ export function checkNumberingConflicts(
     }
 
     if (detected && writable) {
-      formatCounts.set(detected.format, (formatCounts.get(detected.format) ?? 0) + 1)
+      const family = numberFormatFamily(detected.format)
+      formatCounts.set(family, (formatCounts.get(family) ?? 0) + 1)
     }
 
     if (label !== '' && detected && writable && !detected.matchesExpected) {
@@ -194,18 +195,18 @@ export function checkNumberingConflicts(
     }
   }
 
-  // Format consistency: one dominant existing format; every deviation is reported.
+  // Format consistency: one dominant FAMILY; every deviation is reported.
   const dominantFormat = [...formatCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
   if (dominantFormat != null && formatCounts.size > 1) {
     for (const heading of plan.headings) {
       const detected = heading.detected
       if (!detected || !isRewritableHeadingNumber(detected)) continue
-      if (detected.format === dominantFormat) continue
+      if (numberFormatFamily(detected.format) === dominantFormat) continue
       add(
         NUMBERING_CONFLICT_CODES.numberFormatInconsistent,
         'warning',
         heading,
-        `编号格式“${detected.format}”与文档主流格式“${dominantFormat}”不一致`,
+        `编号格式“${numberFormatFamilyLabel(detected.format)}”与文档主流格式“${numberFormatFamilyLabel(dominantFormat)}”不一致`,
         'renumber',
       )
     }
@@ -231,4 +232,37 @@ export function formatNumberingConflictSummary(report: NumberingConflictReport):
     .map(i => `L${i.line} ${i.code}`)
     .join('；')
   return `发现 ${report.errorCount} 个错误、${report.warningCount} 个警告：${head}`
+}
+
+/**
+ * R09 — formats that belong to the SAME visual family never conflict with each
+ * other. `1` and `1.1` are both decimal numbers; comparing the raw token type
+ * would flag every hierarchical document as "inconsistent".
+ */
+export function numberFormatFamily(format: string): string {
+  switch (format) {
+    case 'arabic':
+    case 'fullwidth-arabic':
+    case 'decimal-multilevel':
+      return 'numeric'
+    case 'chinese-chapter':
+    case 'chinese-outline':
+    case 'chinese-parenthesized':
+      return 'chinese'
+    default:
+      return format
+  }
+}
+
+function numberFormatFamilyLabel(family: string): string {
+  switch (family) {
+    case 'numeric': return '阿拉伯数字'
+    case 'chinese': return '中文数字'
+    case 'roman': return '罗马数字'
+    case 'alpha': return '字母'
+    case 'appendix': return '附录'
+    case 'circled': return '带圈数字'
+    case 'custom': return '自定义'
+    default: return family
+  }
 }

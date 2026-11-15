@@ -20,6 +20,11 @@
  * is injected (`MarkdownEditPort`) so the planner stays unit-testable.
  */
 import type { DocumentDiagnostic, DocumentDiagnosticsSnapshot } from './diagnostics-types'
+// R09 — REAL repair actions for the unified heading-number rules.
+import {
+  HEADING_NUMBER_FIXERS,
+  HEADING_NUMBER_FIX_CAPABILITIES,
+} from './document-diagnostic-heading-number-fix-v2'
 import {
   FIGURE_SYNTAX_IN_HEADING_CODE,
 } from './document-figure-heading-invariant-v1'
@@ -83,6 +88,16 @@ export interface FixCapabilityDescriptor {
   /** Caption-service target kind (code / table names are sidecar metadata). */
   captionTargetKind?: 'code' | 'table'
 }
+
+/** R09 — capability rows materialised from the heading-number fixer registry. */
+const HEADING_NUMBER_CAPABILITY_ROWS: Readonly<Record<string, FixCapabilityDescriptor>> = Object.fromEntries(
+  Object.entries(HEADING_NUMBER_FIX_CAPABILITIES).map(([code, capability]) => [code, {
+    code,
+    capability: capability.capability,
+    label: capability.label,
+    actionKind: 'source-patches' as const,
+  }]),
+)
 
 const CAPABILITY_MATRIX: Readonly<Record<string, FixCapabilityDescriptor>> = Object.freeze({
   EXCESSIVE_INTERNAL_BLANK_LINES: {
@@ -222,6 +237,8 @@ const CAPABILITY_MATRIX: Readonly<Record<string, FixCapabilityDescriptor>> = Obj
     captionTargetKind: 'table',
     requiresInput: { field: 'name', label: '表格名称', placeholder: '例如：接口对照表' },
   },
+  // R09 — unified heading-number repairs (single-click / same-rule / one-click).
+  ...HEADING_NUMBER_CAPABILITY_ROWS,
 })
 
 const UNAVAILABLE: FixCapabilityDescriptor = Object.freeze({
@@ -353,6 +370,8 @@ const V1_FIXERS: Readonly<Record<string, Fixer>> = Object.freeze({
   FIGURE_EMPTY_SOURCE: FIGURE_EMPTY_SOURCE_FIX,
   CODE_MISSING_LANGUAGE: CODE_LANGUAGE_FIX,
   FIGURE_MISSING_NAME: FIGURE_NAME_FIX,
+  // R09 — heading-number repair builders (metadata-driven single-line replace).
+  ...HEADING_NUMBER_FIXERS,
 })
 
 /** Plan ONE diagnostic with the V2 capability model. */

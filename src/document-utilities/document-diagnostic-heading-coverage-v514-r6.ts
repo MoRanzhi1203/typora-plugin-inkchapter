@@ -157,6 +157,14 @@ const EXPLICITLY_MAPPED_HEADING_DIAGNOSTIC_CODES: ReadonlySet<string> = new Set(
   // visual consumes the SAME VISIBLE_HEADING_LABEL coverage as every other
   // heading diagnostic (so it is explicitly mapped, never a fall-through).
   'HEADING_AUTO_NUMBER_CONFLICT',
+  // R09 — the six unified numbering rules are heading-scoped and consume the
+  // same VISIBLE_HEADING_LABEL coverage (explicitly mapped, never fall-through).
+  'HEADING_DOUBLE_NUMBER_PREFIX',
+  'HEADING_NUMBER_MISMATCH',
+  'HEADING_NUMBER_MISSING',
+  'HEADING_NUMBER_ORDER_ANOMALY',
+  'HEADING_NUMBER_FORMAT_INCONSISTENT',
+  'HEADING_NUMBER_OWNERSHIP_CONFLICT',
   'STRICT_SINGLE_H1_NO_H1',
   'STRICT_SINGLE_H1_MULTIPLE_H1',
   ...[...DOCUMENT_LEVEL_HEADING_DIAGNOSTIC_CODES],

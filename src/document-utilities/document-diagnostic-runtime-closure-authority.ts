@@ -208,14 +208,15 @@ export const DOCUMENT_DIAGNOSTIC_BASELINE = {
   // unclosed alt / malformed / invalid destination.
   // Blank-Line Matrix V1 adds the LEADING blank-line family (+1): the document
   // start owns 0 extra blank lines and its own auto-fix.
-  registeredRuleFamilyCount: 117,
-  resolvedDiagnosticCodeCount: 123,
-  userVisibleDiagnosticTypeCount: 113,
-  implementedFamilyCount: 113,
+  // R09 adds the SIX unified heading-number families (+6 implemented, produced).
+  registeredRuleFamilyCount: 123,
+  resolvedDiagnosticCodeCount: 129,
+  userVisibleDiagnosticTypeCount: 119,
+  implementedFamilyCount: 119,
   deferredFamilyCount: 4,
   plannedFamilyCount: 0,
   stateGuardCodeCount: 5,
-  contentDiagnosticCodeCount: 118,
+  contentDiagnosticCodeCount: 124,
 } as const
 
 // ── Internal authorities ────────────────────────────────────────────────────
