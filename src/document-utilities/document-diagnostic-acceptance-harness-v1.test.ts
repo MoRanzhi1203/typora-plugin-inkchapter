@@ -8,7 +8,14 @@
 import { describe, expect, it } from 'vitest'
 import type { DocumentDiagnostic, DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import {
+  analyzeInternalBlankLineGaps,
+  internalBlankGapIdentity,
+} from './document-diagnostic-internal-blank-lines-v1'
+import {
   ACCEPTANCE_DOCUMENT_RELATIVE_PATH,
+  compareDiagnosticLines,
+  expectedLineAfterChange,
+  expectedSingleFixMarkdown,
   resolveAcceptanceGate,
   runBlankLineAcceptanceScenarios,
   summarizeBlankSource,
@@ -93,45 +100,33 @@ interface FakeEditor {
   fixCalls: string[]
   setBusyAlways(value: boolean): void
   breakUndo(): void
+  /** Simulate a user edit (undoable, like the real editor transaction). */
+  write(next: string): void
 }
 
-interface FakeGap {
-  index: number
-  length: number
-  id: string
-}
-
-/**
- * Stable ids: the identity is the BLOCK the gap follows (like the production
- * `targetIdentity`), never an array ordinal — otherwise removing one gap would
- * "rename" the others and the assertion would be meaningless.
- */
-function listGaps(markdown: string, tokenFor: (prevLine: string) => string): FakeGap[] {
-  const gaps: FakeGap[] = []
-  const re = /\n{4,}/g
-  let match: RegExpExecArray | null = null
-  while ((match = re.exec(markdown)) != null) {
-    const prevLine = markdown.slice(0, match.index).split('\n').pop() ?? ''
-    gaps.push({ index: match.index, length: match[0].length, id: tokenFor(prevLine) })
-  }
-  return gaps
-}
-
-function blankSnapshot(
-  markdown: string,
-  key: string,
-  tokenFor: (prevLine: string) => string,
-): DocumentDiagnosticsSnapshot {
-  const diagnostics: DocumentDiagnostic[] = listGaps(markdown, tokenFor).map(gap => ({
-    id: `document:EXCESSIVE_INTERNAL_BLANK_LINES:${gap.id}`,
+function blankSnapshot(markdown: string, key: string): DocumentDiagnosticsSnapshot {
+  const diagnostics: DocumentDiagnostic[] = analyzeInternalBlankLineGaps(markdown).map(gap => ({
+    id: `document:EXCESSIVE_INTERNAL_BLANK_LINES:${internalBlankGapIdentity(gap)}`,
     documentKey: key,
     severity: 'warning',
     category: 'document',
     code: 'EXCESSIVE_INTERNAL_BLANK_LINES',
     message: '多余空行',
     detail: '',
-    location: { kind: 'source-range', startLine: markdown.slice(0, gap.index).split('\n').length, startColumn: 0 },
-    targetIdentity: gap.id,
+    location: { kind: 'source-range', startLine: gap.firstBlankLine, startColumn: 0 },
+    targetIdentity: internalBlankGapIdentity(gap),
+    metadata: {
+      firstBlankLine: gap.firstBlankLine,
+      lastBlankLine: gap.lastBlankLine,
+      actualBlankLines: gap.actualBlankLines,
+      passMaxBlankLines: 1,
+      previousBlockIdentity: gap.previousBlockIdentity,
+      nextBlockIdentity: gap.nextBlockIdentity,
+      previousBlockKind: gap.previousBlockKind,
+      nextBlockKind: gap.nextBlockKind,
+      previousBlockAnchorText: gap.previousBlockAnchorText,
+      nextBlockAnchorText: gap.nextBlockAnchorText,
+    },
   }))
   return {
     documentKey: key,
@@ -161,30 +156,25 @@ function createFakeEditor(initial: string): FakeEditor {
     index = stack.length - 1
   }
 
-  const tokens = new Map<string, string>()
-  const tokenFor = (prevLine: string): string => {
-    const existing = tokens.get(prevLine)
-    if (existing) return existing
-    const next = `g${tokens.size + 1}`
-    tokens.set(prevLine, next)
-    return next
-  }
-
+  // The fake applies the SAME pure plan the controller would apply.
   const fixFirst = (id: string): void => {
-    const gap = listGaps(markdown, tokenFor).find(item => `document:EXCESSIVE_INTERNAL_BLANK_LINES:${item.id}` === id)
-    if (!gap) return
-    commit(`${markdown.slice(0, gap.index)}\n\n${markdown.slice(gap.index + gap.length)}`)
+    const expected = expectedSingleFixMarkdown(markdown, blankSnapshot(markdown, key), id)
+    if (expected != null && expected !== markdown) commit(expected)
   }
 
   const fixAll = (): void => {
-    const next = markdown.replace(/\n{4,}/g, '\n\n')
+    let next = markdown
+    for (const diagnostic of blankSnapshot(next, key).diagnostics) {
+      const expected = expectedSingleFixMarkdown(next, blankSnapshot(next, key), diagnostic.id)
+      if (expected != null) next = expected
+    }
     if (next !== markdown) commit(next)
   }
 
   const port: AcceptanceHarnessPorts = {
     readMarkdown: () => markdown,
     getDocumentKey: () => key,
-    getSnapshot: () => blankSnapshot(markdown, key, tokenFor),
+    getSnapshot: () => blankSnapshot(markdown, key),
     startFixOne: (id) => { fixCalls.push(`one:${id}`); fixFirst(id) },
     startFixAll: () => { fixCalls.push('all'); fixAll() },
     isBusy: () => busyAlways,
@@ -204,6 +194,11 @@ function createFakeEditor(initial: string): FakeEditor {
     undoStackLength: () => stack.length,
     now: () => Date.now(),
     sleep: (ms) => new Promise(resolve => setTimeout(resolve, Math.min(ms, 1))),
+    writeMarkdown: (next) => {
+      if (next === markdown) return false
+      commit(next)
+      return true
+    },
   }
 
   return {
@@ -212,6 +207,7 @@ function createFakeEditor(initial: string): FakeEditor {
     fixCalls,
     setBusyAlways: (value) => { busyAlways = value },
     breakUndo: () => { undoBroken = true },
+    write: (next) => { if (next !== markdown) commit(next) },
   }
 }
 
@@ -259,22 +255,31 @@ describe('runBlankLineAcceptanceScenarios — real buffer assertions', () => {
       'undo-single',
       'redo-single',
       'reset-baseline',
+      'stale-after-insert',
+      'stale-missing',
       'fix-all',
       'undo-all',
       'redo-all',
       'restore-baseline',
     ])
-    expect(editor.fixCalls).toEqual([
-      'one:document:EXCESSIVE_INTERNAL_BLANK_LINES:g1',
-      'all',
-    ])
+    // single fix + stale-after-insert + stale-missing (refused) + fix-all
+    expect(editor.fixCalls).toHaveLength(4)
+    expect(editor.fixCalls.every(call =>
+      call === 'all' || call.startsWith('one:document:EXCESSIVE_INTERNAL_BLANK_LINES:'))).toBe(true)
+    expect(editor.fixCalls.filter(call => call === 'all')).toHaveLength(1)
     // Single fix only removed ONE gap; the rest were still there.
     const single = report.steps.find(s => s.id === 'single-fix')
     expect(single?.blankDiagnosticsBefore).toBe(3)
     expect(single?.blankDiagnosticsAfter).toBe(2)
     expect(single?.diff.removedLines).toBe(3)
-    // Evidence never carries document content.
-    expect(JSON.stringify(report)).not.toContain('正文 A')
+    // Evidence carries hashes / counts / identities — never the document text.
+    const stepKeys = Object.keys(report.steps[0])
+    expect(stepKeys).not.toContain('markdown')
+    expect(stepKeys).not.toContain('after')
+    expect(stepKeys).not.toContain('before')
+    // R07-02 — the simulated edit ran and the fix landed on the current text.
+    expect(report.steps.map(step => step.id)).toContain('stale-after-insert')
+    expect(report.steps.map(step => step.id)).toContain('stale-missing')
   })
 
   it('FAIL: an undo that does not restore the buffer is never reported as PASS', async () => {
@@ -313,5 +318,59 @@ describe('runBlankLineAcceptanceScenarios — real buffer assertions', () => {
     })
     expect(report.verdict).toBe('FAIL')
     expect(report.failures.join('\n')).toContain('baseline.blank-count')
+  })
+})
+
+describe('R07 pure helpers', () => {
+  const DOC_TEXT = ['# 标题', '', '段落一', '', '', '', '段落二', '', '段落三', ''].join('\n')
+
+  it('expectedSingleFixMarkdown changes ONLY the target gap', () => {
+    const snapshot = blankSnapshot(DOC_TEXT, 'doc')
+    expect(snapshot.diagnostics).toHaveLength(1)
+    const expected = expectedSingleFixMarkdown(DOC_TEXT, snapshot, snapshot.diagnostics[0].id)
+    expect(expected).not.toBeNull()
+    expect(expected).not.toBe(DOC_TEXT)
+    // Everything except the blank run is byte-identical.
+    expect(expected!.replace(/\n+/g, '\n')).toBe(DOC_TEXT.replace(/\n+/g, '\n'))
+  })
+
+  it('expectedLineAfterChange shifts only lines AFTER the change', () => {
+    const diff = {
+      beforeLineCount: 10,
+      afterLineCount: 8,
+      changedStartLine: 4,
+      changedEndLine: 6,
+      removedLines: 2,
+      addedLines: 0,
+    }
+    expect(expectedLineAfterChange(2, diff)).toBe(2)
+    expect(expectedLineAfterChange(5, diff)).toBeNull()
+    expect(expectedLineAfterChange(9, diff)).toBe(7)
+    expect(expectedLineAfterChange(null, diff)).toBeNull()
+  })
+
+  it('compareDiagnosticLines accepts the exact shift and rejects a stale line', () => {
+    const diff = {
+      beforeLineCount: 10,
+      afterLineCount: 8,
+      changedStartLine: 4,
+      changedEndLine: 6,
+      removedLines: 2,
+      addedLines: 0,
+    }
+    const before = [
+      { id: 'a', code: 'X', line: 2, targetIdentity: 'a' },
+      { id: 'b', code: 'X', line: 9, targetIdentity: 'b' },
+    ]
+    const correct = [
+      { id: 'a', code: 'X', line: 2, targetIdentity: 'a' },
+      { id: 'b', code: 'X', line: 7, targetIdentity: 'b' },
+    ]
+    expect(compareDiagnosticLines(before, correct, diff).every(item => item.ok)).toBe(true)
+    const stale = [
+      { id: 'a', code: 'X', line: 2, targetIdentity: 'a' },
+      { id: 'b', code: 'X', line: 9, targetIdentity: 'b' },
+    ]
+    expect(compareDiagnosticLines(before, stale, diff).some(item => !item.ok)).toBe(true)
   })
 })

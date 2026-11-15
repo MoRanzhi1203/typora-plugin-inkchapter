@@ -434,3 +434,51 @@ describe('R06-02 — automatic re-diagnosis on a stale target', () => {
     expect(h.notify).toHaveBeenCalled()
   })
 })
+
+describe('R07-02 — start-time re-diagnosis against the CURRENT document', () => {
+  function freshDiagnostic(markdown: string, id = 'fresh') {
+    const gap = analyzeInternalBlankLineGaps(markdown)[0]
+    return diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: gap.firstBlankLine,
+      lastBlankLine: gap.lastBlankLine,
+      actualBlankLines: gap.actualBlankLines,
+      passMaxBlankLines: 1,
+      previousBlockKind: gap.previousBlockKind,
+      nextBlockKind: gap.nextBlockKind,
+    }, blankLocation, id, internalBlankGapIdentity(gap))
+  }
+
+  it('a rule request continues on the refreshed list after ONE recheck', () => {
+    const markdown = 'P1\n\n\n\nP2\n'
+    let rechecks = 0
+    const h = createHarness({
+      markdown,
+      diagnostics: [],
+      // The live re-diagnosis parses the CURRENT markdown (a real recompute).
+      onRecheck: (state) => {
+        rechecks++
+        const gaps = analyzeInternalBlankLineGaps(state.markdown)
+        state.snapshot = snapshot(gaps.length === 0 ? [] : [freshDiagnostic(state.markdown)])
+      },
+    })
+    h.controller.startRule('EXCESSIVE_INTERNAL_BLANK_LINES')
+    expect(rechecks).toBeGreaterThanOrEqual(1)
+    expect(h.state.writes).toEqual(['P1\n\nP2\n'])
+  })
+
+  it('when nothing remains, it refreshes the list and writes NOTHING', () => {
+    let rechecks = 0
+    const h = createHarness({
+      markdown: 'P1\n\nP2\n',
+      diagnostics: [],
+      onRecheck: (state) => {
+        rechecks++
+        state.snapshot = snapshot([])
+      },
+    })
+    h.controller.startDiagnostic('vanished-id')
+    expect(rechecks).toBe(1)
+    expect(h.state.writes).toHaveLength(0)
+    expect(h.notify).toHaveBeenCalledWith(expect.stringContaining('检测列表已刷新'), 'error')
+  })
+})

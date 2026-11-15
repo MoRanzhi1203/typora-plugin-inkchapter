@@ -17,6 +17,10 @@
  */
 import type { DocumentDiagnostic, DocumentDiagnosticsSnapshot } from './diagnostics-types'
 import { fixMarkdownHash } from './document-diagnostic-fix-v1'
+import {
+  buildFixedMarkdown,
+  planDiagnosticFixV2,
+} from './document-diagnostic-fix-v2'
 
 /** The three blank-line rules the fix chain owns. */
 export const BLANK_LINE_ACCEPTANCE_RULE_CODES = [
@@ -146,6 +150,70 @@ export interface AcceptanceAssertion {
   detail: string
 }
 
+/**
+ * R07-01 — the EXACT text a single-diagnostic fix should produce, derived from
+ * the SAME pure planner the controller uses. Comparing it with the real buffer
+ * proves the write changed only the target region — no "whole document was
+ * normalized" excuse.
+ */
+export function expectedSingleFixMarkdown(
+  markdown: string,
+  snapshot: DocumentDiagnosticsSnapshot,
+  diagnosticId: string,
+): string | null {
+  const diagnostic = snapshot.diagnostics.find(d => d.id === diagnosticId) ?? null
+  if (diagnostic == null) return null
+  try {
+    const plan = planDiagnosticFixV2(diagnostic, {
+      markdown,
+      snapshotMarkdown: markdown,
+      documentKey: snapshot.documentKey ?? '',
+      snapshot,
+      locked: false,
+      input: { name: '' },
+    }, { captionAvailable: false })
+    if (!plan.ok || plan.patches.length === 0 || plan.captionName != null) return null
+    return buildFixedMarkdown(markdown, [plan]).next
+  } catch {
+    return null
+  }
+}
+
+/**
+ * R07-03 — where a diagnostic line MUST move to after a known text change.
+ * `null` = the line sits inside the changed range, so no expectation is made.
+ */
+export function expectedLineAfterChange(line: number | null, diff: LineDiffSummary): number | null {
+  if (line == null) return null
+  if (diff.changedStartLine == null || diff.changedEndLine == null) return line
+  if (line < diff.changedStartLine) return line
+  if (line > diff.changedEndLine) return line - diff.removedLines
+  return null
+}
+
+/** R07-03 — verify every SURVIVING diagnostic got its new line number. */
+export function compareDiagnosticLines(
+  before: readonly AcceptanceDiagnosticFact[],
+  after: readonly AcceptanceDiagnosticFact[],
+  diff: LineDiffSummary,
+): Array<{ id: string; beforeLine: number | null; afterLine: number | null; expectedLine: number | null; ok: boolean }> {
+  const afterById = new Map(after.map(item => [item.id, item]))
+  const out: Array<{ id: string; beforeLine: number | null; afterLine: number | null; expectedLine: number | null; ok: boolean }> = []
+  for (const item of before) {
+    const next = afterById.get(item.id)
+    if (next == null) continue
+    const expectedLine = expectedLineAfterChange(item.line, diff)
+    out.push({
+      id: item.id,
+      beforeLine: item.line,
+      afterLine: next.line,
+      expectedLine,
+      ok: expectedLine == null || next.line === expectedLine,
+    })
+  }
+  return out
+}
+
 export interface AcceptanceDiagnosticFact {
   id: string
   code: string
@@ -208,6 +276,25 @@ export interface AcceptanceUndoResult {
 }
 
 /**
+ * R07-03 — the UI facts the acceptance reads AFTER a fix. They come from the
+ * SAME projections the toolbar / 检测 panel consume, plus the painted blank
+ * markers in the editor DOM. Nothing here is a second counting authority.
+ */
+export interface AcceptanceUiState {
+  revision: number | null
+  errorCount: number
+  warningCount: number
+  hintCount: number
+  totalCount: number
+  /** Painted blank-marker chips/rails currently in the document. */
+  blankMarkerCount: number
+  blankMarkerTexts: string[]
+  /** `N 项可自动修复` at the current snapshot. */
+  autoFixableCount: number
+  diagnostics: AcceptanceDiagnosticFact[]
+}
+
+/**
  * Everything the runner may touch. `startFixOne` / `startFixAll` are the SAME
  * entries the 检测 panel buttons call; the runner never plans or writes itself.
  */
@@ -223,6 +310,16 @@ export interface AcceptanceHarnessPorts {
   undoStackLength(): number | null
   now(): number
   sleep(ms: number): Promise<void>
+  /** R07-03 — toolbar / panel / marker facts (absent ⇒ UI assertions skipped). */
+  readUiState?(): AcceptanceUiState | null
+  /**
+   * R07-02 — TEST-VAULT ONLY: write the buffer through the SAME production
+   * editor transaction, simulating a user edit so the stale-target path can be
+   * proven. Absent ⇒ the stale scenarios are skipped.
+   */
+  writeMarkdown?(next: string): boolean
+  /** Recompute diagnostics (the live document is the only authority). */
+  recheck?(): void
 }
 
 export interface AcceptanceRunOptions {
@@ -374,18 +471,26 @@ export async function runBlankLineAcceptanceScenarios(
       baselineStep,
     )
 
-    const firstTarget = baselineBlank[0] ?? null
+    // R07-01 — prefer an INTERNAL gap so a single fix can also prove that the
+    // document END boundary (trailing newlines) was NOT normalized.
+    const internalTargets = baselineBlank.filter(d => d.code === 'EXCESSIVE_INTERNAL_BLANK_LINES')
+    const firstTarget = internalTargets[0] ?? baselineBlank[0] ?? null
+    const readUi = (): AcceptanceUiState | null => safe(() => port.readUiState?.() ?? null)
 
-    if (firstTarget) {
+    if (firstTarget && baselineSnapshot != null) {
       // ── S1 single fix (the panel button entry) ───────────────────────────
       const s1 = new AssertionLog()
       const before = baselineMarkdown
       const stackBefore = safe(() => port.undoStackLength())
+      const uiBefore = readUi()
+      const expected = expectedSingleFixMarkdown(before, baselineSnapshot, firstTarget.id)
       port.startFixOne(firstTarget.id)
       const settled = await waitUntil(() => !safe(() => port.isBusy()), settleTimeout)
       await settle()
       const after = safe(() => port.readMarkdown()) ?? ''
       const afterBlank = blankDiagnostics(safe(() => port.getSnapshot()))
+      const uiAfter = readUi()
+      const diff = summarizeLineDiff(before, after)
       s1.check('single.settled', settled, settled ? '修复事务已结束' : '修复事务超时未结束')
       s1.check('single.changed', after !== before, '单项修复应改变缓冲区')
       s1.check(
@@ -398,6 +503,52 @@ export async function runBlankLineAcceptanceScenarios(
         afterBlank.length === baselineBlank.length - 1,
         `剩余空行诊断 ${afterBlank.length}（期望 ${baselineBlank.length - 1}）`,
       )
+      // R07-01 — the REAL buffer must equal the pure single-patch result.
+      s1.check(
+        'single.only-target-region',
+        expected != null && after === expected,
+        expected == null
+          ? '纯计划器未给出单项补丁，无法证明修改范围'
+          : describeMarkdownMismatch(expected, after),
+      )
+      if (firstTarget.code === 'EXCESSIVE_INTERNAL_BLANK_LINES') {
+        const eofBefore = summarizeBlankSource(before).trailingNewlines
+        const eofAfter = summarizeBlankSource(after).trailingNewlines
+        s1.check('single.eof-untouched', eofBefore === eofAfter, `文末换行 ${eofBefore} → ${eofAfter}（内部空行修复不应改动文末）`)
+      }
+      // R07-03 — every UI surface that mirrors the snapshot must move with it.
+      if (uiBefore != null && uiAfter != null) {
+        s1.check(
+          'ui.diagnostics-updated',
+          uiAfter.diagnostics.length === uiBefore.diagnostics.length - 1
+            && !uiAfter.diagnostics.some(d => d.id === firstTarget.id),
+          `列表 ${uiBefore.diagnostics.length} → ${uiAfter.diagnostics.length}，目标条目已移除`,
+        )
+        s1.check(
+          'ui.counts-updated',
+          uiAfter.totalCount === uiBefore.totalCount - 1,
+          `错误/警告/提示总数 ${uiBefore.totalCount} → ${uiAfter.totalCount}`,
+        )
+        s1.check(
+          'ui.auto-fixable-updated',
+          uiAfter.autoFixableCount === uiBefore.autoFixableCount - 1,
+          `可自动修复 ${uiBefore.autoFixableCount} → ${uiAfter.autoFixableCount}`,
+        )
+        s1.check(
+          'ui.markers-synced',
+          uiAfter.blankMarkerCount <= uiBefore.blankMarkerCount,
+          `空行标记 ${uiBefore.blankMarkerCount} → ${uiAfter.blankMarkerCount}`,
+        )
+        const lineChecks = compareDiagnosticLines(diagnosticLines(baselineBlank), uiAfter.diagnostics, diff)
+          .filter(item => item.expectedLine != null)
+        s1.check(
+          'ui.line-numbers-updated',
+          lineChecks.every(item => item.ok),
+          lineChecks.filter(item => !item.ok).length === 0
+            ? `存活诊断行号已按当前文档重算（${lineChecks.length} 项）`
+            : `行号未更新：${lineChecks.filter(item => !item.ok).map(item => `${item.id} ${item.beforeLine}→${item.afterLine}（期望 ${item.expectedLine}）`).join('; ')}`,
+        )
+      }
       recordStep('single-fix', '单项修复（检测面板「修复」同一入口）', before, after, baselineBlank.length, afterBlank.length, stackBefore, s1)
 
       const fixedOne = after
@@ -430,20 +581,140 @@ export async function runBlankLineAcceptanceScenarios(
       recordStep('reset-baseline', '再次撤销回到基线（为一键修复准备）', afterRedo, backToBaseline, beforeResetBlank, blankDiagnostics(safe(() => port.getSnapshot())).length, safe(() => port.undoStackLength()), s4)
     }
 
+    // ── S4b/S4c — a REAL edit before the fix (R07-02) ──────────────────────
+    const writeMarkdown = port.writeMarkdown?.bind(port) ?? null
+    const restoreToBaseline = async (): Promise<boolean> => {
+      for (let i = 0; i < 4; i++) {
+        if ((safe(() => port.readMarkdown()) ?? '') === baselineMarkdown) return true
+        safeResult(() => port.undo())
+        await settle()
+      }
+      if ((safe(() => port.readMarkdown()) ?? '') === baselineMarkdown) return true
+      if (writeMarkdown == null) return false
+      return safe(() => writeMarkdown(baselineMarkdown)) === true
+    }
+    if (writeMarkdown != null) {
+      const staleFacts = blankDiagnostics(safe(() => port.getSnapshot()))
+      const staleTarget = staleFacts.find(d => d.code === 'EXCESSIVE_INTERNAL_BLANK_LINES') ?? staleFacts[0] ?? null
+      if (staleTarget != null) {
+        // (b1) content inserted ABOVE the gap → the stable identity survives, so
+        // the fix must still land on that SAME gap in the CURRENT document.
+        const s4b = new AssertionLog()
+        const inserted = `插入到文档上方的新段落（模拟真实编辑）。\n\n${baselineMarkdown}`
+        const wrote = safe(() => writeMarkdown(inserted)) === true
+        safe(() => port.recheck?.())
+        await settle()
+        const readyEdited = wrote && await waitUntil(() => {
+          const markdown = safe(() => port.readMarkdown())
+          return markdown === inserted && safe(() => port.getSnapshot()) != null
+        }, settleTimeout)
+        await settle()
+        const current = safe(() => port.readMarkdown()) ?? ''
+        const currentSnapshot = safe(() => port.getSnapshot())
+        const expectedEdited = currentSnapshot == null
+          ? null
+          : expectedSingleFixMarkdown(current, currentSnapshot, staleTarget.id)
+        s4b.check('stale-insert.applied', readyEdited && current === inserted, '模拟编辑已写入当前缓冲区')
+        s4b.check(
+          'stale-insert.target-identifiable',
+          currentSnapshot != null && currentSnapshot.diagnostics.some(d => d.id === staleTarget.id),
+          '上方插入不改变目标空行的稳定身份',
+        )
+        const stackBeforeStale = safe(() => port.undoStackLength())
+        port.startFixOne(staleTarget.id)
+        const settledStale = await waitUntil(() => !safe(() => port.isBusy()), settleTimeout)
+        await settle()
+        const afterStale = safe(() => port.readMarkdown()) ?? ''
+        const blankAfterStale = blankDiagnostics(safe(() => port.getSnapshot())).length
+        s4b.check('stale-insert.settled', settledStale, '过期诊断修复事务已结束')
+        s4b.check(
+          'stale-insert.precise',
+          expectedEdited != null && afterStale === expectedEdited,
+          expectedEdited == null ? '无法生成预期单项补丁' : describeMarkdownMismatch(expectedEdited, afterStale),
+        )
+        const restoredAfterInsert = await restoreToBaseline()
+        s4b.check('stale-insert.restored', restoredAfterInsert, '夹具已还原到基线')
+        recordStep(
+          'stale-after-insert',
+          '编辑后按当前文档修复原目标（自动重检、无第二次点击）',
+          current,
+          afterStale,
+          blankDiagnostics(currentSnapshot).length,
+          blankAfterStale,
+          stackBeforeStale,
+          s4b,
+        )
+        // (b2) the target gap is GONE (collapsed) → nothing may be written and
+        // the list must reflect the current document.
+        const s4c = new AssertionLog()
+        const collapsed = baselineMarkdown.replace(/\n{4,}/, '\n\n')
+        const wroteCollapse = collapsed !== baselineMarkdown && safe(() => writeMarkdown(collapsed)) === true
+        safe(() => port.recheck?.())
+        await settle()
+        const readyCollapsed = wroteCollapse && await waitUntil(() => {
+          const markdown = safe(() => port.readMarkdown())
+          return markdown === collapsed && safe(() => port.getSnapshot()) != null
+        }, settleTimeout)
+        await settle()
+        const currentCollapsed = safe(() => port.readMarkdown()) ?? ''
+        const stackBeforeMissing = safe(() => port.undoStackLength())
+        port.startFixOne(staleTarget.id)
+        const settledMissing = await waitUntil(() => !safe(() => port.isBusy()), settleTimeout)
+        await settle()
+        const afterMissing = safe(() => port.readMarkdown()) ?? ''
+        const missingSnapshot = safe(() => port.getSnapshot())
+        const blankAfterMissing = blankDiagnostics(missingSnapshot).length
+        s4c.check('stale-missing.applied', readyCollapsed && currentCollapsed === collapsed, '模拟编辑（删除目标空行）已写入')
+        s4c.check('stale-missing.no-write', afterMissing === currentCollapsed, '目标已不存在时不得写入任何内容')
+        s4c.check(
+          'stale-missing.list-refreshed',
+          missingSnapshot != null && !blankDiagnostics(missingSnapshot).some(d => d.targetIdentity === staleTarget.targetIdentity),
+          '检测列表已按当前文档刷新，不再包含已删除区间',
+        )
+        const restoredAfterMissing = await restoreToBaseline()
+        s4c.check('stale-missing.restored', restoredAfterMissing, '夹具已还原到基线')
+        recordStep(
+          'stale-missing',
+          '原目标已删除时拒绝写入（安全失败 + 列表刷新）',
+          currentCollapsed,
+          afterMissing,
+          blankDiagnostics(missingSnapshot).length,
+          blankAfterMissing,
+          stackBeforeMissing,
+          s4c,
+        )
+      }
+    }
+
     // ── S5 fix all ─────────────────────────────────────────────────────────
     {
       const s5 = new AssertionLog()
       const before = safe(() => port.readMarkdown()) ?? ''
       const beforeBlank = blankDiagnostics(safe(() => port.getSnapshot()))
       const stackBefore = safe(() => port.undoStackLength())
+      const uiBeforeAll = readUi()
       port.startFixAll()
       const settled = await waitUntil(() => !safe(() => port.isBusy()), settleTimeout)
       await settle()
       const after = safe(() => port.readMarkdown()) ?? ''
       const afterBlank = blankDiagnostics(safe(() => port.getSnapshot()))
+      const uiAfterAll = readUi()
       s5.check('all.settled', settled, settled ? '一键修复事务已结束' : '一键修复超时未结束')
       s5.check('all.changed', after !== before, '一键修复应改变缓冲区')
       s5.check('all.no-blank-diagnostics', afterBlank.length === 0, `剩余空行诊断 ${afterBlank.length}（期望 0）`)
+      // R07-03/04 — one write must update EVERY mirror at once.
+      if (uiBeforeAll != null && uiAfterAll != null) {
+        const remainingBlankUi = uiAfterAll.diagnostics.filter(d =>
+          (BLANK_LINE_ACCEPTANCE_RULE_CODES as readonly string[]).includes(d.code))
+        s5.check('ui.all-list-cleared', remainingBlankUi.length === 0, `检测列表剩余空行条目 ${remainingBlankUi.length}`)
+        s5.check(
+          'ui.all-counts-cleared',
+          uiAfterAll.totalCount === uiBeforeAll.totalCount - beforeBlank.length,
+          `总数 ${uiBeforeAll.totalCount} → ${uiAfterAll.totalCount}（期望 ${uiBeforeAll.totalCount - beforeBlank.length}）`,
+        )
+        s5.check('ui.all-auto-fixable-zero', uiAfterAll.autoFixableCount === 0, `可自动修复 ${uiAfterAll.autoFixableCount}（期望 0）`)
+        s5.check('ui.all-markers-cleared', uiAfterAll.blankMarkerCount === 0, `空行标记 ${uiAfterAll.blankMarkerCount}（期望 0）`)
+      }
       recordStep('fix-all', '一键修复全部安全空行诊断', before, after, beforeBlank.length, afterBlank.length, stackBefore, s5)
 
       const fixedAll = after
@@ -481,9 +752,12 @@ export async function runBlankLineAcceptanceScenarios(
   }
 
   const finalMarkdown = safe(() => port.readMarkdown()) ?? ''
+  const stepFailures = steps.flatMap(step =>
+    step.assertions.filter(item => !item.ok).map(item => `${item.id}: ${item.detail}`))
+  const allFailures = Array.from(new Set([...failures, ...stepFailures]))
   const verdict: AcceptanceVerdict = steps.length === 0
     ? 'UNEXECUTED'
-    : (error == null && failures.length === 0 ? 'PASS' : 'FAIL')
+    : (error == null && allFailures.length === 0 ? 'PASS' : 'FAIL')
 
   return {
     schema: 'inkchapter.blank-line-acceptance/v1',
@@ -498,10 +772,10 @@ export async function runBlankLineAcceptanceScenarios(
     finalDiagnostics: diagnosticLines(blankDiagnostics(safe(() => port.getSnapshot()))),
     finalMarkdownMatchesBaseline: finalMarkdown === baselineMarkdown,
     steps,
-    failures,
+    failures: allFailures,
     error,
     verdict,
-    scope: '调用与检测面板「修复 / 一键修复」相同的业务入口；通过 Typora 自身的 undo/redo 命令验证撤销与重做；不模拟鼠标点击。',
+    scope: '调用与检测面板「修复 / 一键修复」相同的业务入口；单项修复与纯计划器结果逐字节比对；校验列表/计数/行号/空行标记/可修复数量；通过 Typora 自身的 undo/redo 命令验证撤销与重做；不模拟鼠标点击。',
     undoApi: {
       available: steps.some(step => step.assertions.some(a =>
         (a.id === 'undo.api' || a.id === 'all-undo.api') && a.ok))

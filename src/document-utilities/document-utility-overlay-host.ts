@@ -21,6 +21,7 @@ import {
   runBlankLineAcceptanceScenarios,
   type AcceptanceRunOptions,
   type AcceptanceRunReport,
+  type AcceptanceUiState,
 } from './document-diagnostic-acceptance-harness-v1'
 import { describeFixCapability, planAllAutoFixesV2, selectNonConflictingPlans } from './document-diagnostic-fix-v2'
 import {
@@ -3624,7 +3625,71 @@ export class DocumentUtilityOverlayHost {
       undoStackLength: () => port.readUndoStackLength?.() ?? null,
       now: () => Date.now(),
       sleep,
+      // R07-03 — the SAME projections the toolbar / 检测 panel render.
+      readUiState: () => this.getAcceptanceUiState(),
+      // R07-02 — simulate a user edit through the SAME editor transaction.
+      writeMarkdown: (next) => {
+        const current = port.readMarkdownExact?.() ?? this.readFixSource().markdown
+        if (current == null) return false
+        return port.applyMarkdown(next, current).ok
+      },
+      recheck: () => { try { this.diagnostics.recompute('ACCEPTANCE_RECHECK') } catch { /* fail-open */ } },
     }, options)
+  }
+
+  /**
+   * R07-03 — UI facts for the runtime acceptance: list / counts / line numbers /
+   * painted blank markers / auto-fixable count. Read-only, same authorities.
+   */
+  getAcceptanceUiState(): AcceptanceUiState | null {
+    const snapshot = this.getSnapshot()
+    if (snapshot == null) return null
+    const projection = this.getCurrentProblemsProjection()
+    let markers: HTMLElement[] = []
+    try {
+      markers = Array.from(document.querySelectorAll<HTMLElement>(
+        `.${BLANK_RUN_COUNT_CHIP_CLASS}, [data-ink-blank-space-warning="true"]`,
+      ))
+    } catch { markers = [] }
+    return {
+      revision: snapshot.revision,
+      errorCount: projection.errorCount,
+      warningCount: projection.warningCount,
+      hintCount: projection.hintCount,
+      totalCount: projection.totalCount,
+      blankMarkerCount: markers.length,
+      blankMarkerTexts: markers.map(el => (el.textContent ?? '').trim()).filter(text => text !== '').slice(0, 12),
+      autoFixableCount: this.countAutoFixableNow(),
+      diagnostics: snapshot.diagnostics.map(d => ({
+        id: d.id,
+        code: d.code,
+        line: d.location?.kind === 'source-range' ? d.location.startLine : null,
+        targetIdentity: typeof d.targetIdentity === 'string' ? d.targetIdentity : null,
+      })),
+    }
+  }
+
+  /** AUTO_SAFE plan count over the live snapshot (no panel-open requirement). */
+  private countAutoFixableNow(): number {
+    const snapshot = this.getSnapshot()
+    const source = this.readFixSource()
+    const documentKey = this.opts.ctx.authority.getDocumentKey()
+    if (snapshot == null || !source.verified || source.markdown == null || source.markdown === '' || documentKey == null) {
+      return 0
+    }
+    try {
+      const markdown = source.markdown
+      const plans = planAllAutoFixesV2({
+        markdown,
+        snapshotMarkdown: markdown,
+        documentKey,
+        snapshot,
+        locked: this.editGuard?.isLocked() ?? false,
+      }, { captionAvailable: true })
+      return selectNonConflictingPlans(plans).accepted.length
+    } catch {
+      return 0
+    }
   }
 
   /** V4 — single current problems projection (Toolbar/Drawer parity). */

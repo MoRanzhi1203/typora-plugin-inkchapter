@@ -95,6 +95,17 @@ export class DiagnosticFixController {
   private prepared: PreparedRequest | null = null
   private busy = false
   private generation = 0
+  /**
+   * R07-04 — the accepted plans of the LAST plan pass, keyed by the EXACT source
+   * they were built from. Re-planning is only skipped when document, text and
+   * snapshot revision are all identical (same input ⇒ same output).
+   */
+  private plannedFor: {
+    documentKey: string
+    markdown: string
+    revision: number
+    plans: readonly FixPlanV2[]
+  } | null = null
 
   constructor(
     private readonly env: DiagnosticFixEnvironment,
@@ -120,6 +131,7 @@ export class DiagnosticFixController {
   cancel(): void {
     this.generation++
     this.prepared = null
+    this.plannedFor = null
     this.busy = false
     this.ui.closeFixPanel()
   }
@@ -147,15 +159,30 @@ export class DiagnosticFixController {
       return
     }
     const documentKey = this.env.getDocumentKey()
-    const snapshot = this.env.getSnapshot()
     const markdown = this.env.getMarkdown()
+    let snapshot = this.env.getSnapshot()
     if (!documentKey || !snapshot || snapshot.documentKey !== documentKey || markdown == null) {
       this.env.notify('当前没有可修复的文档检测结果。', 'error')
       return
     }
-    const targets = this.collectDiagnostics(request, snapshot)
+    let effectiveRequest = request
+    let targets = this.collectDiagnostics(effectiveRequest, snapshot)
+    // R07-02 — the diagnostic id can disappear after a real edit while the
+    // document key is unchanged. Re-run detection ONCE against the live document
+    // and re-bind the logical target; a first miss is never a dead end.
     if (targets.length === 0) {
-      this.env.notify('没有找到可修复的诊断（可能已过期，请重新检测）。', 'error')
+      const fresh = this.recheckOnce(documentKey)
+      if (fresh != null && fresh !== snapshot) {
+        const rebound = this.rebindRequest(request, snapshot, fresh)
+        if (rebound != null) {
+          effectiveRequest = rebound
+          snapshot = fresh
+          targets = this.collectDiagnostics(effectiveRequest, snapshot)
+        }
+      }
+    }
+    if (targets.length === 0) {
+      this.env.notify('文档已更新，未找到原诊断；检测列表已刷新，请按最新结果继续。', 'error')
       return
     }
     const capability = describeFixCapability(targets[0].code, this.captionAvailable())
@@ -165,7 +192,7 @@ export class DiagnosticFixController {
     }
     this.generation++
     this.prepared = {
-      request,
+      request: effectiveRequest,
       inputValue: '',
       documentKey,
       markdownHashAtOpen: fixMarkdownHash(markdown),
@@ -305,6 +332,35 @@ export class DiagnosticFixController {
     return plans.some(p => p.blockers.some(b => stale.has(b.code)))
   }
 
+  /** R07-02 — ONE authoritative re-diagnosis against the live document. */
+  private recheckOnce(documentKey: string): DocumentDiagnosticsSnapshot | null {
+    try { this.env.recheck() } catch { return null }
+    const fresh = this.env.getSnapshot()
+    if (fresh == null || fresh.documentKey !== documentKey) return null
+    return fresh
+  }
+
+  /**
+   * Re-bind the user's logical request to the fresh snapshot. `null` means the
+   * target cannot be confirmed — the caller must stop, never guess.
+   */
+  private rebindRequest(
+    request: FixRequest,
+    previous: DocumentDiagnosticsSnapshot,
+    fresh: DocumentDiagnosticsSnapshot,
+  ): FixRequest | null {
+    if (request.kind === 'one') {
+      const old = previous.diagnostics.find(d => d.id === request.diagnosticId)
+      if (old == null) return null
+      const match = this.matchFreshDiagnostic(old, fresh.diagnostics)
+      return match == null ? null : { kind: 'one', diagnosticId: match.id }
+    }
+    if (request.kind === 'rule') {
+      return fresh.diagnostics.some(d => d.code === request.code) ? request : null
+    }
+    return this.collectDiagnostics(request, fresh).length > 0 ? request : null
+  }
+
   /**
    * ONE bounded automatic re-diagnosis. The logical target is re-bound by stable
    * identity, then by the legacy block-identity pair, then by a unique same-rule
@@ -314,19 +370,13 @@ export class DiagnosticFixController {
     previous: DocumentDiagnosticsSnapshot,
     documentKey: string,
   ): DocumentDiagnosticsSnapshot | null {
-    this.env.recheck()
-    const fresh = this.env.getSnapshot()
-    if (fresh == null || fresh === previous || fresh.documentKey !== documentKey) return null
+    const fresh = this.recheckOnce(documentKey)
+    if (fresh == null || fresh === previous) return null
     const prepared = this.prepared
     if (prepared == null) return null
-    const request = prepared.request
-    if (request.kind === 'one') {
-      const old = previous.diagnostics.find(d => d.id === request.diagnosticId)
-      if (old == null) return null
-      const match = this.matchFreshDiagnostic(old, fresh.diagnostics)
-      if (match == null) return null
-      this.prepared = { ...prepared, request: { kind: 'one', diagnosticId: match.id } }
-    }
+    const rebound = this.rebindRequest(prepared.request, previous, fresh)
+    if (rebound == null) return null
+    this.prepared = { ...prepared, request: rebound }
     return fresh
   }
 
@@ -405,6 +455,10 @@ export class DiagnosticFixController {
       }
       return
     }
+    // R07-04 — cache the accepted plans so the SAME user action does not parse
+    // the document twice. `confirmAndApply` reuses them ONLY when the source and
+    // the snapshot revision are still identical; otherwise it re-plans.
+    this.plannedFor = { documentKey, markdown, revision: snapshot.revision, plans: accepted }
     if (!previewRequired) {
       // 直接修复 — 点击「修复」立即写回，不再弹出预览中间界面。
       void this.confirmAndApply(accepted, [], false)
@@ -536,10 +590,23 @@ export class DiagnosticFixController {
       this.fail('STALE_SOURCE')
       return
     }
-    const plans = this.planAll(markdown, snapshot, documentKey)
-    const { accepted } = selectNonConflictingPlans(plans)
+    // Re-plan from the LIVE buffer: a stale base can never be written. The ONLY
+    // shortcut is a byte-identical source + identical snapshot revision, i.e. the
+    // exact input the accepted plans were built from (R07-04).
+    const cached = this.plannedFor
+    const reusable = cached != null
+      && cached.documentKey === documentKey
+      && cached.markdown === markdown
+      && cached.revision === snapshot.revision
+    const plans = reusable ? null : this.planAll(markdown, snapshot, documentKey)
+    let accepted: FixPlanV2[]
+    if (reusable && cached != null) {
+      accepted = [...cached.plans]
+    } else {
+      accepted = selectNonConflictingPlans(plans ?? []).accepted
+    }
     if (accepted.length === 0) {
-      const reason = plans.flatMap(p => p.blockers).map(b => b.message)[0] ?? '修复计划已失效，请重新检测。'
+      const reason = (plans ?? []).flatMap(p => p.blockers).map(b => b.message)[0] ?? '修复计划已失效，请重新检测。'
       this.reportApplyFailure(reason, previewedPlans, showPreview)
       return
     }
@@ -628,6 +695,7 @@ export class DiagnosticFixController {
       outcome.status === 'VERIFIED_FIXED' ? 'info' : 'error',
     )
     this.prepared = null
+    this.plannedFor = null
     this.ui.closeFixPanel()
   }
 
@@ -648,6 +716,7 @@ export class DiagnosticFixController {
       return
     }
     this.prepared = null
+    this.plannedFor = null
     this.ui.closeFixPanel()
   }
 
@@ -656,6 +725,7 @@ export class DiagnosticFixController {
     const message = REASON_TEXT[reason] ?? '修复失败。'
     this.env.notify(message, 'error')
     this.prepared = null
+    this.plannedFor = null
     this.ui.closeFixPanel()
   }
 
