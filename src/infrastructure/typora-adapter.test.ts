@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mountPendingFencesSynchronously } from './typora-adapter'
+import {
+  invokeEditorRedo,
+  invokeEditorUndo,
+  mountPendingFencesSynchronously,
+  readEditorUndoStackLength,
+} from './typora-adapter'
 
 afterEach(() => {
   document.body.innerHTML = ''
@@ -51,5 +56,37 @@ describe('mountPendingFencesSynchronously', () => {
     document.body.innerHTML = '<div id="write"><pre class="md-fences mock-cm" cid="n1"></pre></div>'
     const stop = mountPendingFencesSynchronously({ writingArea: document.getElementById('write') })
     expect(() => stop()).not.toThrow()
+  })
+})
+
+describe('Typora undo/redo bridge', () => {
+  it('calls the same undo/redo entries the editor menu uses', () => {
+    const undo = vi.fn()
+    const redo = vi.fn()
+    const api = { undo: { undo, redo } }
+    expect(invokeEditorUndo(api)).toEqual({ ok: true })
+    expect(invokeEditorRedo(api)).toEqual({ ok: true })
+    expect(undo).toHaveBeenCalledTimes(1)
+    expect(redo).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports an unavailable API instead of throwing', () => {
+    expect(invokeEditorUndo(null)).toEqual({ ok: false, reason: 'UNDO_API_UNAVAILABLE' })
+    expect(invokeEditorRedo({})).toEqual({ ok: false, reason: 'UNDO_API_UNAVAILABLE' })
+  })
+
+  it('captures a throwing API as a failure', () => {
+    const api = { undo: { undo: () => { throw new Error('BOOM') } } }
+    expect(invokeEditorUndo(api)).toEqual({ ok: false, reason: 'BOOM' })
+  })
+
+  it('reads the stack length from the instance, the nested manager or the snapshot', () => {
+    expect(readEditorUndoStackLength({ undo: { commandStack: [1, 2, 3] } })).toBe(3)
+    expect(readEditorUndoStackLength({ undo: { UndoManager: { commandStack: [1] } } })).toBe(1)
+    expect(readEditorUndoStackLength({
+      undo: { storeToJson: () => ({ commandStackJson: '[{"tag":"reload"},{}]' }) },
+    })).toBe(2)
+    expect(readEditorUndoStackLength({ undo: {} })).toBeNull()
+    expect(readEditorUndoStackLength(null)).toBeNull()
   })
 })

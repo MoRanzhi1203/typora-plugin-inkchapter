@@ -9,6 +9,78 @@
 const PENDING_FENCE_SELECTOR = 'pre.md-fences.mock-cm'
 
 /**
+ * Typora 1.6.7 的真实撤销栈形状（来源：`D:\Typora\resources\appsrc\window\frame.js`）。
+ *
+ * - `File.editor.undo` 是 UndoManager 实例，`undo()` / `redo()` 是它的原型方法，
+ *   也是 Edit→Undo/Redo 与 Ctrl+Z / Ctrl+Y 最终调用的同一入口；
+ * - `undo.UndoManager.commandStack` 是注册过的命令栈（`File.reloadContent` 会
+ *   注册一条 tag 为 `reload` 的命令），`index` 为当前游标。
+ *
+ * 这些访问只用于验收/证据读取，不改写文档。
+ */
+export interface TyporaUndoApi {
+  undo?: {
+    undo?: (event?: unknown) => unknown
+    redo?: (event?: unknown) => unknown
+    /** UndoManager internals (shape differs between 1.6.x builds). */
+    commandStack?: unknown[]
+    index?: number
+    UndoManager?: { commandStack?: unknown[]; index?: number }
+    /** Documented-by-code snapshot accessor on the SAME instance. */
+    storeToJson?: () => { index?: number; commandStackJson?: string }
+  }
+}
+
+export interface TyporaUndoResult {
+  ok: boolean
+  reason?: string
+}
+
+function invokeUndoEntry(
+  api: TyporaUndoApi | null | undefined,
+  entry: 'undo' | 'redo',
+): TyporaUndoResult {
+  const fn = api?.undo?.[entry]
+  if (typeof fn !== 'function') return { ok: false, reason: 'UNDO_API_UNAVAILABLE' }
+  try {
+    fn.call(api?.undo, undefined)
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : 'UNDO_THREW' }
+  }
+}
+
+/** 调用 Typora 自身的撤销命令（与 Ctrl+Z / 菜单 Undo 同一条命令栈）。 */
+export function invokeEditorUndo(api: TyporaUndoApi | null | undefined): TyporaUndoResult {
+  return invokeUndoEntry(api, 'undo')
+}
+
+/** 调用 Typora 自身的重做命令（与 Ctrl+Y / 菜单 Redo 同一条命令栈）。 */
+export function invokeEditorRedo(api: TyporaUndoApi | null | undefined): TyporaUndoResult {
+  return invokeUndoEntry(api, 'redo')
+}
+
+/** 撤销栈长度（null = 不可读）。只读证据。 */
+export function readEditorUndoStackLength(api: TyporaUndoApi | null | undefined): number | null {
+  const undo = api?.undo
+  if (undo == null) return null
+  // Real Typora 1.6.7 exposes the stack on the UndoManager INSTANCE itself
+  // (verified by a runtime acceptance run: `undo.UndoManager` is undefined).
+  if (Array.isArray(undo.commandStack)) return undo.commandStack.length
+  if (Array.isArray(undo.UndoManager?.commandStack)) return undo.UndoManager.commandStack.length
+  if (typeof undo.storeToJson === 'function') {
+    try {
+      const snapshot = undo.storeToJson.call(undo)
+      const parsed = JSON.parse(snapshot?.commandStackJson ?? '[]') as unknown
+      return Array.isArray(parsed) ? parsed.length : null
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+/**
  * 本适配器真正依赖的 Typora 能力（由调用方注入 `editor`，便于单测）。
  */
 export interface TyporaFenceApi {

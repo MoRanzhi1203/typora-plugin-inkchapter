@@ -61,7 +61,14 @@ import { HeadingNumberingService } from './heading-numbering/heading-numbering-s
 import type { ServiceContext } from './heading-numbering/heading-numbering-service'
 import { resolveHeadingPolicyActivation } from './heading-numbering/heading-policy-activation'
 import { HeadingDomAdapter } from './infrastructure/heading-dom-adapter'
-import { mountPendingFencesSynchronously, type TyporaFenceApi } from './infrastructure/typora-adapter'
+import {
+  mountPendingFencesSynchronously,
+  invokeEditorUndo,
+  invokeEditorRedo,
+  readEditorUndoStackLength,
+  type TyporaFenceApi,
+  type TyporaUndoApi,
+} from './infrastructure/typora-adapter'
 import { HeadingNumberingSettingTab } from './settings/heading-numbering-setting-tab'
 import { CaptionService } from './heading-numbering/caption-service'
 import type { CaptionServiceContext } from './heading-numbering/caption-service'
@@ -90,6 +97,8 @@ import { installGuiCaretAudit } from './runtime/gui-caret-audit'
 // the `runtime` domain; it is adapted here and never enters the user Drawer.
 import { refreshRuntimeIntegrity, runtimeIntegrityFindingsFromIdentity } from './document-utilities/diagnostic-domain-v1'
 import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentUtilities } from './document-utilities/document-utilities'
+// R06-03 — TEST-VAULT ONLY runtime acceptance (env opt-in + path gate + token).
+import { installBlankLineAcceptanceRunner } from './runtime/blank-line-acceptance-runner'
 import { createImageEvidenceRuntime } from './image-management/image-evidence-runtime'
 import { createNodeImageEvidenceProvider } from './image-management/image-evidence-provider'
 import { resolveDiagnosticProfile, type ResolvedDiagnosticProfile } from './document-utilities/document-diagnostic-profile-v1'
@@ -1633,6 +1642,13 @@ export default class extends Plugin<InkChapterSettings> {
           readMarkdownExact: () => {
             try { return editor.getMarkdown() } catch { return null }
           },
+          // R06-03 — TEST-VAULT acceptance only. These call Typora's OWN undo
+          // command stack (the same functions the Edit menu / Ctrl+Z / Ctrl+Y
+          // drive), so the acceptance proves the real editor semantics instead of
+          // a simulated one. They are never used by the fix chain itself.
+          undo: () => invokeEditorUndo(editor as unknown as TyporaUndoApi),
+          redo: () => invokeEditorRedo(editor as unknown as TyporaUndoApi),
+          readUndoStackLength: () => readEditorUndoStackLength(editor as unknown as TyporaUndoApi),
           setCaptionName: (request) => {
             try {
               const service = this.captionService
@@ -1927,6 +1943,19 @@ export default class extends Plugin<InkChapterSettings> {
         },
       })
       this.documentUtilities.mount()
+      // ── R06-03 — TEST-VAULT runtime acceptance driver ──────────────────
+      // OFF unless INKCHAPTER_BLANK_ACCEPTANCE=1, the active document is the
+      // dedicated `test/vault/runtime/acceptance` fixture, and a run token is
+      // present. It calls the SAME fix entries the 检测 panel uses, then proves
+      // the buffer / re-diagnosis / Typora Undo+Redo. No production exposure.
+      this.register(installBlankLineAcceptanceRunner({
+        vaultRoot: vaultRoot ?? null,
+        getActiveFilePath: () => this.app.workspace.activeFile ?? null,
+        runAcceptance: (options) => this.documentUtilities?.runBlankLineAcceptance?.(options)
+          ?? Promise.resolve(null),
+        subscribeFileOpen: (callback) => this.app.workspace.on('file:open' as never, (() => callback()) as never),
+        log: (message) => console.info(`[InkChapter] ${message}`),
+      }))
     this.prewarmImageEvidenceForActiveDocument()
       console.log('[InkChapter] document utilities mounted')
     } catch (e) {

@@ -84,6 +84,8 @@ export type FixBlockerCode =
   | 'NOT_APPLICABLE'
   | 'STRUCTURE_NOT_AUTO_FIXABLE'
   | 'TRANSACTION_AUTHORITY_UNVERIFIED'
+  | 'TARGET_NOT_FOUND'
+  | 'AMBIGUOUS_TARGET'
 
 export interface FixBlocker {
   code: FixBlockerCode
@@ -247,30 +249,71 @@ export function resolveCurrentInternalBlankRange(
   return { first: match.firstBlankLine, last: match.lastBlankLine, actual: match.actualBlankLines }
 }
 
+/**
+ * Resolve the ONE internal blank gap this diagnostic means, using ONLY the
+ * CURRENT Markdown and stable semantic facts. The recorded line range is never
+ * trusted — it may point at an unrelated blank run after edits.
+ *
+ * Order:
+ *   1. `targetIdentity` exact match;
+ *   2. legacy block-identity pair (`previousBlockIdentity` >> `nextBlockIdentity`);
+ *   3. a UNIQUE excessive gap matching kind + actual count.
+ * Anything else is a safe failure (never a blind delete).
+ */
+export function resolveCurrentInternalBlankTarget(
+  diagnostic: DocumentDiagnostic,
+  markdown: string,
+): CurrentInternalBlankRange | { blocker: FixBlocker } {
+  const gaps = analyzeInternalBlankLineGaps(markdown)
+  const meta = diagnostic.metadata ?? {}
+  const identity = typeof diagnostic.targetIdentity === 'string' ? diagnostic.targetIdentity : null
+  if (identity != null) {
+    const match = gaps.find(g => internalBlankGapIdentity(g) === identity)
+    return match
+      ? { first: match.firstBlankLine, last: match.lastBlankLine, actual: match.actualBlankLines }
+      : { blocker: blocker('TARGET_NOT_FOUND', '当前文档已不存在该空行区间，诊断已刷新，请重新检测。') }
+  }
+  const previousIdentity = typeof meta.previousBlockIdentity === 'string' ? meta.previousBlockIdentity : null
+  const nextIdentity = typeof meta.nextBlockIdentity === 'string' ? meta.nextBlockIdentity : null
+  if (previousIdentity != null && nextIdentity != null) {
+    const legacyIdentity = `blank-gap:${previousIdentity}>>${nextIdentity}`
+    const match = gaps.find(g => internalBlankGapIdentity(g) === legacyIdentity)
+    return match
+      ? { first: match.firstBlankLine, last: match.lastBlankLine, actual: match.actualBlankLines }
+      : { blocker: blocker('TARGET_NOT_FOUND', '当前文档已不存在该空行区间，诊断已刷新，请重新检测。') }
+  }
+  // NO stable identity at all: only a UNIQUE current gap with the same kind pair
+  // and the same actual count can be confirmed.
+  const kindOf = (v: unknown) => (typeof v === 'string' ? v : null)
+  const previousKind = kindOf(meta.previousBlockKind)
+  const nextKind = kindOf(meta.nextBlockKind)
+  const actual = asNumber(meta.actualBlankLines)
+  const candidates = gaps.filter(g =>
+    (previousKind == null || g.previousBlockKind === previousKind)
+    && (nextKind == null || g.nextBlockKind === nextKind)
+    && (actual == null || g.actualBlankLines === actual))
+  if (candidates.length === 1) {
+    const g = candidates[0]
+    return { first: g.firstBlankLine, last: g.lastBlankLine, actual: g.actualBlankLines }
+  }
+  if (candidates.length === 0) {
+    return { blocker: blocker('TARGET_NOT_FOUND', '当前文档已不存在可确认的空行区间，请重新检测。') }
+  }
+  return { blocker: blocker('AMBIGUOUS_TARGET', '当前文档存在多个相同类型的空行区间，无法唯一定位，已停止自动修复。') }
+}
+
 export const INTERNAL_BLANK_LINES_FIX: Fixer = {
   code: 'EXCESSIVE_INTERNAL_BLANK_LINES',
   support: 'AUTO',
   label: '压缩连续空行',
   build(diagnostic, ctx) {
     const meta = diagnostic.metadata ?? {}
-    let first = asNumber(meta.firstBlankLine)
-    let last = asNumber(meta.lastBlankLine)
-    let actual = asNumber(meta.actualBlankLines)
     const pass = asNumber(meta.passMaxBlankLines) ?? 1
-    const identity = typeof diagnostic.targetIdentity === 'string' ? diagnostic.targetIdentity : null
-    if (identity != null) {
-      const located = resolveCurrentInternalBlankRange(diagnostic, ctx.markdown)
-      if (located == null) {
-        // The semantic gap is gone (the document was fixed / re-structured).
-        // NEVER fall back to the stale range: deleting by an old line number is
-        // exactly how a non-blank line gets targeted.
-        return { blockers: [blocker('STALE_DIAGNOSTIC', '当前文档已不存在该空行区间，诊断已刷新，请重新检测。')] }
-      }
-      first = located.first
-      last = located.last
-      actual = located.actual
-    }
-    if (first == null || last == null || actual == null || last < first) {
+    const resolved = resolveCurrentInternalBlankTarget(diagnostic, ctx.markdown)
+    if ('blocker' in resolved) return { blockers: [resolved.blocker] }
+    const first = resolved.first
+    const last = resolved.last
+    if (last < first) {
       return { blockers: [blocker('INVALID_FACT', '空行区间元数据缺失或不合法。')] }
     }
     const lines = splitFixLines(ctx.markdown)

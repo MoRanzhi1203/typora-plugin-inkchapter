@@ -16,6 +16,12 @@ import type { DocumentDiagnosticsProviders } from './document-diagnostics-author
 import { DocumentHubController } from './document-hub-controller'
 import { buildDocumentHubModel, type DocumentHubImageSummary } from './document-hub-model'
 import { DiagnosticFixController } from './document-diagnostic-fix-controller'
+// R06-03 — TEST-VAULT acceptance runner (same panel entries, no second fixer).
+import {
+  runBlankLineAcceptanceScenarios,
+  type AcceptanceRunOptions,
+  type AcceptanceRunReport,
+} from './document-diagnostic-acceptance-harness-v1'
 import { describeFixCapability, planAllAutoFixesV2, selectNonConflictingPlans } from './document-diagnostic-fix-v2'
 import {
   blankLineMarkerText,
@@ -1297,6 +1303,10 @@ export interface DocumentUtilitiesOverlayOptions {
       ok: boolean
       reason?: string
     }
+    /** R06-03 — TEST VAULT ONLY: Typora's own undo/redo command stack. */
+    undo?(): { ok: boolean; reason?: string }
+    redo?(): { ok: boolean; reason?: string }
+    readUndoStackLength?(): number | null
   }
 }
 
@@ -3583,6 +3593,38 @@ export class DocumentUtilityOverlayHost {
    */
   requestDiagnosticsRecompute(reason = 'ASYNC_EVIDENCE_READY'): void {
     try { this.diagnostics.recompute(reason) } catch { /* fail-open */ }
+  }
+
+  /**
+   * R06-03 — TEST-VAULT acceptance: run the SAME entries the 检测 panel uses
+   * (`startDiagnostic` / `startAllAuto`) against the LIVE buffer, then verify
+   * the write-back, the re-diagnosis and Typora's own Undo/Redo.
+   *
+   * Returns `null` when the editor bridge exposes no undo/redo command, so a
+   * build without that bridge can never produce a false PASS.
+   */
+  async runBlankLineAcceptance(
+    options: AcceptanceRunOptions,
+  ): Promise<AcceptanceRunReport | null> {
+    const port = this.opts.diagnosticFix
+    if (!port?.undo || !port.redo) return null
+    if (this.diagnosticFixController == null) return null
+    const controller = this.diagnosticFixController
+    const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+    return runBlankLineAcceptanceScenarios({
+      readMarkdown: () => port.readMarkdownExact?.() ?? this.readFixSource().markdown,
+      getDocumentKey: () => this.opts.ctx.authority.getDocumentKey(),
+      getSnapshot: () => this.getSnapshot(),
+      // EXACT panel entries — never a second fixer.
+      startFixOne: (diagnosticId) => controller.startDiagnostic(diagnosticId),
+      startFixAll: () => controller.startAllAuto(),
+      isBusy: () => controller.isBusy(),
+      undo: () => port.undo?.() ?? { ok: false, reason: 'UNDO_API_UNAVAILABLE' },
+      redo: () => port.redo?.() ?? { ok: false, reason: 'REDO_API_UNAVAILABLE' },
+      undoStackLength: () => port.readUndoStackLength?.() ?? null,
+      now: () => Date.now(),
+      sleep,
+    }, options)
   }
 
   /** V4 — single current problems projection (Toolbar/Drawer parity). */

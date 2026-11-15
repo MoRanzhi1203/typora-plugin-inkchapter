@@ -104,7 +104,7 @@ describe('fix planner V1 — internal blank lines', () => {
     }, internalLocation(2))
     const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
     expect(plan.ok).toBe(false)
-    expect(plan.blockers.map(b => b.code)).toContain('INVALID_FACT')
+    expect(plan.blockers.map(b => b.code)).toContain('TARGET_NOT_FOUND')
   })
 
   it('does not treat leading/trailing gaps as internal', () => {
@@ -326,7 +326,7 @@ describe('fix planner V1 — stale line range re-location by stable identity', (
     expect(applyPatchesToMarkdown(markdown, plan.patches)).toBe('# 标题\n\n正文\n')
   })
 
-  it('refuses with STALE_DIAGNOSTIC when the gap no longer exists (never deletes a stale range)', () => {
+  it('refuses when the identified gap no longer exists (never deletes a stale range)', () => {
     const markdown = '# 标题\n\n正文\n'
     const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
       firstBlankLine: 11, lastBlankLine: 12, actualBlankLines: 2, passMaxBlankLines: 1,
@@ -334,11 +334,11 @@ describe('fix planner V1 — stale line range re-location by stable identity', (
     d.targetIdentity = 'blank-gap:none>>none'
     const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
     expect(plan.ok).toBe(false)
-    expect(plan.blockers.map(b => b.code)).toContain('STALE_DIAGNOSTIC')
+    expect(plan.blockers.map(b => b.code)).toContain('TARGET_NOT_FOUND')
     expect(plan.patches).toHaveLength(0)
   })
 
-  it('keeps the legacy recorded-range path when a diagnostic carries no identity', () => {
+  it('legacy diagnostics are re-detected in the current document (recorded lines are never trusted)', () => {
     const markdown = '# 标题\n\n\n\n正文\n'
     const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
       firstBlankLine: 1, lastBlankLine: 3, actualBlankLines: 3, passMaxBlankLines: 1,
@@ -371,5 +371,54 @@ describe('fix planner V1 — L26 vs stale line 12 (document grew before the fix)
     // every original paragraph line and the heading survive
     expect(fixed).toContain('旧段落第 10 行。')
     expect(fixed).toContain('# 标题')
+  })
+})
+
+describe('R06-01 — legacy diagnostics without any stable identity', () => {
+  it('old range is still blank but a DIFFERENT gap also exists → AMBIGUOUS_TARGET, zero patches', () => {
+    // TWO paragraph→paragraph gaps with the same count; no stable identity at all.
+    const markdown = 'P1\n\n\n\nP2\n\n\n\nP3\n'
+    const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: 1, lastBlankLine: 3, actualBlankLines: 3, passMaxBlankLines: 1,
+      previousBlockKind: 'paragraph', nextBlockKind: 'paragraph',
+    }, undefined, 'legacy-ambiguous')
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(false)
+    expect(plan.blockers.map(b => b.code)).toContain('AMBIGUOUS_TARGET')
+    expect(plan.patches).toHaveLength(0)
+  })
+
+  it('old position became body text → the unique current gap is still repaired', () => {
+    const markdown = '# H\n\n\n\nA\n'
+    const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: 9, lastBlankLine: 10, actualBlankLines: 3, passMaxBlankLines: 1,
+      previousBlockKind: 'heading', nextBlockKind: 'paragraph',
+    }, undefined, 'legacy-moved')
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(true)
+    expect(applyPatchesToMarkdown(markdown, plan.patches)).toBe('# H\n\nA\n')
+  })
+
+  it('the target gap was deleted → TARGET_NOT_FOUND, zero patches', () => {
+    const markdown = '# H\n\nA\n'
+    const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: 1, lastBlankLine: 3, actualBlankLines: 3, passMaxBlankLines: 1,
+    }, undefined, 'legacy-gone')
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(false)
+    expect(plan.blockers.map(b => b.code)).toContain('TARGET_NOT_FOUND')
+    expect(plan.patches).toHaveLength(0)
+  })
+
+  it('never deletes just because the OLD range is still blank', () => {
+    // The old range (1..3) is blank in BOTH documents; only the actual gap moves.
+    const markdown = 'P1\n\n\n\nP2\n\nP3\n\n\n\nP4\n'
+    const d = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: 1, lastBlankLine: 3, actualBlankLines: 3, passMaxBlankLines: 1,
+      previousBlockKind: 'paragraph', nextBlockKind: 'paragraph',
+    }, undefined, 'legacy-two-gaps')
+    const plan = planDiagnosticFix(registry, d.id, ctx(markdown, [d]))
+    expect(plan.ok).toBe(false)
+    expect(plan.patches).toHaveLength(0)
   })
 })

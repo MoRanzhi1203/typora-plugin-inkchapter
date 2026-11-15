@@ -299,6 +299,66 @@ export class DiagnosticFixController {
     return planAllAutoFixesV2(ctx, options)
   }
 
+  /** R06-02 — a stale target is the ONLY reason a bounded automatic retry runs. */
+  private hasStaleTargetBlocker(plans: readonly FixPlanV2[]): boolean {
+    const stale = new Set(['TARGET_NOT_FOUND', 'AMBIGUOUS_TARGET', 'STALE_DIAGNOSTIC'])
+    return plans.some(p => p.blockers.some(b => stale.has(b.code)))
+  }
+
+  /**
+   * ONE bounded automatic re-diagnosis. The logical target is re-bound by stable
+   * identity, then by the legacy block-identity pair, then by a unique same-rule
+   * diagnostic — never by nearest line / array order.
+   */
+  private recoverSnapshotForStaleTarget(
+    previous: DocumentDiagnosticsSnapshot,
+    documentKey: string,
+  ): DocumentDiagnosticsSnapshot | null {
+    this.env.recheck()
+    const fresh = this.env.getSnapshot()
+    if (fresh == null || fresh === previous || fresh.documentKey !== documentKey) return null
+    const prepared = this.prepared
+    if (prepared == null) return null
+    const request = prepared.request
+    if (request.kind === 'one') {
+      const old = previous.diagnostics.find(d => d.id === request.diagnosticId)
+      if (old == null) return null
+      const match = this.matchFreshDiagnostic(old, fresh.diagnostics)
+      if (match == null) return null
+      this.prepared = { ...prepared, request: { kind: 'one', diagnosticId: match.id } }
+    }
+    return fresh
+  }
+
+  private matchFreshDiagnostic(
+    old: DocumentDiagnostic,
+    diagnostics: readonly DocumentDiagnostic[],
+  ): DocumentDiagnostic | null {
+    const sameCode = diagnostics.filter(d => d.code === old.code)
+    if (sameCode.length === 0) return null
+    if (typeof old.targetIdentity === 'string') {
+      const hit = sameCode.find(d => d.targetIdentity === old.targetIdentity)
+      if (hit) return hit
+    }
+    const oldMeta = old.metadata ?? {}
+    const previousIdentity = typeof oldMeta.previousBlockIdentity === 'string' ? oldMeta.previousBlockIdentity : null
+    const nextIdentity = typeof oldMeta.nextBlockIdentity === 'string' ? oldMeta.nextBlockIdentity : null
+    if (previousIdentity != null && nextIdentity != null) {
+      const hit = sameCode.find(d =>
+        d.metadata?.previousBlockIdentity === previousIdentity
+        && d.metadata?.nextBlockIdentity === nextIdentity)
+      if (hit) return hit
+    }
+    const previousAnchor = typeof oldMeta.previousBlockAnchorText === 'string' ? oldMeta.previousBlockAnchorText : null
+    const nextAnchor = typeof oldMeta.nextBlockAnchorText === 'string' ? oldMeta.nextBlockAnchorText : null
+    const anchorHits = sameCode.filter(d =>
+      (previousAnchor != null && d.metadata?.previousBlockAnchorText === previousAnchor)
+      || (nextAnchor != null && d.metadata?.nextBlockAnchorText === nextAnchor))
+    if (anchorHits.length === 1) return anchorHits[0]
+    // A single same-rule diagnostic is the only possible target.
+    return sameCode.length === 1 ? sameCode[0] : null
+  }
+
   /**
    * @param previewRequired `true` only for the naming/language input flow, where
    * the user still confirms a written preview. Plain 修复 requests apply directly
@@ -308,7 +368,7 @@ export class DiagnosticFixController {
     const prepared = this.prepared
     if (!prepared) return
     const documentKey = this.env.getDocumentKey()
-    const snapshot = this.env.getSnapshot()
+    let snapshot = this.env.getSnapshot()
     const markdown = this.env.getMarkdown()
     if (!documentKey || documentKey !== prepared.documentKey || !snapshot || snapshot.documentKey !== documentKey || markdown == null) {
       this.env.notify('文档已切换，修复已取消。', 'error')
@@ -320,8 +380,19 @@ export class DiagnosticFixController {
       this.cancel()
       return
     }
-    const plans = this.planAll(markdown, snapshot, documentKey)
-    const { accepted, rejected } = selectNonConflictingPlans(plans)
+    let plans = this.planAll(markdown, snapshot, documentKey)
+    let { accepted, rejected } = selectNonConflictingPlans(plans)
+    // R06-02 — ONE automatic re-diagnosis when the snapshot's target is stale.
+    // The retry is bounded (exactly one) and the logical target is preserved by
+    // stable identity / block identity / a UNIQUE same-rule diagnostic.
+    if (accepted.length === 0 && this.hasStaleTargetBlocker(plans)) {
+      const fresh = this.recoverSnapshotForStaleTarget(snapshot, documentKey)
+      if (fresh != null) {
+        snapshot = fresh
+        plans = this.planAll(markdown, snapshot, documentKey)
+        ;({ accepted, rejected } = selectNonConflictingPlans(plans))
+      }
+    }
     if (accepted.length === 0) {
       const reason = plans.flatMap(p => p.blockers).map(b => b.message)[0]
         ?? '当前没有可安全应用的修改。'

@@ -14,6 +14,7 @@
     "test": "pnpm run verify:archive && vitest run",
     "test:watch": "vitest",
     "open:vault": "node scripts/open-test-vault.mjs",
+    "accept:blank": "node scripts/run-blank-line-acceptance.mjs",
     "docs:verify": "node scripts/docs/verify-docs.mjs",
     "verify:image-privacy": "node scripts/verify-image-privacy.mjs"
   },

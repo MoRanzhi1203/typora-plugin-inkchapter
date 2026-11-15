@@ -183,6 +183,14 @@ export interface DocumentUtilitiesSources {
       ok: boolean
       reason?: string
     }
+    /**
+     * R06-03 — TEST-VAULT acceptance only. Typora's OWN undo/redo command
+     * (the same command stack Ctrl+Z / Ctrl+Y drive). Absent ⇒ no runtime
+     * acceptance can run, and nothing else changes.
+     */
+    undo?(): { ok: boolean; reason?: string }
+    redo?(): { ok: boolean; reason?: string }
+    readUndoStackLength?(): number | null
   }
 }
 
@@ -196,6 +204,13 @@ export interface DocumentUtilities {
   showTransientHint: (message: string) => void
   /** B2d — recompute after an async fact (e.g. image evidence) becomes ready. */
   requestDiagnosticsRefresh?: (reason: string) => void
+  /**
+   * R06-03 — TEST-VAULT ONLY runtime acceptance. Returns `null` when the editor
+   * bridge cannot provide Undo/Redo (then no evidence can be produced).
+   */
+  runBlankLineAcceptance?: (
+    options: import('./document-diagnostic-acceptance-harness-v1').AcceptanceRunOptions,
+  ) => Promise<import('./document-diagnostic-acceptance-harness-v1').AcceptanceRunReport | null>
 }
 
 /**
@@ -544,5 +559,6 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     getSnapshot: () => host.getSnapshot(),
     showTransientHint: (message: string) => host.showTransientHint(message),
     requestDiagnosticsRefresh: (reason: string) => host.requestDiagnosticsRecompute(reason),
+    runBlankLineAcceptance: (options) => host.runBlankLineAcceptance(options),
   }
 }

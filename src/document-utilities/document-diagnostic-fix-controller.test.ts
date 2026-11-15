@@ -376,3 +376,61 @@ describe('fix controller — stale snapshot vs shifted editor buffer (L26 / line
     expect(h.notify).toHaveBeenLastCalledWith('已修复 1 项（Ctrl+Z 可撤销）', 'info')
   })
 })
+
+describe('R06-02 — automatic re-diagnosis on a stale target', () => {
+  it('clicking REPAIR once refreshes diagnostics and fixes the re-bound target', () => {
+    const markdown = '# 标题\n\n\n\n正文\n'
+    const gap = analyzeInternalBlankLineGaps(markdown)[0]
+    expect(gap).toBeDefined()
+    const meta = {
+      firstBlankLine: gap.firstBlankLine,
+      lastBlankLine: gap.lastBlankLine,
+      actualBlankLines: gap.actualBlankLines,
+      passMaxBlankLines: 1,
+      previousBlockKind: gap.previousBlockKind,
+      nextBlockKind: gap.nextBlockKind,
+    }
+    const old = diag('EXCESSIVE_INTERNAL_BLANK_LINES', meta, blankLocation, 'old-stale', 'blank-gap:old>>gone')
+    const fresh = diag('EXCESSIVE_INTERNAL_BLANK_LINES', meta, blankLocation, 'fresh-target', internalBlankGapIdentity(gap))
+
+    let rechecks = 0
+    const h = createHarness({
+      markdown,
+      diagnostics: [old],
+      onRecheck: (state) => {
+        rechecks++
+        state.snapshot = rechecks === 1 ? snapshot([fresh]) : snapshot([])
+      },
+    })
+    h.controller.startDiagnostic(old.id)
+    expect(rechecks).toBeGreaterThanOrEqual(1)
+    expect(h.state.writes).toEqual(['# 标题\n\n正文\n'])
+    expect(h.notify).toHaveBeenLastCalledWith('已修复 1 项（Ctrl+Z 可撤销）', 'info')
+  })
+
+  it('does NOT retry infinitely or guess when multiple same-rule targets exist', () => {
+    const markdown = 'P1\n\n\n\nP2\n\n\n\nP3\n'
+    const gaps = analyzeInternalBlankLineGaps(markdown)
+    expect(gaps.length).toBe(2)
+    const old = diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: 1, lastBlankLine: 3, actualBlankLines: 3, passMaxBlankLines: 1,
+      previousBlockKind: 'paragraph', nextBlockKind: 'paragraph',
+    }, blankLocation, 'old-ambiguous', 'blank-gap:old>>gone')
+    const fresh = gaps.map((g, i) => diag('EXCESSIVE_INTERNAL_BLANK_LINES', {
+      firstBlankLine: g.firstBlankLine, lastBlankLine: g.lastBlankLine,
+      actualBlankLines: g.actualBlankLines, passMaxBlankLines: 1,
+      previousBlockKind: g.previousBlockKind, nextBlockKind: g.nextBlockKind,
+    }, blankLocation, `fresh-${i}`, internalBlankGapIdentity(g)))
+
+    let rechecks = 0
+    const h = createHarness({
+      markdown,
+      diagnostics: [old],
+      onRecheck: (state) => { rechecks++; state.snapshot = snapshot(fresh) },
+    })
+    h.controller.startDiagnostic(old.id)
+    expect(rechecks).toBe(1)
+    expect(h.state.writes).toHaveLength(0)
+    expect(h.notify).toHaveBeenCalled()
+  })
+})
