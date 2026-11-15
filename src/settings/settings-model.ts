@@ -1,5 +1,6 @@
 import type { HeadingNumberingSettings, HeadingLevelRangeSettings, SpecialHeadingNumberingSettings, HeadingNumberingScopeStore, FormatLibrary } from '../heading-numbering/heading-types'
 import type { CaptionSettings } from '../heading-numbering/caption-system'
+import type { NumberingPersistenceConfig } from '../heading-numbering/numbering-persistence-settings'
 import type { ImageSettings } from '../image-management/image-settings'
 
 export type { HeadingNumberingSettings }
@@ -71,6 +72,11 @@ export interface InkChapterSettings {
   specialNumbering: SpecialHeadingNumberingSettings
   /** Caption System V1 settings (schema version >= 12, optional field). */
   caption?: CaptionSettings
+  /**
+   * R08 — heading number storage / existing-number policy / ownership ledger.
+   * Optional; `normalizeNumberingPersistenceConfig` fills every field.
+   */
+  numberingPersistence?: NumberingPersistenceConfig
   /** 界面 / 文件夹树 设置（可选字段，缺失时按 DEFAULT_UI_SETTINGS 补齐）。 */
   ui?: InkChapterUiSettings
   /** 图片管理配置（可选字段，缺失或非法时由 resolveImageSettings 补齐）。 */

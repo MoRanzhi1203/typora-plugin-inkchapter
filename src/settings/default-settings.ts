@@ -3,6 +3,7 @@ import type { HeadingLevel, HeadingLevelNumberTemplate, FormatLibrary, Paragraph
 import { DEFAULT_HEADING_LEVEL_POSITION, DEFAULT_NAME_CANDIDATES, DEFAULT_PARAGRAPH_LAYOUT } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
 import { DEFAULT_CAPTION_SETTINGS } from '../heading-numbering/caption-system'
+import { createDefaultNumberingPersistenceConfig } from '../heading-numbering/numbering-persistence-settings'
 import { DEFAULT_IMAGE_SETTINGS } from '../image-management/image-settings'
 
 const decimalLevels = {} as Record<HeadingLevel, import('../heading-numbering/heading-types').HeadingLevelStyle>
@@ -156,6 +157,7 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
     },
   },
   caption: DEFAULT_CAPTION_SETTINGS,
+  numberingPersistence: createDefaultNumberingPersistenceConfig(),
   ui: DEFAULT_UI_SETTINGS,
   image: DEFAULT_IMAGE_SETTINGS,
 }

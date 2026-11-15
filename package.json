@@ -15,6 +15,7 @@
     "test:watch": "vitest",
     "open:vault": "node scripts/open-test-vault.mjs",
     "accept:blank": "node scripts/run-blank-line-acceptance.mjs",
+    "accept:numbering": "node scripts/run-numbering-acceptance.mjs",
     "docs:verify": "node scripts/docs/verify-docs.mjs",
     "verify:image-privacy": "node scripts/verify-image-privacy.mjs"
   },

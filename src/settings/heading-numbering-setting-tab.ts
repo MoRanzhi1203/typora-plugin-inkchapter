@@ -42,6 +42,8 @@ import {
 } from '../heading-numbering/heading-structure-control-sync'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 import type { HeadingNumberingService } from '../heading-numbering/heading-numbering-service'
+import type { NumberingPersistenceService } from '../heading-numbering/numbering-persistence-service'
+import { renderNumberingManagementCard } from './numbering-management-card'
 import type { NumberFormatSegment } from '../heading-numbering/heading-types'
 import { deepCloneSettings } from '../heading-numbering/heading-numbering-scope-store'
 import { resolveEffectiveParagraphIndent } from '../heading-numbering/paragraph-indent-manager'
@@ -348,6 +350,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     private settings: PluginSettings<InkChapterSettings>,
     private numberingService: HeadingNumberingService,
     private captionService?: CaptionService,
+    private numberingPersistence?: NumberingPersistenceService,
   ) {
     super()
   }
@@ -862,6 +865,17 @@ export class HeadingNumberingSettingTab extends SettingTab {
     this.renderIntoWorkbenchPanel(this.workbenchPanels.scheme!, () => this.renderFormatLibraryCard(s))
     this.renderIntoWorkbenchPanel(this.workbenchPanels.heading!, () => this.renderCustomEditorCard(s))
     this.renderIntoWorkbenchPanel(this.workbenchPanels.rules!, () => this.renderAdvancedSettingsCard(s))
+    // R08 — number storage / adoption / synchronisation card (same tab, no wizard).
+    if (this.numberingPersistence) {
+      const persistence = this.numberingPersistence
+      this.renderIntoWorkbenchPanel(this.workbenchPanels.rules!, () => {
+        renderNumberingManagementCard({
+          container: this.containerEl,
+          persistence,
+          rerender: () => this.onshow(),
+        })
+      })
+    }
     this.renderIntoWorkbenchPanel(this.workbenchPanels.objects!, () => this.renderCaptionCard())
     this.syncWorkbenchTabUI()
 

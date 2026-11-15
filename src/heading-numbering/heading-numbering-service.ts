@@ -68,6 +68,10 @@ import {
   type HeadingDecorationProjection,
   type HeadingDecorationV514R4Counters,
 } from './heading-decoration-projection-v514-r4'
+// R08 — source-persisted number recognition + projection dedupe.
+import { isRewritableHeadingNumber, scanHeadingNumber } from './heading-number-source-scanner'
+import { normalizeHeadingTitle } from './heading-number-persistence'
+import { suppressProjectionsForSourceNumbers } from './heading-number-projection-suppression'
 import { HeadingDomAdapter } from '../infrastructure/heading-dom-adapter'
 import { DisposableStore } from '../utils/disposable-store'
 import { migrateSettings } from './config-migration'
@@ -3047,6 +3051,37 @@ export class HeadingNumberingService {
   }
 
   /**
+   * R08 — expose the CURRENT override authority in SOURCE terms so the number
+   * persistence planner resolves the exact same per-heading modes the body uses
+   * (self / subtree / batch / name-rule). Titles are number-stripped and the
+   * occurrence index is document order, matching the Markdown planner.
+   */
+  getSourceOverrideSnapshot(): {
+    entries: import('./heading-number-persistence').SourceOverrideEntry[]
+    counterPolicy: import('./heading-types').UnnumberedCounterPolicy
+  } {
+    const counterPolicy = this.getSpecialNumberingSettings().unnumberedCounterPolicy
+    const snapshot = this.getCurrentHeadingNumberingSnapshot()
+    const headings = snapshot?.headings ?? []
+    const overrideMap = this.buildOverrideMap(headings)
+    if (!overrideMap || overrideMap.size === 0) return { entries: [], counterPolicy }
+
+    const entries: import('./heading-number-persistence').SourceOverrideEntry[] = []
+    const occurrences = new Map<string, number>()
+    for (const h of headings) {
+      const title = normalizeHeadingTitle(scanHeadingNumber(h.text).title)
+      const key = `${h.level}|${title}`
+      const occurrence = occurrences.get(key) ?? 0
+      occurrences.set(key, occurrence + 1)
+      const mode = overrideMap.get(h.key)
+      if (mode === 'numbered' || mode === 'unnumbered') {
+        entries.push({ level: h.level, title, occurrence, mode })
+      }
+    }
+    return { entries, counterPolicy }
+  }
+
+  /**
    * Phase 6.1R: resolve the nearest preceding canonical semantic heading for a
    * DOM object target, keyed by stableIdentity — NOT by raw DOM heading index.
    *
@@ -4841,7 +4876,13 @@ export class HeadingNumberingService {
           // AND gap are all still valid from the SAME projection. The gap is now
           // validated inside `isRenderedStateValid` (the state carries it), so a
           // "label valid but gap invalid" DOM can never be fast-path accepted.
-          if (this.adapter.isRenderedStateValid(this.renderedStates, headingEls)) {
+          // R08 — a heading that now carries a SOURCE number must not keep its
+          // projected label either, even when Typora mutated the text in place
+          // and left every decoration attribute untouched.
+          if (
+            this.adapter.isRenderedStateValid(this.renderedStates, headingEls)
+            && !this.hasSourceNumberProjectionConflict(headings, this.renderedProjections)
+          ) {
             this.lastSnapshot = snapshot
             this.emitHeadingDecorationAudit(reason, 'FAST_PATH_SKIP', null, numberingSnapshot.revision, undefined, headingEls)
             return // physical DOM unchanged → skip projection (semantic already committed)
@@ -4850,7 +4891,7 @@ export class HeadingNumberingService {
           // stripped by Typora, …) → DECORATION_REPAIR: ONE projection reconcile.
           // This is NOT a full semantic recompute: only the DOM projection is
           // rewritten, from the SAME projection snapshot.
-          const repairProjections = this.renderedProjections
+          const repairProjections = this.dedupeSourceNumberProjections(headings, this.renderedProjections)
           if (repairProjections) {
             const diff = this.adapter.reconcileHeadingDecorations(repairProjections, headingEls)
             this.syncRenderedDecorationCache(repairProjections, headingEls)
@@ -4884,7 +4925,11 @@ export class HeadingNumberingService {
       // DOM list. Align by stable identity (empty label for out-of-range
       // headings) so no label can shift to a neighbour.
       const alignedProjections = buildAlignedHeadingDecorationProjections(headings, numbered, labels)
-      const alignedLabels = alignedProjections.map(p => p.label)
+      // R08 — source-persisted numbers already live in the heading TEXT. Projecting
+      // the same number again would duplicate it in the body AND the outline, so the
+      // ONE projection list is deduped here and reused by both surfaces.
+      const projections = this.dedupeSourceNumberProjections(headings, alignedProjections)
+      const alignedLabels = projections.map(p => p.label)
 
       // Snapshot numbering engine per-heading output
       const engineEntries: NumberingEngineEntry[] = numbered.map((h, i) => {
@@ -4910,10 +4955,10 @@ export class HeadingNumberingService {
       snapshotNumberingEngine(this.s, engineEntries)
 
       const previousProjections = this.renderedProjections
-      const diff = this.adapter.reconcileHeadingDecorations(alignedProjections, headingEls)
-      this.syncRenderedDecorationCache(alignedProjections, headingEls)
+      const diff = this.adapter.reconcileHeadingDecorations(projections, headingEls)
+      this.syncRenderedDecorationCache(projections, headingEls)
 
-      const gaps = alignedProjections.map(p => p.gap)
+      const gaps = projections.map(p => p.gap)
       this.emitHeadingDecorationAudit(reason, 'FULL_REFRESH', previousProjections, numberingSnapshot.revision, diff, headingEls)
 
       // Snapshot apply-diff (SAME heading collection — no second query)
@@ -4935,7 +4980,7 @@ export class HeadingNumberingService {
       // the SAME projection snapshot (V5.14-R4 §12: the outline consumes the
       // identical label+gap, never a re-derived one). PA-14 — all four lists are
       // aligned to `headings` (DOM order), never to the maxDepth-filtered list.
-      this.outlineController.syncAfterRefresh(this.getDocumentKey() ?? '', headings, alignedLabels, gaps, alignedProjections)
+      this.outlineController.syncAfterRefresh(this.getDocumentKey() ?? '', headings, alignedLabels, gaps, projections)
 
       // Phase 7R.3.11.8B.4.2 — pure-observability structure authority audits
       // (state-deduped; never mutates settings/store/DOM/outline).
@@ -10075,6 +10120,56 @@ export class HeadingNumberingService {
       firstLineIndentEm: 0,
     }
     return { h1: { ...def }, h2: { ...def }, h3: { ...def }, h4: { ...def }, h5: { ...def }, h6: { ...def } }
+  }
+
+  /**
+   * R08 — the ONE projection dedupe for body + outline. Enabled by
+   * `numberingPersistence.dedupeProjectedNumbers` (default true) so mode A never
+   * stacks a projection on a manual source number.
+   */
+  private dedupeSourceNumberProjections(
+    headings: readonly { key: string; level: HeadingLevel; text: string }[],
+    projections: readonly HeadingDecorationProjection[],
+  ): readonly HeadingDecorationProjection[] {
+    if (!this.isProjectionDedupeEnabled()) return projections
+    try {
+      return suppressProjectionsForSourceNumbers(headings, projections).projections
+    } catch {
+      return projections
+    }
+  }
+
+  /**
+   * R08 — does the CURRENT DOM text already carry a source number while a
+   * projection is still pending? Used to invalidate the fast path so an
+   * in-place text mutation cannot keep a duplicate projected number.
+   */
+  private hasSourceNumberProjectionConflict(
+    headings: readonly { key: string; level: HeadingLevel; text: string }[],
+    projections: readonly HeadingDecorationProjection[],
+  ): boolean {
+    if (!this.isProjectionDedupeEnabled()) return false
+    for (let i = 0; i < headings.length; i++) {
+      const projection = projections[i]
+      if (!projection || projection.label === '') continue
+      if (isRewritableHeadingNumber(scanHeadingNumber(headings[i].text).first)) return true
+    }
+    return false
+  }
+
+  private isProjectionDedupeEnabled(): boolean {
+    try {
+      const raw = this.ctx.settings.get('numberingPersistence' as never) as unknown as {
+        global?: { dedupeProjectedNumbers?: unknown }
+        documentOverrides?: Record<string, { dedupeProjectedNumbers?: unknown } | undefined>
+      } | null
+      const docKey = this.getDocumentKey()
+      const documentValue = docKey ? raw?.documentOverrides?.[docKey]?.dedupeProjectedNumbers : undefined
+      const value = documentValue ?? raw?.global?.dedupeProjectedNumbers
+      return typeof value === 'boolean' ? value : true
+    } catch {
+      return true
+    }
   }
 
   /**

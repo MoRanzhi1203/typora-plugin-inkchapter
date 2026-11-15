@@ -57,6 +57,11 @@ test/vault/runtime/acceptance/Blank-Line-R06-Runtime-Acceptance.md
 test/vault/runtime/acceptance/acceptance-request.json
 test/vault/runtime/acceptance/acceptance-last-run.json
 
+# R08 — numbering runtime acceptance (generated working document + request/report).
+test/vault/runtime/acceptance/Numbering-R08-Runtime-Acceptance.md
+test/vault/runtime/acceptance/numbering-acceptance-request.json
+test/vault/runtime/acceptance/numbering-acceptance-last-run.json
+
 # Archived raw test-vault backups (may contain unpublished user documents).
 docs/archive/test-vault/
 

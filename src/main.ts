@@ -70,6 +70,12 @@ import {
   type TyporaUndoApi,
 } from './infrastructure/typora-adapter'
 import { HeadingNumberingSettingTab } from './settings/heading-numbering-setting-tab'
+import {
+  NumberingPersistenceService,
+  type NumberingSyncResult,
+} from './heading-numbering/numbering-persistence-service'
+import { formatNumberingConflictSummary } from './heading-numbering/heading-number-conflict-check'
+
 import { CaptionService } from './heading-numbering/caption-service'
 import type { CaptionServiceContext } from './heading-numbering/caption-service'
 import { DocumentNumberingCoordinator } from './heading-numbering/document-numbering-coordinator'
@@ -99,6 +105,7 @@ import { refreshRuntimeIntegrity, runtimeIntegrityFindingsFromIdentity } from '.
 import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentUtilities } from './document-utilities/document-utilities'
 // R06-03 — TEST-VAULT ONLY runtime acceptance (env opt-in + path gate + token).
 import { installBlankLineAcceptanceRunner } from './runtime/blank-line-acceptance-runner'
+import { installNumberingAcceptanceRunner } from './runtime/numbering-acceptance-runner'
 import { createImageEvidenceRuntime } from './image-management/image-evidence-runtime'
 import { createNodeImageEvidenceProvider } from './image-management/image-evidence-provider'
 import { resolveDiagnosticProfile, type ResolvedDiagnosticProfile } from './document-utilities/document-diagnostic-profile-v1'
@@ -298,6 +305,7 @@ function describeAutoSync(settings: ImageSettings): string {
 export default class extends Plugin<InkChapterSettings> {
 
   private numberingService?: HeadingNumberingService
+  private numberingPersistence?: NumberingPersistenceService
   private captionService?: CaptionService
   private captionContextMenu?: CaptionContextMenu
   private numberingCoordinator?: DocumentNumberingCoordinator
@@ -1122,6 +1130,24 @@ export default class extends Plugin<InkChapterSettings> {
     console.log('[InkChapter] INKCHAPTER-BOOT-CONSTRUCTOR-SUCCESS')
   }
 
+  /** R08 — uniform feedback for the six number-persistence commands. */
+  private reportNumberingResult(result: NumberingSyncResult): void {
+    if (result.status === 'APPLIED') {
+      Notice.info(`墨章：${result.detail ?? '编号已写入源码'}`)
+      return
+    }
+    if (result.status === 'UNCHANGED') {
+      Notice.info('墨章：编号已是最新，无需修改')
+      return
+    }
+    if (result.status === 'SKIPPED') {
+      const detail = (result.detail ?? '').replace(/^[A-Z_]+:/, '')
+      Notice.info(`墨章：${detail || '已跳过'}`)
+      return
+    }
+    Notice.error(`墨章：${(result.detail ?? '').replace(/^[A-Z_]+:/, '') || '编号同步失败'}`)
+  }
+
   onload() {
     console.log('[InkChapter] INKCHAPTER-BOOT-ONLOAD-START')
     console.log(`[InkChapter] onload START  build=${INKCHAPTER_BUILD_ID}`)
@@ -1447,6 +1473,56 @@ export default class extends Plugin<InkChapterSettings> {
     } catch (e) {
       console.error('[InkChapter] 标题编号服务初始化失败，编号功能不可用', e)
       Notice.error('墨章：标题编号服务初始化失败，编号功能暂不可用')
+    }
+
+    // ── R08 — heading number persistence (source write / adoption / export) ──
+    try {
+      const persistence = new NumberingPersistenceService({
+        settings: this.settings,
+        getDocumentKey: () => this.numberingService?.getDocumentKey() ?? null,
+        getMarkdown: () => {
+          try { return editor.getMarkdown() } catch { return null }
+        },
+        getHeadingSettings: () => this.numberingService?.getEffectiveSettings()
+          ?? DEFAULT_SETTINGS.headingNumberingScopes!.globalDefault,
+        getSourceOverrideEntries: () => this.numberingService?.getSourceOverrideSnapshot()
+          ?? { entries: [], counterPolicy: 'skip' },
+        getActiveFilePath: () => this.app.workspace.activeFile ?? null,
+        reloadContentPreservingUndo: (markdown: string) => {
+          File.reloadContent(markdown, false, false, false, true)
+        },
+        reloadContent: (markdown: string) => {
+          File.reloadContent(markdown, false, false, false, true)
+        },
+        writeExportFile: (fileName: string, content: string) => {
+          try {
+            const active = this.app.workspace.activeFile
+            if (!active) return null
+            // Never overwrite the original document — the suffix is enforced here.
+            if (!fileName.toLowerCase().endsWith('.numbered.md')) return null
+            const target = path.join(path.dirname(active), fileName)
+            fs.writeFileSync(target, content, 'utf8')
+            return path.basename(target)
+          } catch { return null }
+        },
+        notify: (kind, message) => {
+          if (kind === 'error') Notice.error(`墨章：${message}`)
+          else Notice.info(`墨章：${message}`)
+        },
+        onEditorEdit: (listener) => this.app.features.markdownEditor.on('edit' as never, listener as never),
+        onBeforeSave: (listener) => this.app.workspace.on('file:will-save' as never, listener as never),
+        onDocumentSwitch: (listener) => {
+          const disposeOpen = this.app.workspace.on('file:open' as never, listener as never)
+          const disposeLeaf = this.app.workspace.on('active-leaf:change' as never, listener as never)
+          return () => { disposeOpen(); disposeLeaf() }
+        },
+        registerDisposable: (fn) => this.register(fn),
+      })
+      persistence.start()
+      this.register(() => persistence.dispose())
+      this.numberingPersistence = persistence
+    } catch (e) {
+      console.error('[InkChapter] 编号持久化服务初始化失败，源码编号功能不可用', e)
     }
 
     // Init caption system (table/figure/code caption naming + numbering)
@@ -1956,6 +2032,42 @@ export default class extends Plugin<InkChapterSettings> {
         subscribeFileOpen: (callback) => this.app.workspace.on('file:open' as never, (() => callback()) as never),
         log: (message) => console.info(`[InkChapter] ${message}`),
       }))
+      // ── R08 — TEST-VAULT numbering runtime acceptance driver ────────────
+      // OFF unless INKCHAPTER_NUMBERING_ACCEPTANCE=1 (or a request token exists
+      // in the acceptance folder), the dedicated fixture is active, and the
+      // token is new. It drives the REAL persistence entries, then proves the
+      // source, the body decoration and Typora Undo/Redo.
+      if (this.numberingPersistence) {
+        const persistence = this.numberingPersistence
+        this.register(installNumberingAcceptanceRunner({
+          vaultRoot: vaultRoot ?? null,
+          getActiveFilePath: () => this.app.workspace.activeFile ?? null,
+          getMarkdown: () => {
+            try { return editor.getMarkdown() } catch { return '' }
+          },
+          replaceContent: (markdown: string) => {
+            try { File.reloadContent(markdown, false, false, false, true) } catch { /* fail-open */ }
+          },
+          persistence,
+          readDomFacts: () => {
+            const root = document.getElementById('write')
+            const headings = root
+              ? Array.from(root.querySelectorAll<HTMLHeadingElement>('h1, h2, h3, h4, h5, h6'))
+              : []
+            return {
+              headingCount: headings.length,
+              projectedNumberCount: headings.filter(el => el.hasAttribute('data-inkchapter-heading-number')).length,
+              headingTexts: headings.map(el => el.textContent ?? ''),
+              projectedLabels: headings.map(el => el.getAttribute('data-inkchapter-heading-number')),
+            }
+          },
+          undo: () => invokeEditorUndo(editor as unknown as TyporaUndoApi),
+          redo: () => invokeEditorRedo(editor as unknown as TyporaUndoApi),
+          undoStackLength: () => readEditorUndoStackLength(editor as unknown as TyporaUndoApi),
+          subscribeFileOpen: (callback) => this.app.workspace.on('file:open' as never, (() => callback()) as never),
+          log: (message) => console.info(`[InkChapter] ${message}`),
+        }))
+      }
     this.prewarmImageEvidenceForActiveDocument()
       console.log('[InkChapter] document utilities mounted')
     } catch (e) {
@@ -2516,7 +2628,7 @@ export default class extends Plugin<InkChapterSettings> {
     if (this.numberingService) {
       try {
         this.registerSettingTab(
-          new HeadingNumberingSettingTab(this.settings, this.numberingService, this.captionService),
+          new HeadingNumberingSettingTab(this.settings, this.numberingService, this.captionService, this.numberingPersistence),
         )
         console.log('[InkChapter] settings tab registered')
       } catch (e) {
@@ -2983,6 +3095,86 @@ export default class extends Plugin<InkChapterSettings> {
       callback: () => {
         this.numberingService?.clearDocumentOverrides()
         Notice.info('已清除当前文档所有标题编号覆盖')
+      },
+    })
+
+    // ── R08 — number persistence commands ───────────
+
+    this.registerCommand({
+      id: 'inkchapter.numbering.write-source',
+      title: '墨章：将编号写入源码',
+      scope: 'editor',
+      callback: () => {
+        const service = this.numberingPersistence
+        if (!service) { Notice.error('墨章：编号持久化服务未初始化'); return }
+        this.reportNumberingResult(service.writeNumbersToSource())
+      },
+    })
+
+    this.registerCommand({
+      id: 'inkchapter.numbering.adopt',
+      title: '墨章：接管已有编号',
+      scope: 'editor',
+      callback: () => {
+        const service = this.numberingPersistence
+        if (!service) { Notice.error('墨章：编号持久化服务未初始化'); return }
+        this.reportNumberingResult(service.adoptExistingNumbers())
+      },
+    })
+
+    this.registerCommand({
+      id: 'inkchapter.numbering.resync',
+      title: '墨章：重新同步全部编号',
+      scope: 'editor',
+      callback: () => {
+        const service = this.numberingPersistence
+        if (!service) { Notice.error('墨章：编号持久化服务未初始化'); return }
+        this.reportNumberingResult(service.resynchronizeAll())
+      },
+    })
+
+    this.registerCommand({
+      id: 'inkchapter.numbering.remove-managed',
+      title: '墨章：移除墨章管理的源码编号',
+      scope: 'editor',
+      callback: () => {
+        const service = this.numberingPersistence
+        if (!service) { Notice.error('墨章：编号持久化服务未初始化'); return }
+        this.reportNumberingResult(service.removeManagedNumbers())
+      },
+    })
+
+    this.registerCommand({
+      id: 'inkchapter.numbering.check-conflicts',
+      title: '墨章：检查编号冲突',
+      scope: 'editor',
+      callback: () => {
+        const service = this.numberingPersistence
+        if (!service) { Notice.error('墨章：编号持久化服务未初始化'); return }
+        const report = service.checkConflicts()
+        if (!report) { Notice.error('墨章：无法读取当前文档'); return }
+        console.table(report.issues.map(i => ({
+          line: `L${i.line}`,
+          code: i.code,
+          severity: i.severity,
+          message: i.message,
+          fix: i.fix,
+        })))
+        if (report.hasConflict) Notice.info(`墨章：${formatNumberingConflictSummary(report)}`)
+        else Notice.info('墨章：未发现编号冲突')
+      },
+    })
+
+    this.registerCommand({
+      id: 'inkchapter.numbering.export-numbered',
+      title: '墨章：导出带编号的 Markdown',
+      scope: 'editor',
+      callback: () => {
+        const service = this.numberingPersistence
+        if (!service) { Notice.error('墨章：编号持久化服务未初始化'); return }
+        const result = service.exportNumberedMarkdown()
+        if (result.ok) Notice.info(`墨章：${result.detail ?? '已导出编号副本'}`)
+        else Notice.error(`墨章：${result.detail ?? '导出失败'}`)
       },
     })
 
