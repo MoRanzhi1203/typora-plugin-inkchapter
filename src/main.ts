@@ -74,6 +74,11 @@ import {
   NumberingPersistenceService,
   type NumberingSyncResult,
 } from './heading-numbering/numbering-persistence-service'
+import {
+  ObjectNumberPersistenceService,
+  type ObjectNumberSyncResult,
+} from './heading-numbering/object-number-persistence-service'
+import { migrateObjectNumberingConfig } from './heading-numbering/object-numbering-settings'
 import { formatNumberingConflictSummary } from './heading-numbering/heading-number-conflict-check'
 
 import { CaptionService } from './heading-numbering/caption-service'
@@ -106,6 +111,7 @@ import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentU
 // R06-03 — TEST-VAULT ONLY runtime acceptance (env opt-in + path gate + token).
 import { installBlankLineAcceptanceRunner } from './runtime/blank-line-acceptance-runner'
 import { installNumberingAcceptanceRunner } from './runtime/numbering-acceptance-runner'
+import { installObjectNumberAcceptanceRunner } from './runtime/object-number-acceptance-runner'
 import { createImageEvidenceRuntime } from './image-management/image-evidence-runtime'
 import { createNodeImageEvidenceProvider } from './image-management/image-evidence-provider'
 import { resolveDiagnosticProfile, type ResolvedDiagnosticProfile } from './document-utilities/document-diagnostic-profile-v1'
@@ -306,6 +312,7 @@ export default class extends Plugin<InkChapterSettings> {
 
   private numberingService?: HeadingNumberingService
   private numberingPersistence?: NumberingPersistenceService
+  private objectNumberingPersistence?: ObjectNumberPersistenceService
   private captionService?: CaptionService
   private captionContextMenu?: CaptionContextMenu
   private numberingCoordinator?: DocumentNumberingCoordinator
@@ -1148,6 +1155,63 @@ export default class extends Plugin<InkChapterSettings> {
     Notice.error(`墨章：${(result.detail ?? '').replace(/^[A-Z_]+:/, '') || '编号同步失败'}`)
   }
 
+  /** R10 — uniform feedback for the object caption/number commands. */
+  private reportObjectNumberingResult(result: ObjectNumberSyncResult): void {
+    if (result.status === 'APPLIED') {
+      Notice.info(`墨章：${result.detail ?? '图/表/代码/公式编号已写入源码'}`)
+      return
+    }
+    if (result.status === 'UNCHANGED') {
+      Notice.info('墨章：图表代码公式编号已是最新，无需修改')
+      return
+    }
+    if (result.status === 'SKIPPED') {
+      const detail = (result.detail ?? '').replace(/^[A-Z_]+:/, '')
+      Notice.info(`墨章：${detail || '已跳过'}`)
+      return
+    }
+    Notice.error(`墨章：${(result.detail ?? '').replace(/^[A-Z_]+:/, '') || '对象编号同步失败'}`)
+  }
+
+  /**
+   * R10 — render-layer dedupe for object captions. In SOURCE persistence mode
+   * the Markdown already carries the caption text, so the caption service must
+   * not project a second one. The RAW settings stay untouched (the persistence
+   * service still sees `enabled: true`); only the runtime projection copy is
+   * suppressed.
+   */
+  private applyObjectCaptionRenderPolicy(): void {
+    const service = this.captionService
+    if (!service) return
+    try {
+      const rawCaption = this.settings.get('caption' as keyof InkChapterSettings) as
+        { schemaVersion?: number; types?: Record<string, { enabled?: boolean }> } | null | undefined
+      if (!rawCaption?.types) return
+      const suppress = this.objectNumberingPersistence?.getSettings().storageMode === 'source'
+      if (!suppress) {
+        service.applySettings(rawCaption as never)
+        const rawFormula = this.settings.get('captionFormula' as keyof InkChapterSettings)
+        if (rawFormula) service.applyFormulaSettings(rawFormula as never)
+        return
+      }
+      const types = rawCaption.types
+      const next = {
+        ...rawCaption,
+        types: {
+          ...types,
+          figure: { ...types.figure, enabled: false },
+          table: { ...types.table, enabled: false },
+          code: { ...types.code, enabled: false },
+        },
+      }
+      service.applySettings(next as never)
+      const rawFormula = this.settings.get('captionFormula' as keyof InkChapterSettings)
+      if (rawFormula) {
+        service.applyFormulaSettings({ ...migrateObjectNumberingConfig('formula', rawFormula), enabled: false } as never)
+      }
+    } catch { /* presentation-only policy must never break startup */ }
+  }
+
   onload() {
     console.log('[InkChapter] INKCHAPTER-BOOT-ONLOAD-START')
     console.log(`[InkChapter] onload START  build=${INKCHAPTER_BUILD_ID}`)
@@ -1525,6 +1589,63 @@ export default class extends Plugin<InkChapterSettings> {
       console.error('[InkChapter] 编号持久化服务初始化失败，源码编号功能不可用', e)
     }
 
+    // ── R10 — figure / table / code / formula caption source persistence ──
+    try {
+      const objectPersistence = new ObjectNumberPersistenceService({
+        settings: this.settings,
+        getDocumentKey: () => this.numberingService?.getDocumentKey() ?? null,
+        getMarkdown: () => {
+          try { return editor.getMarkdown() } catch { return null }
+        },
+        getHeadingSettings: () => this.numberingService?.getEffectiveSettings()
+          ?? DEFAULT_SETTINGS.headingNumberingScopes!.globalDefault,
+        getSourceOverrideEntries: () => this.numberingService?.getSourceOverrideSnapshot()
+          ?? { entries: [], counterPolicy: 'skip' },
+        getObjectNumberingConfigs: () => {
+          const captionCfg = this.settings.get('caption' as keyof InkChapterSettings) as
+            { types?: Record<string, unknown> } | null | undefined
+          const formulaCfg = this.settings.get('captionFormula' as keyof InkChapterSettings)
+          return {
+            figure: migrateObjectNumberingConfig('figure', captionCfg?.types?.figure),
+            table: migrateObjectNumberingConfig('table', captionCfg?.types?.table),
+            code: migrateObjectNumberingConfig('code', captionCfg?.types?.code),
+            formula: migrateObjectNumberingConfig('formula', formulaCfg),
+          }
+        },
+        getActiveFilePath: () => this.app.workspace.activeFile ?? null,
+        reloadContentPreservingUndo: (markdown: string) => {
+          File.reloadContent(markdown, false, false, false, true)
+        },
+        writeExportFile: (fileName: string, content: string) => {
+          try {
+            const active = this.app.workspace.activeFile
+            if (!active) return null
+            if (!fileName.toLowerCase().endsWith('.numbered.md')) return null
+            const target = path.join(path.dirname(active), fileName)
+            fs.writeFileSync(target, content, 'utf8')
+            return path.basename(target)
+          } catch { return null }
+        },
+        notify: (kind, message) => {
+          if (kind === 'error') Notice.error(`墨章：${message}`)
+          else Notice.info(`墨章：${message}`)
+        },
+        onEditorEdit: (listener) => this.app.features.markdownEditor.on('edit' as never, listener as never),
+        onBeforeSave: (listener) => this.app.workspace.on('file:will-save' as never, listener as never),
+        onDocumentSwitch: (listener) => {
+          const disposeOpen = this.app.workspace.on('file:open' as never, listener as never)
+          const disposeLeaf = this.app.workspace.on('active-leaf:change' as never, listener as never)
+          return () => { disposeOpen(); disposeLeaf() }
+        },
+        registerDisposable: (fn) => this.register(fn),
+      })
+      objectPersistence.start()
+      this.register(() => objectPersistence.dispose())
+      this.objectNumberingPersistence = objectPersistence
+    } catch (e) {
+      console.error('[InkChapter] 对象编号持久化服务初始化失败，图表代码公式编号不可用', e)
+    }
+
     // Init caption system (table/figure/code caption naming + numbering)
     try {
       const captionCtx: CaptionServiceContext = {
@@ -1597,6 +1718,9 @@ export default class extends Plugin<InkChapterSettings> {
           this.captionService.applyFormulaSettings(captionFormulaCfg as any)
         }
       } catch { /* fail-open */ }
+      // R10 — suppress the caption projection while the source owns the captions.
+      this.applyObjectCaptionRenderPolicy()
+      this.register(this.objectNumberingPersistence?.subscribe(() => this.applyObjectCaptionRenderPolicy()) ?? (() => {}))
       console.log('[InkChapter] caption service started')
     } catch (e) {
       console.error('[InkChapter] 题注服务初始化失败，题注功能不可用', e)
@@ -1858,6 +1982,9 @@ export default class extends Plugin<InkChapterSettings> {
         // R09 — the R08 persistence snapshot drives the SIX unified numbering
         // rules inside the CENTRAL diagnostics producer (single rule authority).
         getHeadingNumberPersistenceFacts: () => this.numberingPersistence?.getDiagnosticsFacts() ?? null,
+        // R10 — figure/table/code/formula caption persistence facts for the SAME
+        // central diagnostics snapshot (never a second issue list).
+        getObjectNumberPersistenceFacts: () => this.objectNumberingPersistence?.getDiagnosticsFacts() ?? null,
         // Heading Auto-Number Conflict V1.2 §21/§22 — the ONE post-commit report
         // sink: the diagnostics authority calls it at the END of a committed
         // recompute (never right after a setter), and main.ts owns the file IO.
@@ -2136,6 +2263,87 @@ export default class extends Plugin<InkChapterSettings> {
           undo: () => invokeEditorUndo(editor as unknown as TyporaUndoApi),
           redo: () => invokeEditorRedo(editor as unknown as TyporaUndoApi),
           undoStackLength: () => readEditorUndoStackLength(editor as unknown as TyporaUndoApi),
+          subscribeFileOpen: (callback) => this.app.workspace.on('file:open' as never, (() => callback()) as never),
+          log: (message) => console.info(`[InkChapter] ${message}`),
+        }))
+      }
+      // ── R10 — TEST-VAULT object-number runtime acceptance driver ────────
+      // OFF unless INKCHAPTER_OBJECT_NUMBER_ACCEPTANCE=1 (or a request token
+      // exists), the dedicated fixture is active, and the token is new.
+      if (this.objectNumberingPersistence) {
+        const objectPersistence = this.objectNumberingPersistence
+        this.register(installObjectNumberAcceptanceRunner({
+          vaultRoot: vaultRoot ?? null,
+          getActiveFilePath: () => this.app.workspace.activeFile ?? null,
+          getMarkdown: () => {
+            try { return editor.getMarkdown() } catch { return '' }
+          },
+          replaceContent: (markdown: string) => {
+            try { File.reloadContent(markdown, false, false, false, true) } catch { /* fail-open */ }
+          },
+          service: objectPersistence,
+          readDomFacts: () => {
+            const root = document.getElementById('write') as HTMLElement | null
+            if (!root) {
+              return { text: '', figureCount: 0, tableCount: 0, codeBlockCount: 0, mathBlockCount: 0 }
+            }
+            const mathCandidates = Array.from(root.querySelectorAll<HTMLElement>(
+              '.md-math-block, .mathjax-block, .md-math, .math-block, mjx-container',
+            ))
+            const mathBlocks = new Set(mathCandidates.map(el =>
+              el.closest<HTMLElement>('.md-math-block, .mathjax-block, .math-block') ?? el))
+            return {
+              text: root.textContent ?? '',
+              figureCount: root.querySelectorAll('img').length,
+              tableCount: root.querySelectorAll('table').length,
+              codeBlockCount: root.querySelectorAll('.md-fences').length,
+              mathBlockCount: mathBlocks.size,
+            }
+          },
+          exportNumberedMarkdown: () => {
+            const result = objectPersistence.exportNumberedMarkdown()
+            return { fileName: result.fileName, markdown: result.markdown }
+          },
+          exportHtml: (markdown: string) => {
+            try {
+              const exportApi = (File as unknown as { export?: { exportToHTML?: (options: unknown) => unknown } }).export
+              if (!exportApi || typeof exportApi.exportToHTML !== 'function') return null
+              for (const options of [{}, { content: markdown }, { markdown }]) {
+                try {
+                  const out = exportApi.exportToHTML(options)
+                  if (typeof out === 'string' && out.length > 0) return out
+                } catch { /* try the next documented-ish shape */ }
+              }
+              return null
+            } catch { return null }
+          },
+          prepareAcceptanceConfigs: () => {
+            const rawCaption = this.settings.get('caption' as keyof InkChapterSettings) as
+              { schemaVersion?: number; types?: Record<string, unknown> } | null | undefined
+            const rawFormula = this.settings.get('captionFormula' as keyof InkChapterSettings)
+            const force = (kind: 'figure' | 'table' | 'code') =>
+              ({ ...migrateObjectNumberingConfig(kind, rawCaption?.types?.[kind]), enabled: true, preset: 'chapter-dash' })
+            const nextCaption = {
+              schemaVersion: rawCaption?.schemaVersion ?? 1,
+              types: {
+                ...(rawCaption?.types ?? {}),
+                figure: force('figure'),
+                table: force('table'),
+                code: force('code'),
+              },
+            }
+            const nextFormula = { ...migrateObjectNumberingConfig('formula', rawFormula), enabled: true, preset: 'chapter-dash' }
+            this.settings.set('caption' as keyof InkChapterSettings, nextCaption as never)
+            this.settings.set('captionFormula' as keyof InkChapterSettings, nextFormula as never)
+            this.applyObjectCaptionRenderPolicy()
+            return () => {
+              this.settings.set('caption' as keyof InkChapterSettings, (rawCaption ?? undefined) as never)
+              this.settings.set('captionFormula' as keyof InkChapterSettings, (rawFormula ?? undefined) as never)
+              this.applyObjectCaptionRenderPolicy()
+            }
+          },
+          undo: () => invokeEditorUndo(editor as unknown as TyporaUndoApi),
+          redo: () => invokeEditorRedo(editor as unknown as TyporaUndoApi),
           subscribeFileOpen: (callback) => this.app.workspace.on('file:open' as never, (() => callback()) as never),
           log: (message) => console.info(`[InkChapter] ${message}`),
         }))
@@ -2700,7 +2908,7 @@ export default class extends Plugin<InkChapterSettings> {
     if (this.numberingService) {
       try {
         this.registerSettingTab(
-          new HeadingNumberingSettingTab(this.settings, this.numberingService, this.captionService, this.numberingPersistence),
+          new HeadingNumberingSettingTab(this.settings, this.numberingService, this.captionService, this.numberingPersistence, this.objectNumberingPersistence),
         )
         console.log('[InkChapter] settings tab registered')
       } catch (e) {
@@ -3246,6 +3454,87 @@ export default class extends Plugin<InkChapterSettings> {
         if (!service) { Notice.error('墨章：编号持久化服务未初始化'); return }
         const result = service.exportNumberedMarkdown()
         if (result.ok) Notice.info(`墨章：${result.detail ?? '已导出编号副本'}`)
+        else Notice.error(`墨章：${result.detail ?? '导出失败'}`)
+      },
+    })
+
+    // ── R10 — object caption / number persistence commands ───────────
+
+    this.registerCommand({
+      id: 'inkchapter.object-numbering.write-source',
+      title: '墨章：将图表代码公式编号写入源码',
+      scope: 'editor',
+      callback: () => {
+        const service = this.objectNumberingPersistence
+        if (!service) { Notice.error('墨章：对象编号持久化服务未初始化'); return }
+        this.reportObjectNumberingResult(service.writeObjectNumbersToSource())
+      },
+    })
+
+    this.registerCommand({
+      id: 'inkchapter.object-numbering.adopt',
+      title: '墨章：接管已有图表代码公式题注',
+      scope: 'editor',
+      callback: () => {
+        const service = this.objectNumberingPersistence
+        if (!service) { Notice.error('墨章：对象编号持久化服务未初始化'); return }
+        this.reportObjectNumberingResult(service.adoptExistingCaptions())
+      },
+    })
+
+    this.registerCommand({
+      id: 'inkchapter.object-numbering.resync',
+      title: '墨章：重新同步图表代码公式编号',
+      scope: 'editor',
+      callback: () => {
+        const service = this.objectNumberingPersistence
+        if (!service) { Notice.error('墨章：对象编号持久化服务未初始化'); return }
+        this.reportObjectNumberingResult(service.resynchronizeAll())
+      },
+    })
+
+    this.registerCommand({
+      id: 'inkchapter.object-numbering.remove-managed',
+      title: '墨章：移除墨章管理的图表代码公式题注',
+      scope: 'editor',
+      callback: () => {
+        const service = this.objectNumberingPersistence
+        if (!service) { Notice.error('墨章：对象编号持久化服务未初始化'); return }
+        this.reportObjectNumberingResult(service.removeManagedCaptions())
+      },
+    })
+
+    this.registerCommand({
+      id: 'inkchapter.object-numbering.check-conflicts',
+      title: '墨章：检查图表代码公式编号冲突',
+      scope: 'editor',
+      callback: () => {
+        const service = this.objectNumberingPersistence
+        if (!service) { Notice.error('墨章：对象编号持久化服务未初始化'); return }
+        const plan = service.checkConflicts()
+        if (!plan) { Notice.error('墨章：无法读取当前文档'); return }
+        const issues = plan.objects.filter(o => o.chapterMismatch || o.duplicateCaptionLines.length > 0)
+        console.table(issues.map(o => ({
+          kind: o.kind,
+          line: `L${o.captionLine ?? o.startLine}`,
+          expected: o.expected?.numberText ?? '',
+          actual: o.detectedNumber,
+          duplicateCaptions: o.duplicateCaptionLines.length,
+        })))
+        if (issues.length > 0) Notice.info(`墨章：发现 ${issues.length} 个图表代码公式编号问题`)
+        else Notice.info('墨章：未发现图表代码公式编号冲突')
+      },
+    })
+
+    this.registerCommand({
+      id: 'inkchapter.object-numbering.export-numbered',
+      title: '墨章：导出带图表代码公式编号的 Markdown',
+      scope: 'editor',
+      callback: () => {
+        const service = this.objectNumberingPersistence
+        if (!service) { Notice.error('墨章：对象编号持久化服务未初始化'); return }
+        const result = service.exportNumberedMarkdown()
+        if (result.ok) Notice.info(`墨章：${result.detail ?? '已导出带编号副本'}`)
         else Notice.error(`墨章：${result.detail ?? '导出失败'}`)
       },
     })

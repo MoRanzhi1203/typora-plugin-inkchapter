@@ -25,6 +25,11 @@ import {
   HEADING_NUMBER_FIXERS,
   HEADING_NUMBER_FIX_CAPABILITIES,
 } from './document-diagnostic-heading-number-fix-v2'
+// R10 — REAL repair actions for the object caption lifecycle rules.
+import {
+  OBJECT_NUMBER_FIXERS,
+  OBJECT_NUMBER_FIX_CAPABILITIES,
+} from './document-diagnostic-object-number-fix-v2'
 import {
   FIGURE_SYNTAX_IN_HEADING_CODE,
 } from './document-figure-heading-invariant-v1'
@@ -92,6 +97,16 @@ export interface FixCapabilityDescriptor {
 /** R09 — capability rows materialised from the heading-number fixer registry. */
 const HEADING_NUMBER_CAPABILITY_ROWS: Readonly<Record<string, FixCapabilityDescriptor>> = Object.fromEntries(
   Object.entries(HEADING_NUMBER_FIX_CAPABILITIES).map(([code, capability]) => [code, {
+    code,
+    capability: capability.capability,
+    label: capability.label,
+    actionKind: 'source-patches' as const,
+  }]),
+)
+
+/** R10 — capability rows materialised from the object-number fixer registry. */
+const OBJECT_NUMBER_CAPABILITY_ROWS: Readonly<Record<string, FixCapabilityDescriptor>> = Object.fromEntries(
+  Object.entries(OBJECT_NUMBER_FIX_CAPABILITIES).map(([code, capability]) => [code, {
     code,
     capability: capability.capability,
     label: capability.label,
@@ -239,6 +254,8 @@ const CAPABILITY_MATRIX: Readonly<Record<string, FixCapabilityDescriptor>> = Obj
   },
   // R09 — unified heading-number repairs (single-click / same-rule / one-click).
   ...HEADING_NUMBER_CAPABILITY_ROWS,
+  // R10 — object caption source lifecycle repairs.
+  ...OBJECT_NUMBER_CAPABILITY_ROWS,
 })
 
 const UNAVAILABLE: FixCapabilityDescriptor = Object.freeze({
@@ -372,6 +389,8 @@ const V1_FIXERS: Readonly<Record<string, Fixer>> = Object.freeze({
   FIGURE_MISSING_NAME: FIGURE_NAME_FIX,
   // R09 — heading-number repair builders (metadata-driven single-line replace).
   ...HEADING_NUMBER_FIXERS,
+  // R10 — object caption repair builders (replace / delete caption lines).
+  ...OBJECT_NUMBER_FIXERS,
 })
 
 /** Plan ONE diagnostic with the V2 capability model. */

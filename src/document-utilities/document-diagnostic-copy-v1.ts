@@ -137,6 +137,14 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   CODE_NUMBER_ORDER_INVALID: 442,
   FORMULA_NUMBER_ORDER_INVALID: 443,
   FORMULA_NUMBER_SECTION_MISMATCH: 444,
+  // R10 — source-caption lifecycle (same priority band as the number rules).
+  OBJECT_NUMBER_CHAPTER_MISMATCH: 445,
+  OBJECT_SOURCE_RENDER_CONFLICT: 446,
+  OBJECT_DUPLICATE_CAPTION: 447,
+  FIGURE_CAPTION_UNMANAGED: 450,
+  TABLE_CAPTION_UNMANAGED: 451,
+  CODE_CAPTION_UNMANAGED: 452,
+  FORMULA_CAPTION_UNMANAGED: 453,
   // ── figure ────────────────────────────────────────────────────────────────
   FIGURE_MISSING_NAME: 500,
   FIGURE_DUPLICATE_NAME: 510,
@@ -335,6 +343,14 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   CODE_NUMBER_ORDER_INVALID: { title: '代码块编号顺序异常', description: '代码块的有效编号在文档顺序中不是严格递增的。', suggestion: '按文档顺序调整代码块编号。' },
   FORMULA_NUMBER_ORDER_INVALID: { title: '公式编号顺序异常', description: '公式的有效编号在文档顺序中不是严格递增的。', suggestion: '按文档顺序调整公式编号。' },
   FORMULA_NUMBER_SECTION_MISMATCH: { title: '公式编号章节不一致', description: '公式编号所使用的章节号与该公式实际所在章节不一致。', suggestion: '修正公式编号的章节号，或将其移动到对应章节。' },
+  // ── R10 — source caption lifecycle ───────────────────────────────────────
+  OBJECT_NUMBER_CHAPTER_MISMATCH: { title: '对象编号与所在章节不一致', description: '图/表/代码/公式题注中的章节号与标题编号计算结果不一致。', suggestion: '按当前章节重新同步该题注编号。' },
+  OBJECT_SOURCE_RENDER_CONFLICT: { title: '源码题注与渲染编号冲突', description: '源码题注编号与渲染层按当前方案计算的编号不同。', suggestion: '接管该题注并按当前方案同步编号。' },
+  OBJECT_DUPLICATE_CAPTION: { title: '同一对象存在重复题注', description: '同一个图/表/代码/公式对象绑定了多条题注段落。', suggestion: '删除多余的题注，只保留一条。' },
+  FIGURE_CAPTION_UNMANAGED: { title: '图片题注尚未接管', description: '源码中已有图题编号，但墨章尚未接管，章节变化时不会同步。', suggestion: '接管该图题并纳入编号管理。' },
+  TABLE_CAPTION_UNMANAGED: { title: '表格题注尚未接管', description: '源码中已有表题编号，但墨章尚未接管，章节变化时不会同步。', suggestion: '接管该表题并纳入编号管理。' },
+  CODE_CAPTION_UNMANAGED: { title: '代码题注尚未接管', description: '源码中已有代码题注编号，但墨章尚未接管，章节变化时不会同步。', suggestion: '接管该代码题注并纳入编号管理。' },
+  FORMULA_CAPTION_UNMANAGED: { title: '公式编号尚未接管', description: '源码中已有公式编号，但墨章尚未接管，章节变化时不会同步。', suggestion: '接管该公式编号并纳入编号管理。' },
   // ── figure ────────────────────────────────────────────────────────────────
   FIGURE_MISSING_NAME: { title: '图片缺少图名', description: '图片没有名称。', suggestion: '为图片补充图名。' },
   FIGURE_DUPLICATE_NAME: { description: '多张图片使用了相同的图名。', suggestion: '修改图名以互相区分。' },

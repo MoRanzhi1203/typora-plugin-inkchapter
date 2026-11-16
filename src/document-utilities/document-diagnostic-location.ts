@@ -365,6 +365,14 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   HEADING_NUMBER_ORDER_ANOMALY: 'error',
   HEADING_NUMBER_FORMAT_INCONSISTENT: 'warning',
   HEADING_NUMBER_OWNERSHIP_CONFLICT: 'warning',
+  // R10 — source caption lifecycle (mirrors resolveDocumentDiagnosticSeverity).
+  OBJECT_NUMBER_CHAPTER_MISMATCH: 'error',
+  OBJECT_SOURCE_RENDER_CONFLICT: 'error',
+  OBJECT_DUPLICATE_CAPTION: 'warning',
+  FIGURE_CAPTION_UNMANAGED: 'warning',
+  TABLE_CAPTION_UNMANAGED: 'warning',
+  CODE_CAPTION_UNMANAGED: 'warning',
+  FORMULA_CAPTION_UNMANAGED: 'warning',
   FIGURE_LOCAL_IMAGE_MISSING: 'warning',
   FIGURE_IMAGE_FORMAT_UNSUPPORTED: 'warning',
   EXCESSIVE_INTERNAL_BLANK_LINES: 'warning',
@@ -725,6 +733,29 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
   }),
   HEADING_NUMBER_OWNERSHIP_CONFLICT: rule('HEADING_NUMBER_OWNERSHIP_CONFLICT', 'heading', 'canonical-node', {
     area: 'caption-numbering', scope: 'heading',
+  }),
+  // R10 — figure/table/code/formula caption source lifecycle. Object-scoped
+  // source-range locators (the caption line), same area as the number rules.
+  OBJECT_NUMBER_CHAPTER_MISMATCH: rule('OBJECT_NUMBER_CHAPTER_MISMATCH', 'figure', 'source-range', {
+    area: 'caption-numbering', scope: 'object',
+  }),
+  OBJECT_SOURCE_RENDER_CONFLICT: rule('OBJECT_SOURCE_RENDER_CONFLICT', 'figure', 'source-range', {
+    area: 'caption-numbering', scope: 'object',
+  }),
+  OBJECT_DUPLICATE_CAPTION: rule('OBJECT_DUPLICATE_CAPTION', 'figure', 'source-range', {
+    area: 'caption-numbering', scope: 'object',
+  }),
+  FIGURE_CAPTION_UNMANAGED: rule('FIGURE_CAPTION_UNMANAGED', 'figure', 'source-range', {
+    area: 'caption-numbering', scope: 'object',
+  }),
+  TABLE_CAPTION_UNMANAGED: rule('TABLE_CAPTION_UNMANAGED', 'table', 'source-range', {
+    area: 'caption-numbering', scope: 'object',
+  }),
+  CODE_CAPTION_UNMANAGED: rule('CODE_CAPTION_UNMANAGED', 'code', 'source-range', {
+    area: 'caption-numbering', scope: 'object',
+  }),
+  FORMULA_CAPTION_UNMANAGED: rule('FORMULA_CAPTION_UNMANAGED', 'formula', 'source-range', {
+    area: 'caption-numbering', scope: 'object',
   }),
   // Figure / table / code / formula / link (block node)
   FIGURE_MISSING_NAME: rule('FIGURE_MISSING_NAME', 'figure', 'figure-occurrence'),

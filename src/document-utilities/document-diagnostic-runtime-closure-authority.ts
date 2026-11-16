@@ -209,14 +209,15 @@ export const DOCUMENT_DIAGNOSTIC_BASELINE = {
   // Blank-Line Matrix V1 adds the LEADING blank-line family (+1): the document
   // start owns 0 extra blank lines and its own auto-fix.
   // R09 adds the SIX unified heading-number families (+6 implemented, produced).
-  registeredRuleFamilyCount: 123,
-  resolvedDiagnosticCodeCount: 129,
-  userVisibleDiagnosticTypeCount: 119,
-  implementedFamilyCount: 119,
+  // R10 adds the SEVEN object-caption lifecycle families (+7 implemented).
+  registeredRuleFamilyCount: 130,
+  resolvedDiagnosticCodeCount: 136,
+  userVisibleDiagnosticTypeCount: 126,
+  implementedFamilyCount: 126,
   deferredFamilyCount: 4,
   plannedFamilyCount: 0,
   stateGuardCodeCount: 5,
-  contentDiagnosticCodeCount: 124,
+  contentDiagnosticCodeCount: 131,
 } as const
 
 // ── Internal authorities ────────────────────────────────────────────────────

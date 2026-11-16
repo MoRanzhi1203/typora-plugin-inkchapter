@@ -1,6 +1,7 @@
 import type { HeadingNumberingSettings, HeadingLevelRangeSettings, SpecialHeadingNumberingSettings, HeadingNumberingScopeStore, FormatLibrary } from '../heading-numbering/heading-types'
 import type { CaptionSettings } from '../heading-numbering/caption-system'
 import type { NumberingPersistenceConfig } from '../heading-numbering/numbering-persistence-settings'
+import type { ObjectNumberPersistenceConfig } from '../heading-numbering/object-number-persistence-settings'
 import type { ImageSettings } from '../image-management/image-settings'
 
 export type { HeadingNumberingSettings }
@@ -77,6 +78,11 @@ export interface InkChapterSettings {
    * Optional; `normalizeNumberingPersistenceConfig` fills every field.
    */
   numberingPersistence?: NumberingPersistenceConfig
+  /**
+   * R10 — figure/table/code/formula caption source persistence, existing-caption
+   * policy and the per-document ownership ledger.
+   */
+  objectNumberingPersistence?: ObjectNumberPersistenceConfig
   /** 界面 / 文件夹树 设置（可选字段，缺失时按 DEFAULT_UI_SETTINGS 补齐）。 */
   ui?: InkChapterUiSettings
   /** 图片管理配置（可选字段，缺失或非法时由 resolveImageSettings 补齐）。 */

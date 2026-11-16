@@ -121,6 +121,16 @@
 - `src/heading-numbering/canonical-heading-frame.ts`
 - `src/heading-numbering/semantic-heading-numbering.ts`
 
+## R10 — 题注源码持久化（图 / 表 / 代码 / 公式）
+
+- 新增纯规划器 `src/heading-numbering/object-number-persistence.ts`：扫描 Markdown 中的图片独立块、GFM 表格、围栏代码块与 `$$` 公式块，按对象位置生成/更新/删除题注。
+- 章节前缀来自 `computeSemanticHeadingNumbers()`（与正文/大纲同一权威），不解析标题文本截取数字。
+- 题注识别：`图 1-1` / `图1-1` / `图 2.3` / `表 1-1` / `代码 1-1` / `（1-1）` / `\tag{…}`；以句号等句末标点结尾的普通正文不会被误认为题注。
+- 排他绑定：一个题注段落只能归属一个对象（图片下方 + 表格上方的同一行不会同时被两个对象接管）。
+- 写入只改题注行或 `\tag{}`，不动图片路径、表格结构、代码围栏内容与 LaTeX 正文；第二次同步零补丁。
+- 源码持久化模式下运行时题注服务停止投影，避免正文出现第二套题注。
+- 运行时服务：`src/heading-numbering/object-number-persistence-service.ts`；命令与设置卡片见 [settings-ui.md](settings-ui.md)。
+
 ## 历史吸收
 
 - 2026-08-19 cleanup absorbed the caption/object-caption series and object-numbering legacy batches into this system doc.

@@ -194,6 +194,8 @@ export interface DocumentDiagnosticsProviders {
    * blocks keep their own semantics (pure/legacy callers).
    */
   getHeadingNumberPersistenceFacts?: () => import('./document-diagnostics-heading-number-v1').HeadingNumberPersistenceFacts | null
+  /** R10 — figure/table/code/formula caption persistence authority snapshot. */
+  getObjectNumberPersistenceFacts?: () => import('../heading-numbering/object-number-persistence').ObjectNumberPersistenceFacts | null
   /**
    * Heading Auto-Number Conflict V1.2 §21/§22 — the ONE dev/test bridge
    * consumption point. Invoked at the START of every recompute (the toolbar
@@ -1340,6 +1342,8 @@ export class DocumentDiagnosticsAuthority {
     headingAutoNumbering: { enabled: boolean; h1NumberingEnabled: boolean; styleKey?: string }
     /** R09 — the R08 persistence snapshot consumed by the central number rules. */
     headingNumberPersistence?: import('./document-diagnostics-heading-number-v1').HeadingNumberPersistenceFacts
+    /** R10 — figure/table/code/formula caption persistence snapshot. */
+    objectNumberPersistence?: import('../heading-numbering/object-number-persistence').ObjectNumberPersistenceFacts
   } {
     const root = resolveBusinessContentRoot()
     const figures: DiagnosticObjectFact[] = []
@@ -1612,6 +1616,8 @@ export class DocumentDiagnosticsAuthority {
       headingAutoNumbering,
       // R09 — the ONE R08 persistence snapshot consumed by the central rules.
       headingNumberPersistence: this.providers.getHeadingNumberPersistenceFacts?.() ?? undefined,
+      // R10 — the SAME snapshot consumed by the object caption rules.
+      objectNumberPersistence: this.providers.getObjectNumberPersistenceFacts?.() ?? undefined,
     }
   }
 

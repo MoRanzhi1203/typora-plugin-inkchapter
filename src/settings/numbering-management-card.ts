@@ -10,6 +10,12 @@
  */
 
 import type { NumberingPersistenceService } from '../heading-numbering/numbering-persistence-service'
+import type { ObjectNumberPersistenceService } from '../heading-numbering/object-number-persistence-service'
+import type {
+  ObjectCaptionPolicy,
+  ObjectNumberStorageMode,
+  ObjectNumberSyncTiming,
+} from '../heading-numbering/object-number-persistence'
 import {
   formatNumberingConflictSummary,
   type NumberingConflictReport,
@@ -24,6 +30,8 @@ import type {
 export interface NumberingManagementCardDeps {
   container: HTMLElement
   persistence: NumberingPersistenceService
+  /** R10 — figure/table/code/formula caption source persistence. */
+  objectPersistence?: ObjectNumberPersistenceService
   /** Re-render the whole settings tab after a settings change. */
   rerender?: () => void
   notify?: (kind: 'info' | 'warning' | 'error', message: string) => void
@@ -213,6 +221,147 @@ export function renderNumberingManagementCard(deps: NumberingManagementCardDeps)
     const lines = report.issues.slice(0, 12).map(i => `L${i.line}  ${i.code}  ${i.message}  → ${i.fix}`)
     target.textContent = head + lines.join('\n')
   }
+
+  if (deps.objectPersistence) renderObjectNumberSection(deps, container, deps.objectPersistence)
+}
+
+const OBJECT_STORAGE_OPTIONS: Array<{ value: ObjectNumberStorageMode; label: string; hint: string }> = [
+  { value: 'render', label: '渲染层编号', hint: '题注只由墨章显示，不写入 Markdown' },
+  { value: 'source', label: '源码持久化', hint: '图/表/代码/公式题注写入 Markdown，可脱离插件阅读' },
+  { value: 'export', label: '导出时固化', hint: '编辑时不写入，导出副本带完整编号' },
+]
+
+const OBJECT_POLICY_OPTIONS: Array<{ value: ObjectCaptionPolicy; label: string; hint: string }> = [
+  { value: 'adopt', label: '接管并同步', hint: '确认的旧题注纳入墨章管理并重算编号' },
+  { value: 'replace', label: '移除并重新生成', hint: '移除已确认旧编号，按当前方案重算' },
+  { value: 'preserve', label: '保留且不叠加', hint: '保留已有题注，墨章不再覆盖' },
+  { value: 'detect-only', label: '只检测', hint: '不修改源码，只报告冲突' },
+]
+
+const OBJECT_TIMING_OPTIONS: Array<{ value: ObjectNumberSyncTiming; label: string; hint: string }> = [
+  { value: 'manual', label: '手动同步', hint: '只在执行命令时写入' },
+  { value: 'edit', label: '编辑后自动同步', hint: '图表代码公式结构变化时自动同步' },
+  { value: 'save', label: '保存时同步', hint: '保存文档前统一写入' },
+]
+
+const OBJECT_STORAGE_LABEL: Record<ObjectNumberStorageMode, string> = {
+  render: '渲染层编号',
+  source: '源码持久化',
+  export: '导出时固化',
+}
+
+const OBJECT_POLICY_LABEL: Record<ObjectCaptionPolicy, string> = {
+  adopt: '接管并同步',
+  replace: '移除并重新生成',
+  preserve: '保留且不叠加',
+  'detect-only': '只检测',
+}
+
+const OBJECT_TIMING_LABEL: Record<ObjectNumberSyncTiming, string> = {
+  manual: '手动同步',
+  edit: '编辑后自动同步',
+  save: '保存时同步',
+}
+
+function renderObjectNumberSection(
+  deps: NumberingManagementCardDeps,
+  container: HTMLElement,
+  service: ObjectNumberPersistenceService,
+): void {
+  const card = document.createElement('div')
+  card.className = 'inkchapter-card'
+  container.appendChild(card)
+
+  const header = document.createElement('div')
+  header.className = 'inkchapter-card-header'
+  card.appendChild(header)
+  const title = document.createElement('div')
+  title.className = 'inkchapter-card-title'
+  title.textContent = '图表代码公式编号'
+  header.appendChild(title)
+
+  const body = document.createElement('div')
+  body.style.cssText = 'padding:12px 14px;display:flex;flex-direction:column;gap:12px;'
+  card.appendChild(body)
+
+  const note = document.createElement('div')
+  note.style.cssText = 'font-size:12px;color:#777;line-height:1.6;'
+  note.textContent = '图、表、代码块与公式共用同一套章节编号结果。写入源码后，即使不安装墨章也能在 Markdown 中看到完整编号与题注。'
+  body.appendChild(note)
+
+  const settings = service.getSettings()
+  const controls = document.createElement('div')
+  controls.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 16px;'
+  body.appendChild(controls)
+
+  addSelect(controls, '编号存储模式', OBJECT_STORAGE_OPTIONS, settings.storageMode, value => {
+    service.setSettings({ storageMode: value as ObjectNumberStorageMode }, 'document')
+    deps.rerender?.()
+  })
+  addSelect(controls, '已有题注处理', OBJECT_POLICY_OPTIONS, settings.existingCaptionPolicy, value => {
+    service.setSettings({ existingCaptionPolicy: value as ObjectCaptionPolicy }, 'document')
+    deps.rerender?.()
+  })
+  addSelect(controls, '同步时机', OBJECT_TIMING_OPTIONS, settings.syncTiming, value => {
+    service.setSettings({ syncTiming: value as ObjectNumberSyncTiming }, 'document')
+    deps.rerender?.()
+  })
+
+  const summaryEl = document.createElement('div')
+  summaryEl.style.cssText = 'font-size:12px;color:#333;background:#fafafa;border:1px solid #eee;border-radius:4px;padding:6px 8px;line-height:1.6;'
+  body.appendChild(summaryEl)
+
+  function refreshStatus(): void {
+    try {
+      const summary = service.getStatusSummary()
+      const mode = OBJECT_STORAGE_LABEL[summary.storageMode]
+      const policy = OBJECT_POLICY_LABEL[summary.policy]
+      const timing = OBJECT_TIMING_LABEL[summary.syncTiming]
+      const unmanaged = Math.max(0, summary.captionedCount - summary.managedCount)
+      summaryEl.textContent = `${mode} · ${policy} · ${timing} · 图 ${summary.objectsByKind.figure} / 表 ${summary.objectsByKind.table} / 代码 ${summary.objectsByKind.code} / 公式 ${summary.objectsByKind.formula} · 已写题注 ${summary.captionedCount} · 未接管 ${unmanaged} · 章节不一致 ${summary.chapterMismatchCount} · 重复题注 ${summary.duplicateCaptionCount}`
+    } catch {
+      summaryEl.textContent = ''
+    }
+  }
+  refreshStatus()
+
+  const actions = document.createElement('div')
+  actions.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;'
+  body.appendChild(actions)
+
+  const status = document.createElement('div')
+  status.style.cssText = 'font-size:12px;color:#555;white-space:pre-wrap;line-height:1.6;'
+  body.appendChild(status)
+
+  const describe = (result: { status: string; detail?: string }): string => {
+    const clean = (result.detail ?? '').replace(/^[A-Z_]+:/, '')
+    if (result.status === 'APPLIED') return clean || '已写入源码'
+    if (result.status === 'UNCHANGED') return '编号已是最新，无需修改'
+    if (result.status === 'SKIPPED') return clean || '已跳过'
+    return clean || '操作失败'
+  }
+
+  addButton(actions, '将编号写入源码', () => {
+    status.textContent = describe(service.writeObjectNumbersToSource())
+    refreshStatus()
+  })
+  addButton(actions, '接管已有题注', () => {
+    status.textContent = describe(service.adoptExistingCaptions())
+    refreshStatus()
+  })
+  addButton(actions, '重新同步编号', () => {
+    status.textContent = describe(service.resynchronizeAll())
+    refreshStatus()
+  })
+  addButton(actions, '移除墨章编号', () => {
+    status.textContent = describe(service.removeManagedCaptions())
+    refreshStatus()
+  })
+  addButton(actions, '导出带编号副本', () => {
+    const result = service.exportNumberedMarkdown()
+    status.textContent = result.ok ? (result.detail ?? '已导出带编号副本') : (result.detail ?? '导出失败')
+    refreshStatus()
+  })
 }
 
 function addSelect(

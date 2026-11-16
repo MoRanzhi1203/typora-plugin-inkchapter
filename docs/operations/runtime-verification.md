@@ -50,3 +50,26 @@
 - `test/vault/.typora/inkchapter-runtime-load.json` — 插件 onload 写入（含 buildMarker, mainJsSha256, initializationCount, pluginRoot）
 - `test/vault/.typora/core.json` — showRibbon 配置
 - `test/vault/.typora/plugins.json` — 插件注册
+
+## 五、R10 图表代码公式编号运行时验收记录
+
+命令：`pnpm run accept:object-numbering`（启动器：`scripts/run-object-numbering-acceptance.mjs`；运行器：`src/runtime/object-number-acceptance-runner.ts`）。
+
+夹具：`test/vault/runtime/acceptance/ObjectNumbering-R10-Runtime-Acceptance.template.md`（2 个章节、3 张图片、2 张表格、2 个代码块、3 个公式块；部分对象已有题注）。
+
+真实 Typora 1.6.7 / Windows 运行结果（报告：test/vault/runtime/acceptance/object-numbering-acceptance-last-run.json）：
+
+| 项目 | 结果 |
+|---|---|
+| 对象数量 | 图 3 / 表 2 / 代码 2 / 公式 3 |
+| 写入补丁 | 8 |
+| 题注列表 | `图 1-1 系统架构图`、`图 1-2`、`表 1-1 模块状态`、`代码 1-1 数据读取程序`、`（1-1）`、`图 2-1`、`表 2-1 实验结果`、`代码 2-1`、`（2-2）` |
+| 源码哈希 | 写入前 `d4e0692a` → 写入后 `da4cc156` → 第二次同步 `da4cc156` |
+| 第二次同步 | `UNCHANGED`，0 补丁，逐字节一致 |
+| DOM 题注 | 9 条，重复题注 0 |
+| 章节联动 | 插入新章节后 `APPLIED`（6 补丁），再次同步 `UNCHANGED` |
+| 撤销 / 重做 | 撤销改变缓冲区；重做恢复编号后缓冲区 |
+| 导出副本 | `ObjectNumbering-R10-Runtime-Acceptance.numbered.md`，含标题与图/表编号 |
+| HTML | 宿主 `exportToHTML` 在本机不可用，记录为 `HTML_HOST_API_NOT_VERIFIED`，未声称通过 |
+
+说明：本次验收不声称已验证 Word 原生 SEQ 字段或 PDF 排版；编号已写入源码副本，宿主导出时使用真实文本编号。

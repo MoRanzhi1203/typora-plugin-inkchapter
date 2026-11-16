@@ -116,6 +116,22 @@ runtime 域（插件自身部署完整性）**不会**进入用户 Drawer（见 
 - 25 条 VNext 规则 `DEFERRED_BY_SPEC`（caption 家族 / 编号完整性家族 / anchor 家族 / cross-reference 家族）。
 - 见 [../roadmap/known-gaps-and-deferred-work.md](../roadmap/known-gaps-and-deferred-work.md)。
 
+## 13. R10 对象编号诊断
+
+| 规则 | 显示名称 | 级别 | 修复 |
+|---|---|---|---|
+| `OBJECT_NUMBER_CHAPTER_MISMATCH` | 对象编号与所在章节不一致 | error | 同步题注编号（安全自动） |
+| `OBJECT_SOURCE_RENDER_CONFLICT` | 源码题注与渲染编号冲突 | error | 消除重复编号（显式） |
+| `OBJECT_DUPLICATE_CAPTION` | 同一对象存在重复题注 | warning | 删除重复题注（安全自动） |
+| `FIGURE_CAPTION_UNMANAGED` | 图片题注尚未接管 | warning | 接管图题（显式） |
+| `TABLE_CAPTION_UNMANAGED` | 表格题注尚未接管 | warning | 接管表题（显式） |
+| `CODE_CAPTION_UNMANAGED` | 代码题注尚未接管 | warning | 接管代码题注（显式） |
+| `FORMULA_CAPTION_UNMANAGED` | 公式编号尚未接管 | warning | 接管公式编号（显式） |
+
+- 全部带准确 `Lxx` 源行号；修复只替换/删除目标题注行，内容已变化时返回 `STALE_SOURCE`。
+- 题注编号已经正确时不发布「未接管」诊断，避免出现点击后 `NOT_APPLICABLE` 的无效修复按钮。
+- 生产者：`src/document-utilities/document-diagnostics-object-number-v1.ts`；修复器：`src/document-utilities/document-diagnostic-object-number-fix-v2.ts`。
+
 ## 14. 历史设计决策
 
 - Earlier DOM-adjacency approach was replaced by canonical owner resolution（题注归属不再靠 DOM 邻接猜测）。

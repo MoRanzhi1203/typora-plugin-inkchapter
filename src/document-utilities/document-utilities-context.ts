@@ -248,6 +248,8 @@ export function collectDiagnosticsInput(
     headingAutoNumbering?: DocumentDiagnosticsInput['headingAutoNumbering']
     /** R09 — the R08 number-persistence authority snapshot (optional). */
     headingNumberPersistence?: DocumentDiagnosticsInput['headingNumberPersistence']
+    /** R10 — object caption persistence authority snapshot (optional). */
+    objectNumberPersistence?: DocumentDiagnosticsInput['objectNumberPersistence']
   },
 ): DocumentDiagnosticsInput {
   // Phase 7R.3.11.8B.9 — conditional strict-policy activation. When the

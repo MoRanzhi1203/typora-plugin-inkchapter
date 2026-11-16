@@ -105,6 +105,16 @@ CanonicalHeadingFrame（stableIdentity + semanticState.physicalLevel）
 - **规范 heading frame 权威**：一次收集 + 一次 stableIdentity 分配 + 语义状态与 DOM 绑定同身份；frame 提交前校验 epoch/计数/身份集一致（semantic==binding==canonicalEntry）；Caption 用 `resolvePrecedingHeading(target, frame)` 返回 entry 本身，不得独立重收集。
 - 34-vs-33 取证分类：多收集/漏收集/同 heading 不同身份/DOM 变化/重复身份/隐藏瞬态，先证后断。
 
+## §15 公式编号源码持久化（R10）
+
+- 渲染层投影保持不变；源码持久化模式新增可移植表示：
+  - 无 `\tag{}` 的公式：在 `$$…$$` 之后插入独立段落 `（1-1）`；
+  - 已有 `\tag{…}`：只替换标签内容，不插入第二套编号；
+  - 多行 / `aligned` / `cases` / `matrix` / 空公式块只读取结构，不改写 LaTeX 正文。
+- 编号消费 `computeSemanticHeadingNumbers()` 的章节/节序号与对象编号预设（全局 / 章节 / 节内）。
+- 已知边界：`（1-1）` 是普通 Markdown 段落，**不是** MathJax 原生 tag；Word/PDF 的最终编号排版由 Typora 宿主导出完成，当前 Runtime 验收只验证源码副本与 DOM 文本，未声称已验证 Word 原生 SEQ 字段或 PDF 排版。
+- 相关：`src/heading-numbering/object-number-persistence.ts`、`src/heading-numbering/object-number-persistence-service.ts`、`src/runtime/object-number-acceptance-runner.ts`。
+
 ## §12 启动时序与权威门禁（Phase 7R.3.9R）
 
 - 分离 `AUTHORITY_NOT_READY` 与 `POST-READY TRANSIENT_UNRESOLVED`；显式状态机 NO_DOCUMENT / WAITING_FOR_DOCUMENT_CONTEXT / WAITING_FOR_HEADING_AUTHORITY / READY。

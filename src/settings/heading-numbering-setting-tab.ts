@@ -351,6 +351,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     private numberingService: HeadingNumberingService,
     private captionService?: CaptionService,
     private numberingPersistence?: NumberingPersistenceService,
+    private objectNumberPersistence?: import('../heading-numbering/object-number-persistence-service').ObjectNumberPersistenceService,
   ) {
     super()
   }
@@ -872,6 +873,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         renderNumberingManagementCard({
           container: this.containerEl,
           persistence,
+          objectPersistence: this.objectNumberPersistence,
           rerender: () => this.onshow(),
         })
       })

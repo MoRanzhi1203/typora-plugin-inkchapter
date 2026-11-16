@@ -91,6 +91,11 @@ export interface DocumentUtilitiesSources {
    */
   getHeadingNumberPersistenceFacts?: () => import('./document-diagnostics-heading-number-v1').HeadingNumberPersistenceFacts | null
   /**
+   * R10 — figure/table/code/formula caption persistence authority snapshot.
+   * Optional: absent ⇒ the source-level object-number rules stay silent.
+   */
+  getObjectNumberPersistenceFacts?: () => import('../heading-numbering/object-number-persistence').ObjectNumberPersistenceFacts | null
+  /**
    * Numbering Integrity V2 (spec §9/§21) — the ONE canonical effective-number
    * fact provider (owned by the caption service / formula planner), keyed by the
    * object's DOM element. Optional: absent ⇒ every number rule stays silent.
@@ -449,6 +454,7 @@ export function createDocumentUtilities(sources: DocumentUtilitiesSources): Docu
     getHeadingAutoNumberingEffectiveFacts: sources.getHeadingAutoNumberingEffectiveFacts,
     // R09 — the R08 persistence snapshot consumed by the central number rules.
     getHeadingNumberPersistenceFacts: sources.getHeadingNumberPersistenceFacts,
+    getObjectNumberPersistenceFacts: sources.getObjectNumberPersistenceFacts,
     // Heading Auto-Number Conflict V1.2 §21/§22 — the post-commit report sink.
     onHeadingConflictReportCapture: sources.onHeadingConflictReportCapture,
     // Heading Auto-Number Conflict V1.2 §21/§22 — the ONE recompute-time bridge

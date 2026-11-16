@@ -119,6 +119,10 @@ import {
 // Phase G — the DOM-side caption-integrity producer's emitted codes (the SAME
 // single allow-list mirrored below; the caption producer is not a second registry).
 import { CAPTION_INTEGRITY_DIAGNOSTIC_CODES } from './document-diagnostics-caption-integrity-v1'
+import {
+  OBJECT_NUMBER_DIAGNOSTIC_CODES,
+  computeObjectNumberDiagnosticFacts,
+} from './document-diagnostics-object-number-v1'
 import { FORMAT_INTEGRITY_DIAGNOSTIC_CODES } from './document-format-integrity-v1'
 // TRAE V3 §7 — the THREE shared source authorities (single-pass per source
 // revision; every new rule consumes them instead of re-scanning the document).
@@ -444,6 +448,18 @@ export function resolveDocumentDiagnosticSeverity(
     case 'HEADING_NUMBER_FORMAT_INCONSISTENT':
     case 'HEADING_NUMBER_OWNERSHIP_CONFLICT':
       return 'warning'
+    // R10 — a caption whose chapter prefix no longer matches the heading result
+    // (or disagrees with the render number) is an ERROR; an unadopted / duplicate
+    // caption is a recoverable WARNING.
+    case 'OBJECT_NUMBER_CHAPTER_MISMATCH':
+    case 'OBJECT_SOURCE_RENDER_CONFLICT':
+      return 'error'
+    case 'OBJECT_DUPLICATE_CAPTION':
+    case 'FIGURE_CAPTION_UNMANAGED':
+    case 'TABLE_CAPTION_UNMANAGED':
+    case 'CODE_CAPTION_UNMANAGED':
+    case 'FORMULA_CAPTION_UNMANAGED':
+      return 'warning'
     // ── Constant WARNING rules ──
     // V5.12-R8 §9 — a missing local image is a resource-level WARNING (the
     // document structure is intact; only a referenced asset is absent), never
@@ -690,6 +706,12 @@ export interface DocumentDiagnosticsInput {
    * (same rule ids, no duplicate root cause).
    */
   headingNumberPersistence?: import('./document-diagnostics-heading-number-v1').HeadingNumberPersistenceFacts
+  /**
+   * R10 — figure/table/code/formula caption persistence facts. When present the
+   * source-level object-number rules (chapter mismatch / render conflict /
+   * unmanaged caption / duplicate caption) join the SAME snapshot.
+   */
+  objectNumberPersistence?: import('../heading-numbering/object-number-persistence').ObjectNumberPersistenceFacts
 }
 
 export interface DocumentDiagnosticsComputed {
@@ -972,6 +994,9 @@ export const PRODUCED_DIAGNOSTIC_CODES: readonly string[] = [
   ...FORMAT_INTEGRITY_DIAGNOSTIC_CODES,
   // Numbering Integrity V2 (spec §9) — the object / formula NUMBER rules.
   ...NUMBER_INTEGRITY_DIAGNOSTIC_CODES,
+  // R10 — object caption source lifecycle (chapter mismatch / render conflict /
+  // unmanaged caption / duplicate caption).
+  ...OBJECT_NUMBER_DIAGNOSTIC_CODES,
   // TRAE V3 — Source Syntax / Footnote / Reference / Front Matter / Table header
   // / Empty-link integrity (14 codes; B2 implements FRONTMATTER_MALFORMED).
   ...SOURCE_INTEGRITY_DIAGNOSTIC_CODES,
@@ -2766,6 +2791,20 @@ export function computeDocumentDiagnostics(
           })
         : null
       const headingNumberAuthorityActive = input.headingNumberPersistence != null
+
+      // ── R10 — figure/table/code/formula caption lifecycle ────────────────
+      // Same snapshot, same line authority: the producer reads the R10 planner
+      // (single numbering calculation) and pushes source-range diagnostics.
+      if (input.objectNumberPersistence) {
+        for (const diagnostic of computeObjectNumberDiagnosticFacts({
+          markdown: input.markdown,
+          documentKey: input.documentKey,
+          sourceRevision: input.sourceRevision,
+          facts: input.objectNumberPersistence,
+        })) {
+          push(diagnostic)
+        }
+      }
 
       // ── Heading Auto-Number Conflict V1 §1/§2/§3/§5/§12/§13/§17/§18/§19 ───
       // ONE Error per heading:
