@@ -112,6 +112,7 @@ import { createDocumentUtilities, extractFormulaVisibleTagTokens, type DocumentU
 import { installBlankLineAcceptanceRunner } from './runtime/blank-line-acceptance-runner'
 import { installNumberingAcceptanceRunner } from './runtime/numbering-acceptance-runner'
 import { installObjectNumberAcceptanceRunner } from './runtime/object-number-acceptance-runner'
+import { installFormulaNumberingAcceptanceRunner, FORMULA_NUMBER_TEXT_PATTERN } from './runtime/formula-numbering-acceptance-runner'
 import { createImageEvidenceRuntime } from './image-management/image-evidence-runtime'
 import { createNodeImageEvidenceProvider } from './image-management/image-evidence-provider'
 import { resolveDiagnosticProfile, type ResolvedDiagnosticProfile } from './document-utilities/document-diagnostic-profile-v1'
@@ -1188,6 +1189,10 @@ export default class extends Plugin<InkChapterSettings> {
         { schemaVersion?: number; types?: Record<string, { enabled?: boolean }> } | null | undefined
       if (!rawCaption?.types) return
       const suppress = this.objectNumberingPersistence?.getSettings().storageMode === 'source'
+      // R11 — Formula dedupe is PER FORMULA: a formula is only suppressed when
+      // ITS OWN source already carries a valid number paragraph. Never disable
+      // the whole Formula projection just because the document is in source mode.
+      service.setFormulaSourceDedupe(suppress)
       if (!suppress) {
         service.applySettings(rawCaption as never)
         const rawFormula = this.settings.get('captionFormula' as keyof InkChapterSettings)
@@ -1207,7 +1212,7 @@ export default class extends Plugin<InkChapterSettings> {
       service.applySettings(next as never)
       const rawFormula = this.settings.get('captionFormula' as keyof InkChapterSettings)
       if (rawFormula) {
-        service.applyFormulaSettings({ ...migrateObjectNumberingConfig('formula', rawFormula), enabled: false } as never)
+        service.applyFormulaSettings(migrateObjectNumberingConfig('formula', rawFormula) as never)
       }
     } catch { /* presentation-only policy must never break startup */ }
   }
@@ -1721,6 +1726,9 @@ export default class extends Plugin<InkChapterSettings> {
       // R10 — suppress the caption projection while the source owns the captions.
       this.applyObjectCaptionRenderPolicy()
       this.register(this.objectNumberingPersistence?.subscribe(() => this.applyObjectCaptionRenderPolicy()) ?? (() => {}))
+      // Document-level overrides (source/render mode) must be re-applied when the
+      // active document changes, not only when the settings object changes.
+      this.register(this.app.workspace.on('file:open' as never, (() => this.applyObjectCaptionRenderPolicy()) as never))
       console.log('[InkChapter] caption service started')
     } catch (e) {
       console.error('[InkChapter] 题注服务初始化失败，题注功能不可用', e)
@@ -2344,6 +2352,153 @@ export default class extends Plugin<InkChapterSettings> {
           },
           undo: () => invokeEditorUndo(editor as unknown as TyporaUndoApi),
           redo: () => invokeEditorRedo(editor as unknown as TyporaUndoApi),
+          subscribeFileOpen: (callback) => this.app.workspace.on('file:open' as never, (() => callback()) as never),
+          log: (message) => console.info(`[InkChapter] ${message}`),
+        }))
+      }
+      // ── R11 — TEST-VAULT Formula numbering runtime acceptance driver ────
+      // DOM-FIRST: proves the REAL formula host, MathJax output, visible number
+      // node, alignment and dedupe — never just the planner's returned number.
+      if (this.captionService) {
+        const captionService = this.captionService
+        const objectPersistence = this.objectNumberingPersistence
+        const readDom = () => {
+          const rootEl = document.getElementById('write') as HTMLElement | null
+          const documentKey = this.numberingService?.getDocumentKey() ?? null
+          if (!rootEl) {
+            return { documentKey, writeWidth: 0, formulas: [], sourceNumberParagraphCount: 0 }
+          }
+          const visibleRect = (el: Element) => {
+            try {
+              const rect = el.getBoundingClientRect()
+              if (!(rect.width > 0 && rect.height > 0)) return null
+              const style = window.getComputedStyle(el)
+              if (style.display === 'none' || style.visibility === 'hidden') return null
+              const opacity = Number(style.opacity)
+              if (Number.isFinite(opacity) && opacity <= 0.01) return null
+              return { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+            } catch { return null }
+          }
+          const hosts = Array.from(rootEl.querySelectorAll<HTMLElement>('.md-math-block'))
+          const formulas = hosts.map((host, index) => {
+            const tags = Array.from(host.querySelectorAll<HTMLElement>('mjx-tag'))
+            const decorations = Array.from(host.querySelectorAll<HTMLElement>('[data-inkchapter-formula-number]'))
+            const candidates: HTMLElement[] = [...tags, ...decorations]
+            if (candidates.length === 0) {
+              for (const el of Array.from(host.querySelectorAll<HTMLElement>('*'))) {
+                if (el.children.length !== 0) continue
+                if (FORMULA_NUMBER_TEXT_PATTERN.test((el.textContent ?? '').trim())) candidates.push(el)
+              }
+            }
+            const visibleCandidates = candidates.filter(el => visibleRect(el) != null)
+            const numberRects = visibleCandidates
+              .map(el => visibleRect(el))
+              .filter((rect): rect is NonNullable<typeof rect> => rect != null)
+            const visibleNumberTexts = visibleCandidates
+              .map(el => (el.textContent ?? '').trim())
+              .filter(text => FORMULA_NUMBER_TEXT_PATTERN.test(text))
+            const hostRect = visibleRect(host)
+            // Right-alignment = the number starts AT/after the formula body's
+            // right edge. MathJax's container/svg spans the whole block (and its
+            // assistive-mml subtree is layout-wide), so measure only real SVG
+            // glyph geometry to the LEFT of the number node.
+            const minNumberLeft = numberRects.length > 0
+              ? Math.min(...numberRects.map(rect => rect.left))
+              : Number.POSITIVE_INFINITY
+            let contentRight = Number.NEGATIVE_INFINITY
+            for (const el of Array.from(host.querySelectorAll<Element>('path, use, rect, circle, line, polygon, polyline'))) {
+              if (el instanceof SVGElement && el.closest('mjx-assistive-mml')) continue
+              const rect = visibleRect(el)
+              if (!rect) continue
+              const right = rect.left + rect.width
+              if (right <= minNumberLeft + 1) contentRight = Math.max(contentRight, right)
+            }
+            const hasContent = Number.isFinite(contentRight)
+            const numberRightOfHost = numberRects.length === 0
+              ? null
+              : (!hasContent ? true : minNumberLeft >= contentRight - 1)
+            return {
+              index,
+              hostClass: (host.className || '').slice(0, 80),
+              hostConnected: host.isConnected,
+              mjxContainerCount: host.querySelectorAll('mjx-container, .MathJax').length,
+              tagTexts: tags.map(tag => (tag.textContent ?? '').trim()),
+              decorationTexts: decorations.map(deco => (deco.textContent ?? '').trim()),
+              visibleNumberTexts,
+              hostRect,
+              bodyRect: hasContent ? { left: contentRight, top: hostRect?.top ?? 0, width: 0, height: 0 } : null,
+              contentRight: hasContent ? contentRight : null,
+              numberRects,
+              numberRightOfHost,
+              numberVisible: visibleNumberTexts.length > 0,
+            }
+          })
+          const sourceNumberParagraphCount = Array.from(rootEl.querySelectorAll<HTMLElement>('p'))
+            .filter(p => FORMULA_NUMBER_TEXT_PATTERN.test((p.textContent ?? '').trim())).length
+          return {
+            documentKey,
+            writeWidth: rootEl.getBoundingClientRect().width,
+            formulas,
+            sourceNumberParagraphCount,
+          }
+        }
+        this.register(installFormulaNumberingAcceptanceRunner({
+          vaultRoot: vaultRoot ?? null,
+          getActiveFilePath: () => this.app.workspace.activeFile ?? null,
+          getMarkdown: () => {
+            try { return editor.getMarkdown() } catch { return '' }
+          },
+          replaceContent: (markdown: string) => {
+            try { File.reloadContent(markdown, false, false, false, true) } catch { /* fail-open */ }
+          },
+          readDomFacts: readDom,
+          getExpected: () => captionService.getFormulaNumberingFacts(),
+          applyConfig: (patch) => {
+            const raw = this.settings.get('captionFormula' as keyof InkChapterSettings) as Record<string, unknown> | null | undefined
+            // Deep, immutable snapshot: later framework merges must never mutate
+            // the restore value (this bug previously leaked the acceptance preset
+            // into the user's saved Formula configuration).
+            const originalJson = raw == null ? null : JSON.stringify(raw)
+            const next = { ...migrateObjectNumberingConfig('formula', raw), ...patch }
+            this.settings.set('captionFormula' as keyof InkChapterSettings, next as never)
+            captionService.applyFormulaSettings(next)
+            return () => {
+              const restored = originalJson == null ? undefined : JSON.parse(originalJson) as Record<string, unknown>
+              this.settings.set('captionFormula' as keyof InkChapterSettings, restored as never)
+              captionService.applyFormulaSettings(migrateObjectNumberingConfig('formula', restored))
+            }
+          },
+          applyObjectPersistenceMode: (mode) => {
+            if (!objectPersistence) return () => {}
+            const original = objectPersistence.getSettings().storageMode
+            objectPersistence.setSettings({ storageMode: mode }, 'document')
+            this.applyObjectCaptionRenderPolicy()
+            return () => {
+              objectPersistence.setSettings({ storageMode: original }, 'document')
+              this.applyObjectCaptionRenderPolicy()
+            }
+          },
+          syncObjectNumbers: () => {
+            const result = objectPersistence?.runSync('formula-acceptance-source-sync')
+            return { status: result?.status ?? 'UNAVAILABLE', detail: result?.detail }
+          },
+          setWriteWidth: (widthPx) => {
+            const rootEl = document.getElementById('write') as HTMLElement | null
+            if (!rootEl) return
+            if (widthPx == null) {
+              rootEl.style.removeProperty('width')
+              rootEl.style.removeProperty('max-width')
+            } else {
+              rootEl.style.width = `${widthPx}px`
+              rootEl.style.maxWidth = 'none'
+            }
+          },
+          wait: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)),
+          readUserDocument: () => {
+            try {
+              return fs.readFileSync(path.join(vaultRoot ?? '', '墨章插件测试', '01-中文学术论文模板.md'), 'utf8')
+            } catch { return null }
+          },
           subscribeFileOpen: (callback) => this.app.workspace.on('file:open' as never, (() => callback()) as never),
           log: (message) => console.info(`[InkChapter] ${message}`),
         }))

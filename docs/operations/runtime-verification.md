@@ -73,3 +73,29 @@
 | HTML | 宿主 `exportToHTML` 在本机不可用，记录为 `HTML_HOST_API_NOT_VERIFIED`，未声称通过 |
 
 说明：本次验收不声称已验证 Word 原生 SEQ 字段或 PDF 排版；编号已写入源码副本，宿主导出时使用真实文本编号。
+
+## 六、R11 公式编号专项运行时验收记录
+
+命令：`pnpm run accept:formula-numbering`（启动器：`scripts/run-formula-numbering-acceptance.mjs`；运行器：`src/runtime/formula-numbering-acceptance-runner.ts`）。
+
+夹具：`test/vault/runtime/acceptance/FormulaNumbering-R11-Runtime-Acceptance.template.md`（2 个 H1、3 个 H2/H3 作用域、7 个公式块，含空公式、多行、`aligned`、`cases`）。
+
+真实 Typora 1.6.7 / Windows 运行结果（报告：`test/vault/runtime/acceptance/formula-numbering-acceptance-last-run.json`，`verdict=PASS`，19 个步骤、0 失败）：
+
+| 项目 | 结果 |
+|---|---|
+| 真实 DOM 编号 | 每个 `.md-math-block` 恰有 1 个可见编号节点，右侧对齐，无装饰节点、无重复 |
+| 初始编号 | `(1.1-1)`、`(1.2-1)`、`(1.2-2)`、`(2-1)`、`(2-2)`、`(1-1)`、`(1-2)` |
+| 章节联动 | H3 节内编号、H2 章节回退、第二个 H1 重新起编 |
+| 空公式 | `$$` 空块保留编号且可见 |
+| 公式编辑 | 修改公式体后编号与数量稳定 |
+| 新增 / 删除 | 同节后续公式依次递增 / 递减 |
+| 跨节移动 | 移动后按新作用域重新编号 |
+| 标题改名 / 层级变化 | 改名保持编号；层级变化后重新编号 |
+| 设置切换 | 全局 `1,2,3`、节内 `1.1-1`、关闭后无编号、Typora 原生不可用时自动接管 |
+| 源码持久化 | 尚无源码编号时仍投影；插入有效 `（1-1）` 后仅该公式去重，其余继续显示 |
+| 窄 / 宽窗口 | 520px 与 1100px 正文宽度下编号均可见且位于公式主体右侧 |
+| 文档重载 | 从模板重新加载后 7 个编号全部恢复 |
+| 用户学术模板 | `test/vault/墨章插件测试/01-中文学术论文模板.md` 的两个公式显示 `(5.3-1)`、`(11.2-1)`，均可见、右侧对齐、无双编号；验收结束后公式配置保持运行前的保存值 |
+
+说明：本次验收验证的是真实 Typora 编辑 DOM 中的可见编号节点与位置，不声称验证 Word/PDF 导出后的原生编号字段。

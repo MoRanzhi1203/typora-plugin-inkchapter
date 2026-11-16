@@ -65,7 +65,9 @@ import {
   classifyPlanChange,
   hashFormulaSource,
   normalizeTyporaAutoNumberingPolicy,
+  resolveEffectiveFormulaMode,
   scanDisplayMathSources,
+  scanFormulaSourceNumberParagraphs,
   isPlanSourceAdmissible,
   type FormulaNativeRenderPlan,
   type FormulaProjectionContext,
@@ -255,6 +257,11 @@ const REFRESH_DELAY_MS = 0
 function readTyporaAutoNumberingForMath(): string | boolean | undefined {
   const g = globalThis as { File?: { option?: { autoNumberingForMath?: string | boolean } } }
   return g.File?.option?.autoNumberingForMath
+}
+
+/** Normalize a formula number token for source-vs-plan equality (no fuzzy match). */
+function normalizeFormulaNumberToken(value: string): string {
+  return value.replace(/[－—–]/g, '-').replace(/\s+/g, '')
 }
 
 export type CaptionMutationClassification = 'SELF_ONLY' | 'CONTENT_RELEVANT' | 'MIXED'
@@ -545,6 +552,12 @@ export class CaptionService {
   private rendering = false
   private captionSettings: CaptionSettings = DEFAULT_CAPTION_SETTINGS
   private formulaConfig: ObjectNumberingConfig = DEFAULT_OBJECT_NUMBERING_CONFIG.formula
+  /**
+   * R11 — object numbers are persisted in the Markdown source. The formula
+   * projection is deduped PER FORMULA (only when that formula already carries a
+   * valid source number paragraph), never wholesale.
+   */
+  private formulaSourceDedupeEnabled = false
   private currentEditorRoot: HTMLElement | null = null
   private lastRefreshReason = 'none'
   private lastScanAt: number | null = null
@@ -736,6 +749,36 @@ export class CaptionService {
       code: migrateObjectNumberingConfig('code', resolveCaptionTypeSettings(this.captionSettings, 'code')).enabled,
       formula: this.formulaConfig.enabled,
     }
+  }
+
+  /**
+   * R11 — read-only Formula numbering facts for the real-runtime acceptance
+   * runner. One entry per canonical block-formula host in DOM order.
+   */
+  getFormulaNumberingFacts(): Array<{
+    rawNumber: string
+    renderedNumber: string
+    planPresent: boolean
+    hostConnected: boolean
+  }> {
+    return this.lastFormulaTargets.map(target => {
+      const plan = this.projectionController.getPlan(target.root)
+      return {
+        rawNumber: plan?.rawNumber ?? '',
+        renderedNumber: plan?.renderedNumber ?? '',
+        planPresent: plan != null,
+        hostConnected: target.root.isConnected,
+      }
+    })
+  }
+
+  /**
+   * R11 — per-formula source-number dedupe switch. Enabled only while object
+   * numbers are persisted in the Markdown source. The caller must refresh after
+   * changing it (see `applyObjectCaptionRenderPolicy`).
+   */
+  setFormulaSourceDedupe(enabled: boolean): void {
+    this.formulaSourceDedupeEnabled = enabled
   }
 
   /** Apply the (independent) formula ObjectNumberingConfig and re-render. */
@@ -2855,9 +2898,24 @@ export class CaptionService {
     if (!root) { this.formulaAdapter.clearAll(); this.projectionController.clearAll(); return }
 
     const config = this.formulaConfig
-    const mode = config.formulaMode ?? 'typora-native'
+    const configuredMode = config.formulaMode ?? 'typora-native'
     const enabled = config.enabled
-    const semanticMode = mode === 'inkchapter' && enabled
+    const typoraAutoNumberingPolicy = normalizeTyporaAutoNumberingPolicy(readTyporaAutoNumberingForMath())
+    const effectiveDecision = resolveEffectiveFormulaMode({
+      configuredMode,
+      enabled,
+      typoraAutoNumberingPolicy,
+    })
+    const mode = effectiveDecision.mode
+    const semanticMode = enabled && mode === 'inkchapter'
+    if (effectiveDecision.reason === 'NATIVE_UNAVAILABLE_INKCHAPTER_TAKEOVER') {
+      emitRuntimeAudit('FORMULA-NATIVE-NUMBERING-FALLBACK', {
+        configuredMode,
+        typoraAutoNumberingPolicy,
+        effectiveMode: mode,
+        decision: 'INKCHAPTER_TAKEOVER',
+      })
+    }
 
     const snapshot = this.ctx.getHeadingNumberingSnapshot?.() ?? null
     const activeDocKey = this.ctx.getDocumentKey?.() ?? null
@@ -3126,6 +3184,11 @@ export class CaptionService {
         // PA-12 — an EMPTY formula (`$$$$`) still owns its ordinal. Only skip a
         // zero-length source when the scan could not be aligned with the hosts.
         const sourcesAligned = sources.length === formulaTargets.length
+        // R11 — source-persisted Formula numbers. Dedupe is PER FORMULA and only
+        // when THIS formula already carries a VALID source number paragraph.
+        const sourceNumberTags = this.formulaSourceDedupeEnabled
+          ? scanFormulaSourceNumberParagraphs(markdown)
+          : []
         for (let i = 0; i < formulaTargets.length; i++) {
           const t = formulaTargets[i]
           const sourceTex = sources[i] ?? ''
@@ -3141,6 +3204,23 @@ export class CaptionService {
           if (authority !== 'inkchapter-native-transient') continue
           const p = planned[i]
           if (!p) continue
+          const isSectionScoped = p.effectiveScope === 'section' && p.sectionOrdinal != null
+          if (isSectionScoped) anyFormulaSection = true
+          formulaElementNumbers.set(t.root, {
+            effectiveNumber: p.rawNumber,
+            sectionNumber: isSectionScoped ? String(p.sectionOrdinal) : undefined,
+            actualSectionNumber: p.sectionOrdinal != null ? String(p.sectionOrdinal) : undefined,
+          })
+          const existingSourceNumber = sourceNumberTags[i] ?? null
+          if (existingSourceNumber != null && normalizeFormulaNumberToken(existingSourceNumber) === normalizeFormulaNumberToken(p.rawNumber)) {
+            emitRuntimeAudit('FORMULA-SOURCE-NUMBER-DEDUPE', {
+              formulaRuntimeKey: `formula:${t.ordinal}`,
+              rawNumber: p.rawNumber,
+              sourceNumber: existingSourceNumber,
+              decision: 'SKIP_PROJECTION_SOURCE_NUMBER_VALID',
+            })
+            continue
+          }
           planEntries.push({
             target: t,
             plan: {
@@ -3157,13 +3237,6 @@ export class CaptionService {
               structuralSectionIdentity: p.structuralSectionIdentity,
               effectiveScope: p.effectiveScope,
             },
-          })
-          const isSectionScoped = p.effectiveScope === 'section' && p.sectionOrdinal != null
-          if (isSectionScoped) anyFormulaSection = true
-          formulaElementNumbers.set(t.root, {
-            effectiveNumber: p.rawNumber,
-            sectionNumber: isSectionScoped ? String(p.sectionOrdinal) : undefined,
-            actualSectionNumber: p.sectionOrdinal != null ? String(p.sectionOrdinal) : undefined,
           })
         }
         this.formulaEffectiveNumbers = formulaElementNumbers

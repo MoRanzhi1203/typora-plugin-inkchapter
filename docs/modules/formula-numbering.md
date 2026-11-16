@@ -115,6 +115,15 @@ CanonicalHeadingFrame（stableIdentity + semanticState.physicalLevel）
 - 已知边界：`（1-1）` 是普通 Markdown 段落，**不是** MathJax 原生 tag；Word/PDF 的最终编号排版由 Typora 宿主导出完成，当前 Runtime 验收只验证源码副本与 DOM 文本，未声称已验证 Word 原生 SEQ 字段或 PDF 排版。
 - 相关：`src/heading-numbering/object-number-persistence.ts`、`src/heading-numbering/object-number-persistence-service.ts`、`src/runtime/object-number-acceptance-runner.ts`。
 
+## §16 编号可见性收口（R11，2026-11）
+
+- **真实根因**：设置中「公式编号」为启用、编号实现为「Typora 原生」，而 Typora 的 `auto_numbering_for_math` 为空（关闭）。`formulaMode='typora-native'` 时插件原样让出投影，普通 `$$…$$` 不会得到任何编号，界面表现为“已启用但无编号”。
+- **有效模式解析**（`resolveEffectiveFormulaMode`）：保存的 `formulaMode` 永不改写；启用状态下只有 Typora 策略为 `all`（全文自动编号）才由 Typora 投影，`off` / `ams` / `unknown` 一律由墨章以 `inkchapter-native-transient` 接管。审计：`FORMULA-NATIVE-NUMBERING-FALLBACK`。
+- **空公式**：零长度源码不再直接 DEFER，瞬态输入改为 `\phantom{}\tag{rawNumber}`——保留不可见主体，只显示编号，避免裸 `\tag` 导致 MathJax 空容器。
+- **源码模式按公式去重**：不再因 `storageMode=source` 整体关闭公式投影。`scanFormulaSourceNumberParagraphs()` 逐公式读取紧邻 `$$…$$` 的源码编号段落；仅当该段落存在且与当前计算 `rawNumber` 严格相等时才跳过该公式的投影（`FORMULA-SOURCE-NUMBER-DEDUPE`）。标题归属逻辑不参与公式判断。
+- **文档级覆盖与切换**：`file:open` 时重新应用对象编号渲染策略，文档级 `storageMode` 覆盖即时生效；设置改变经 `applyFormulaSettings()` 立即刷新。
+- **真实 Runtime 验收**：`pnpm run accept:formula-numbering`（夹具 `FormulaNumbering-R11-Runtime-Acceptance.template.md`；运行器 `src/runtime/formula-numbering-acceptance-runner.ts`）以 DOM 优先方式验证真实 `.md-math-block` 内的可见编号节点、唯一性、右侧对齐、逐公式计划一致性，以及章节/设置/结构变化后的稳定重投影。结果记录见 [runtime-verification](../operations/runtime-verification.md)。
+
 ## §12 启动时序与权威门禁（Phase 7R.3.9R）
 
 - 分离 `AUTHORITY_NOT_READY` 与 `POST-READY TRANSIENT_UNRESOLVED`；显式状态机 NO_DOCUMENT / WAITING_FOR_DOCUMENT_CONTEXT / WAITING_FOR_HEADING_AUTHORITY / READY。

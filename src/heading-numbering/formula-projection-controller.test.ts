@@ -6,7 +6,9 @@ import {
   hashFormulaSource,
   isPlanSourceAdmissible,
   normalizeTyporaAutoNumberingPolicy,
+  resolveEffectiveFormulaMode,
   scanDisplayMathSources,
+  scanFormulaSourceNumberParagraphs,
   sourceHasExplicitUserTag,
   type FormulaProjectionContext,
   type FormulaNativeRenderPlan,
@@ -365,8 +367,9 @@ describe('PA-12 empty formula keeps its ordinal', () => {
 
   // PA-12 CORRECTION — a tag-only TeX input (`\tag{x}` with no body) makes
   // MathJax return an EMPTY container, which blanks the block in the preview.
-  // An empty formula keeps its ordinal in the plan but must NOT be injected.
-  it('an empty host keeps its ordinal but never receives a tag-only render input', () => {
+  // R11 — an empty formula keeps its ordinal AND must show its number, so the
+  // transient input keeps an invisible `\phantom{}` body instead of being bare.
+  it('an empty host keeps its ordinal and receives an invisible body + tag', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const controller = new FormulaProjectionController()
@@ -377,10 +380,10 @@ describe('PA-12 empty formula keeps its ordinal', () => {
     })
     // The ordinal IS reserved (no numbering hole in the plan set)…
     expect(controller.getPlan(host)?.rawNumber).toBe('5.2-3')
-    // …but the render input stays EMPTY (`tex2svg('')` is a no-op, not an error).
+    // …and the render input is never a bare tag (that would render BLANK).
     const d = controller.prepareTransientRenderInput('', 'doc-a', 1)
-    expect(d.injected).toBe(false)
-    expect(d.tex).toBe('')
+    expect(d.injected).toBe(true)
+    expect(d.tex).toBe('\\phantom{}\\tag{5.2-3}')
   })
 })
 
@@ -776,5 +779,79 @@ describe('Phase 7R.3.3 — plan diff / signature-scoped state / targeted rerende
     controller.applyProjectionPlan(host, planFor(host, '1.1-1', 'E = mc^2', { revision: 99 }))
     expect(controller.getExecutionState(host)).toBe('committed')
     expect(controller.isCommittedForCurrentSignature(host)).toBe(true)
+  })
+})
+
+describe('resolveEffectiveFormulaMode — enabled must never mean "no number"', () => {
+  it('R11-MODE-1: inkchapter selected → inkchapter', () => {
+    expect(resolveEffectiveFormulaMode({
+      configuredMode: 'inkchapter', enabled: true, typoraAutoNumberingPolicy: 'off',
+    })).toEqual({ mode: 'inkchapter', reason: 'INKCHAPTER_SELECTED' })
+  })
+
+  it('R11-MODE-2: typora-native + ALL → native (Typora really numbers display math)', () => {
+    expect(resolveEffectiveFormulaMode({
+      configuredMode: 'typora-native', enabled: true, typoraAutoNumberingPolicy: 'all',
+    })).toEqual({ mode: 'typora-native', reason: 'NATIVE_SELECTED_AND_AVAILABLE' })
+  })
+
+  it('R11-MODE-3: typora-native + OFF/AMS/UNKNOWN → InkChapter takeover', () => {
+    for (const policy of ['off', 'ams', 'unknown'] as const) {
+      expect(resolveEffectiveFormulaMode({
+        configuredMode: 'typora-native', enabled: true, typoraAutoNumberingPolicy: policy,
+      })).toEqual({ mode: 'inkchapter', reason: 'NATIVE_UNAVAILABLE_INKCHAPTER_TAKEOVER' })
+    }
+  })
+
+  it('R11-MODE-4: disabled never takes over', () => {
+    expect(resolveEffectiveFormulaMode({
+      configuredMode: 'typora-native', enabled: false, typoraAutoNumberingPolicy: 'off',
+    })).toEqual({ mode: 'typora-native', reason: 'FORMULA_NUMBERING_DISABLED' })
+  })
+})
+
+describe('scanFormulaSourceNumberParagraphs — per-formula source dedupe facts', () => {
+  it('R11-SRC-1: only an adjacent standalone number paragraph counts', () => {
+    const markdown = [
+      '$$', 'a=1', '$$', '', '（5-1）', '',
+      '$$', 'b=2', '$$', '',
+      '普通段落',
+    ].join('\n')
+    expect(scanFormulaSourceNumberParagraphs(markdown)).toEqual(['5-1', null])
+  })
+
+  it('R11-SRC-2: half-width parentheses and full-width dash normalize to the same token', () => {
+    const markdown = ['$$', 'a=1', '$$', '', '(1－2)', ''].join('\n')
+    expect(scanFormulaSourceNumberParagraphs(markdown)).toEqual(['1-2'])
+  })
+
+  it('R11-SRC-3: fenced code $$ pairs never shift formula indexes', () => {
+    const markdown = [
+      '```', '$$', 'fake', '$$', '```', '',
+      '$$', 'a=1', '$$', '', '（1-1）', '',
+    ].join('\n')
+    expect(scanFormulaSourceNumberParagraphs(markdown)).toEqual(['1-1'])
+  })
+})
+
+describe('prepareTransientRenderInput — empty formula keeps its number', () => {
+  it('R11-EMPTY-1: zero-length source injects an invisible phantom body + tag', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const controller = new FormulaProjectionController()
+    controller.setPlan(host, {
+      documentKey: 'doc-a',
+      revision: 1,
+      sourceHash: hashFormulaSource(''),
+      rawNumber: '5.3-1',
+      renderedNumber: '(5.3-1)',
+      formulaRuntimeKey: 'formula:0',
+      authority: 'inkchapter-native-transient',
+      formulaMode: 'inkchapter',
+    })
+    const decision = controller.prepareTransientRenderInput('', 'doc-a', 1)
+    expect(decision.injected).toBe(true)
+    expect(decision.authority).toBe('inkchapter-native-transient')
+    expect(decision.tex).toBe('\\phantom{}\\tag{5.3-1}')
   })
 })

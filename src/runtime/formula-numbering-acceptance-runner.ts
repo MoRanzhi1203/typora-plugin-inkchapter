@@ -1,0 +1,660 @@
+/**
+ * R11 — Formula numbering runtime acceptance runner (test-vault only).
+ *
+ * Reuses the R06/R08/R10 pattern: a request token in
+ * `test/vault/runtime/acceptance` unlocks the run, the plugin executes its OWN
+ * production caption service, and one fixed report path records evidence.
+ *
+ * The acceptance is DOM-FIRST: every assertion reads the REAL Typora formula
+ * host (`.md-math-block`), its real MathJax output and the REAL visible number
+ * node. A `rawNumber` computed by the planner is never accepted as proof on its
+ * own.
+ *
+ * Covered: single/multiple formulas, H1/H2/H3 scopes, global/section numbering,
+ * empty / multi-line / aligned / cases formulas, edit + reload, heading changes,
+ * formula add/remove/move, setting switches, narrow/wide widths, DOM dedupe and
+ * actual visibility.
+ */
+import * as fs from 'fs'
+import * as path from 'path'
+
+export const FORMULA_NUMBERING_ACCEPTANCE_ENV = 'INKCHAPTER_FORMULA_NUMBER_ACCEPTANCE'
+
+export const FORMULA_NUMBERING_ACCEPTANCE_DOCUMENT_IN_VAULT = 'runtime/acceptance/FormulaNumbering-R11-Runtime-Acceptance.md'
+export const FORMULA_NUMBERING_ACCEPTANCE_REQUEST_IN_VAULT = 'runtime/acceptance/formula-numbering-acceptance-request.json'
+export const FORMULA_NUMBERING_ACCEPTANCE_REPORT_IN_VAULT = 'runtime/acceptance/formula-numbering-acceptance-last-run.json'
+
+export interface FormulaNumberingRect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+export interface FormulaNumberingDomEntry {
+  index: number
+  hostClass: string
+  hostConnected: boolean
+  mjxContainerCount: number
+  tagTexts: string[]
+  decorationTexts: string[]
+  visibleNumberTexts: string[]
+  hostRect: FormulaNumberingRect | null
+  /** MathJax formula body rect (math/svg/container), the right-alignment anchor. */
+  bodyRect: FormulaNumberingRect | null
+  /** Right edge (viewport x) of the furthest visible formula-content leaf. */
+  contentRight?: number | null
+  numberRects: FormulaNumberingRect[]
+  numberRightOfHost: boolean | null
+  numberVisible: boolean
+}
+
+export interface FormulaNumberingDomFacts {
+  documentKey: string | null
+  writeWidth: number
+  formulas: FormulaNumberingDomEntry[]
+  /** Standalone source number paragraphs OUTSIDE the formula hosts (`（1-1）`). */
+  sourceNumberParagraphCount: number
+}
+
+export interface FormulaNumberingExpectedFact {
+  rawNumber: string
+  renderedNumber: string
+  planPresent: boolean
+  hostConnected: boolean
+}
+
+export interface FormulaNumberingConfigPatch {
+  enabled?: boolean
+  formulaMode?: 'typora-native' | 'inkchapter'
+  preset?: 'global' | 'chapter-dot' | 'section-dot' | 'chapter-dash' | 'section-dash' | 'legacy-custom'
+}
+
+export interface FormulaNumberingAcceptanceDeps {
+  vaultRoot: string | null
+  getActiveFilePath(): string | null
+  getMarkdown(): string
+  replaceContent(markdown: string): void
+  readDomFacts(): FormulaNumberingDomFacts
+  getExpected(): FormulaNumberingExpectedFact[]
+  /** Apply a temporary Formula config; returns a restore function. */
+  applyConfig(patch: FormulaNumberingConfigPatch): () => void
+  /** Switch object-number persistence mode; returns a restore function. */
+  applyObjectPersistenceMode(mode: 'render' | 'source'): () => void
+  /** Write object numbers into the Markdown source (source mode only). */
+  syncObjectNumbers(): { status: string; detail?: string }
+  /** Temporarily force the editor body width; `null` restores the original. */
+  setWriteWidth(widthPx: number | null): void
+  /** Read the user's academic template fixture (read-only, no modification). */
+  readUserDocument?(): string | null
+  wait(ms: number): Promise<void> | void
+  subscribeFileOpen(callback: () => void): () => void
+  log?(message: string): void
+}
+
+export interface FormulaNumberingAssertion {
+  id: string
+  ok: boolean
+  detail: string
+}
+
+export interface FormulaNumberingStep {
+  id: string
+  label: string
+  assertions: FormulaNumberingAssertion[]
+}
+
+export interface FormulaNumberingAcceptanceReport {
+  schema: 'inkchapter.formula-numbering-acceptance/v1'
+  requestToken: string
+  startedAt: string
+  finishedAt: string
+  documentPath: string | null
+  steps: FormulaNumberingStep[]
+  domFacts: FormulaNumberingDomFacts | null
+  expected: FormulaNumberingExpectedFact[]
+  failures: string[]
+  verdict: 'PASS' | 'FAIL' | 'UNEXECUTED'
+  error: string | null
+}
+
+export function isFormulaNumberingAcceptanceRequested(): boolean {
+  try {
+    const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+    return proc?.env?.[FORMULA_NUMBERING_ACCEPTANCE_ENV] === '1'
+  } catch {
+    return false
+  }
+}
+
+function requestFilePath(vaultRoot: string): string {
+  return path.join(vaultRoot, FORMULA_NUMBERING_ACCEPTANCE_REQUEST_IN_VAULT)
+}
+
+function reportFilePath(vaultRoot: string): string {
+  return path.join(vaultRoot, FORMULA_NUMBERING_ACCEPTANCE_REPORT_IN_VAULT)
+}
+
+function readToken(file: string): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { token?: unknown; requestToken?: unknown }
+    if (typeof parsed.token === 'string') return parsed.token
+    if (typeof parsed.requestToken === 'string') return parsed.requestToken
+    return null
+  } catch {
+    return null
+  }
+}
+
+export function resolveFormulaNumberingAcceptanceGate(input: {
+  vaultRoot: string | null
+  activeFilePath: string | null
+  requestToken: string | null
+  lastReportToken: string | null
+}): { enabled: boolean; reason: string } {
+  const vault = input.vaultRoot?.replace(/\\/g, '/').replace(/\/+$/, '') ?? ''
+  if (vault === '' || !vault.endsWith('/test/vault')) return { enabled: false, reason: 'NOT_TEST_VAULT' }
+  const expected = `${vault}/${FORMULA_NUMBERING_ACCEPTANCE_DOCUMENT_IN_VAULT}`.toLowerCase()
+  const active = input.activeFilePath?.replace(/\\/g, '/').toLowerCase() ?? ''
+  if (active === '' || active !== expected) return { enabled: false, reason: 'NOT_ACCEPTANCE_DOCUMENT' }
+  const token = (input.requestToken ?? '').trim()
+  if (token === '') return { enabled: false, reason: 'NO_REQUEST_TOKEN' }
+  if (input.lastReportToken != null && input.lastReportToken.trim() === token) {
+    return { enabled: false, reason: 'ALREADY_RUN' }
+  }
+  return { enabled: true, reason: 'ENABLED' }
+}
+
+export function installFormulaNumberingAcceptanceRunner(deps: FormulaNumberingAcceptanceDeps): () => void {
+  const vaultRoot = deps.vaultRoot
+  if (!vaultRoot) return () => {}
+  const requestFile = requestFilePath(vaultRoot)
+  if (!isFormulaNumberingAcceptanceRequested() && readToken(requestFile) == null) return () => {}
+
+  const log = deps.log ?? ((message: string) => console.info(message))
+  const wait = deps.wait
+  let running = false
+  let disposed = false
+
+  const trigger = (source: string): void => {
+    if (disposed || running) return
+    const requestToken = readToken(requestFile)
+    const gate = resolveFormulaNumberingAcceptanceGate({
+      vaultRoot,
+      activeFilePath: deps.getActiveFilePath(),
+      requestToken,
+      lastReportToken: readToken(reportFilePath(vaultRoot)),
+    })
+    if (!gate.enabled) {
+      if (gate.reason !== 'NO_REQUEST_TOKEN') log(`R11-FORMULA-ACCEPTANCE: skipped (${gate.reason}) via ${source}`)
+      return
+    }
+    running = true
+    log(`R11-FORMULA-ACCEPTANCE: start (token=${requestToken}) via ${source}`)
+    void (async () => {
+      try {
+        // Let the first real MathJax render settle before snapshotting.
+        await wait(2500)
+        const report = await runAcceptance(deps, requestToken as string)
+        writeReport(vaultRoot, report, requestToken as string)
+        log(`R11-FORMULA-ACCEPTANCE: finished verdict=${report.verdict} failures=${report.failures.length}`)
+      } catch (error) {
+        writeReport(vaultRoot, failureReport(requestToken as string, error), requestToken as string)
+        log(`R11-FORMULA-ACCEPTANCE: threw ${error instanceof Error ? error.message : String(error)}`)
+      } finally {
+        running = false
+      }
+    })()
+  }
+
+  const disposeSubscription = deps.subscribeFileOpen(() => trigger('file:open'))
+  trigger('install')
+  return () => {
+    disposed = true
+    disposeSubscription()
+  }
+}
+
+function failureReport(token: string, error: unknown): FormulaNumberingAcceptanceReport {
+  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+  return {
+    schema: 'inkchapter.formula-numbering-acceptance/v1',
+    requestToken: token,
+    startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString(),
+    documentPath: null,
+    steps: [],
+    domFacts: null,
+    expected: [],
+    failures: [message],
+    verdict: 'FAIL',
+    error: message,
+  }
+}
+
+function writeReport(vaultRoot: string, report: FormulaNumberingAcceptanceReport | null, token: string): void {
+  const body = report ?? failureReport(token, 'runner produced no report')
+  try {
+    fs.mkdirSync(path.dirname(reportFilePath(vaultRoot)), { recursive: true })
+    fs.writeFileSync(reportFilePath(vaultRoot), `${JSON.stringify(body, null, 2)}\n`, 'utf8')
+  } catch { /* fail-open observability */ }
+}
+
+const NUMBER_TEXT = /^[（(]\s*[0-9][0-9.\-－]*\s*[）)]$/
+
+function normalizeNumberText(value: string): string {
+  return value.replace(/[－—–]/g, '-').replace(/\s+/g, '')
+}
+
+function sameToken(observed: string, expected: string): boolean {
+  const a = normalizeNumberText(observed)
+  const b = normalizeNumberText(expected)
+  return a === b || a === `(${b})` || `(${a})` === b
+}
+
+/** Exactly ONE visible number node per formula + visible + right of the body. */
+function evaluateFormulaDom(entry: FormulaNumberingDomEntry, expected: FormulaNumberingExpectedFact | undefined): FormulaNumberingAssertion[] {
+  const out: FormulaNumberingAssertion[] = []
+  const prefix = `dom.f${entry.index}`
+  const visible = entry.visibleNumberTexts
+  out.push({
+    id: `${prefix}.visible-count`,
+    ok: visible.length === 1,
+    detail: `visible=${JSON.stringify(visible)} tag=${JSON.stringify(entry.tagTexts)} deco=${JSON.stringify(entry.decorationTexts)}`,
+  })
+  out.push({
+    id: `${prefix}.not-duplicated`,
+    ok: entry.tagTexts.length + entry.decorationTexts.length <= 1,
+    detail: `tag=${entry.tagTexts.length} decoration=${entry.decorationTexts.length}`,
+  })
+  out.push({ id: `${prefix}.rendered`, ok: entry.numberVisible, detail: entry.numberVisible ? 'visible' : 'not visible (rect/display)' })
+  out.push({
+    id: `${prefix}.right-aligned`,
+    ok: entry.numberRightOfHost === true,
+    detail: `numberRightOfHost=${String(entry.numberRightOfHost)}`,
+  })
+  if (expected && expected.rawNumber !== '') {
+    out.push({
+      id: `${prefix}.matches-plan`,
+      ok: visible.length === 1 && sameToken(visible[0], expected.rawNumber),
+      detail: `observed=${visible[0] ?? 'none'} expected=${expected.rawNumber}`,
+    })
+  }
+  return out
+}
+
+function allFormulasHaveOneNumber(facts: FormulaNumberingDomFacts): FormulaNumberingAssertion[] {
+  const out: FormulaNumberingAssertion[] = []
+  out.push({
+    id: 'dom.host-count',
+    ok: facts.formulas.length > 0,
+    detail: String(facts.formulas.length),
+  })
+  out.push({
+    id: 'dom.every-host-connected',
+    ok: facts.formulas.every(f => f.hostConnected),
+    detail: facts.formulas.map(f => String(f.hostConnected)).join(','),
+  })
+  return out
+}
+
+function extractFormulaSnippets(markdown: string): string[] {
+  const out: string[] = []
+  const re = /\$\$([\s\S]*?)\$\$/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(markdown)) !== null) out.push(m[1])
+  return out
+}
+
+function replaceFormulaSnippet(markdown: string, index: number, replacement: string): string {
+  let seen = -1
+  return markdown.replace(/\$\$([\s\S]*?)\$\$/g, (whole) => {
+    seen++
+    return seen === index ? replacement : whole
+  })
+}
+
+function insertFormulaBefore(markdown: string, index: number, body: string): string {
+  let seen = -1
+  let inserted = false
+  const result = markdown.replace(/\$\$([\s\S]*?)\$\$/g, (whole) => {
+    seen++
+    if (!inserted && seen === index) {
+      inserted = true
+      return `$$\n${body}\n$$\n\n${whole}`
+    }
+    return whole
+  })
+  return inserted ? result : `${markdown}\n\n$$\n${body}\n$$\n`
+}
+
+function removeFormula(markdown: string, index: number): string {
+  let seen = -1
+  return markdown.replace(/\$\$([\s\S]*?)\$\$/g, (whole) => {
+    seen++
+    return seen === index ? '' : whole
+  })
+}
+
+function swapFormulas(markdown: string, a: number, b: number): string {
+  const snippets = extractFormulaSnippets(markdown)
+  if (a >= snippets.length || b >= snippets.length) return markdown
+  let seen = -1
+  return markdown.replace(/\$\$([\s\S]*?)\$\$/g, (whole) => {
+    seen++
+    if (seen === a) return `$$\n${snippets[b].trim()}\n$$`
+    if (seen === b) return `$$\n${snippets[a].trim()}\n$$`
+    return whole
+  })
+}
+
+async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string): Promise<FormulaNumberingAcceptanceReport> {
+  const startedAt = new Date().toISOString()
+  const steps: FormulaNumberingStep[] = []
+  const failures: string[] = []
+  const template = deps.getMarkdown()
+  let lastFacts: FormulaNumberingDomFacts | null = null
+  let lastExpected: FormulaNumberingExpectedFact[] = []
+  const restoreConfig = deps.applyConfig({ enabled: true, formulaMode: 'inkchapter', preset: 'section-dash' })
+
+  const push = (id: string, label: string, assertions: FormulaNumberingAssertion[]): void => {
+    steps.push({ id, label, assertions })
+    for (const a of assertions) if (!a.ok) failures.push(`${a.id}: ${a.detail}`)
+  }
+
+  const snapshot = async (): Promise<{ facts: FormulaNumberingDomFacts; expected: FormulaNumberingExpectedFact[] }> => {
+    await deps.wait(1200)
+    const facts = deps.readDomFacts()
+    const expected = deps.getExpected()
+    lastFacts = facts
+    lastExpected = expected
+    return { facts, expected }
+  }
+
+  try {
+    // ── 1. Initial: every formula has exactly one visible number ───────
+    {
+      const { facts, expected } = await snapshot()
+      const assertions = [
+        ...allFormulasHaveOneNumber(facts),
+        {
+          id: 'initial.formula-count',
+          ok: facts.formulas.length === expected.length && facts.formulas.length === 7,
+          detail: `dom=${facts.formulas.length} plan=${expected.length}`,
+        },
+        ...facts.formulas.flatMap((f, i) => evaluateFormulaDom(f, expected[i])),
+      ]
+      push('initial', '真实公式节点显示唯一编号', assertions)
+    }
+
+    // ── 2. H1/H2/H3 scoped numbering (section-dash) ─────────────────────
+    {
+      const expected = lastExpected.map(e => e.rawNumber)
+      push('scope-section', 'H1/H2/H3 章节联动编号', [
+        { id: 'scope.count', ok: expected.length >= 5, detail: expected.join(' | ') },
+        { id: 'scope.first', ok: expected[0] === '1.1-1', detail: expected[0] ?? 'none' },
+        { id: 'scope.second', ok: expected[1] === '1.2-1', detail: expected[1] ?? 'none' },
+        { id: 'scope.multi', ok: expected[2] === '1.2-2', detail: expected[2] ?? 'none' },
+        // A formula directly under H2 has no H3 section; the documented legal
+        // fallback is the chapter scope (`2-1`), never a fabricated `2.0-1`.
+        { id: 'scope.chapter-reset', ok: expected.some(v => v.startsWith('2-') || v.startsWith('2.1-')), detail: expected.join(' | ') },
+      ])
+    }
+
+    // ── 3. Chapter-dash preset (the saved user preset) ──────────────────
+    {
+      const restore = deps.applyConfig({ preset: 'chapter-dash' })
+      const { facts, expected } = await snapshot()
+      const chapterNumbers = expected.map(e => e.rawNumber)
+      push('setting-chapter-dash', '按章编号设置下立即刷新', [
+        { id: 'chapter-dash.plan', ok: chapterNumbers.slice(0, 3).join(',') === '1-1,1-2,1-3', detail: chapterNumbers.join(' | ') },
+        { id: 'chapter-dash.dom', ok: facts.formulas.every((f, i) => f.visibleNumberTexts.length === 1 && sameToken(f.visibleNumberTexts[0], expected[i]?.rawNumber ?? '')), detail: facts.formulas.map(f => f.visibleNumberTexts[0] ?? 'none').join(' | ') },
+      ])
+      restore()
+      await deps.wait(1200)
+    }
+
+    // ── 4. Global numbering setting ─────────────────────────────────────
+    {
+      const restore = deps.applyConfig({ preset: 'global' })
+      const { facts, expected } = await snapshot()
+      const globalNumbers = expected.map(e => e.rawNumber)
+      push('setting-global', '切换全局编号后立即刷新', [
+        { id: 'global.plan', ok: globalNumbers.slice(0, 3).join(',') === '1,2,3', detail: globalNumbers.join(' | ') },
+        { id: 'global.dom', ok: facts.formulas.every((f, i) => f.visibleNumberTexts.length === 1 && sameToken(f.visibleNumberTexts[0], expected[i]?.rawNumber ?? '')), detail: facts.formulas.map(f => f.visibleNumberTexts[0] ?? 'none').join(' | ') },
+      ])
+      restore()
+      await deps.wait(1200)
+    }
+
+    // ── 4. Section numbering setting (restored baseline) ────────────────
+    {
+      const { facts, expected } = await snapshot()
+      push('setting-section', '切换节内编号后立即刷新', [
+        { id: 'section.plan', ok: expected[0]?.rawNumber === '1.1-1', detail: expected[0]?.rawNumber ?? 'none' },
+        { id: 'section.dom', ok: facts.formulas.every((f, i) => f.visibleNumberTexts.length === 1 && sameToken(f.visibleNumberTexts[0], expected[i]?.rawNumber ?? '')), detail: facts.formulas.map(f => f.visibleNumberTexts[0] ?? 'none').join(' | ') },
+      ])
+    }
+
+    // ── 5. Empty formula also carries a number ──────────────────────────
+    {
+      const emptyIndex = extractFormulaSnippets(deps.getMarkdown()).findIndex(s => s.trim() === '')
+      const factsNow = lastFacts as FormulaNumberingDomFacts | null
+      const emptyEntry = emptyIndex >= 0 ? factsNow?.formulas[emptyIndex] : undefined
+      push('empty-formula', '空公式仍占用编号且编号可见', [
+        { id: 'empty.exists', ok: emptyIndex >= 0, detail: String(emptyIndex) },
+        {
+          id: 'empty.visible-number',
+          ok: emptyIndex >= 0 && (emptyEntry?.visibleNumberTexts.length ?? 0) === 1,
+          detail: JSON.stringify(emptyEntry?.visibleNumberTexts ?? []),
+        },
+        {
+          id: 'empty.matches-plan',
+          ok: emptyIndex >= 0 && sameToken(emptyEntry?.visibleNumberTexts[0] ?? '', lastExpected[emptyIndex]?.rawNumber ?? ''),
+          detail: `${emptyEntry?.visibleNumberTexts[0] ?? 'none'} / ${lastExpected[emptyIndex]?.rawNumber ?? 'none'}`,
+        },
+      ])
+    }
+
+    // ── 6. Edit a formula in place (source change) ──────────────────────
+    {
+      const edited = replaceFormulaSnippet(deps.getMarkdown(), 0, '$$\na = 10\n$$')
+      deps.replaceContent(edited)
+      const { facts, expected } = await snapshot()
+      push('formula-edit', '编辑公式后编号保持稳定', [
+        { id: 'edit.count', ok: facts.formulas.length === expected.length, detail: `${facts.formulas.length}/${expected.length}` },
+        ...facts.formulas.flatMap((f, i) => evaluateFormulaDom(f, expected[i])),
+      ])
+    }
+
+    // ── 7. Add a formula in the same section ────────────────────────────
+    {
+      const added = insertFormulaBefore(deps.getMarkdown(), 1, 'd = 4')
+      deps.replaceContent(added)
+      const { facts, expected } = await snapshot()
+      push('formula-add', '新增公式后同节后续公式递增', [
+        { id: 'add.count', ok: facts.formulas.length === expected.length, detail: `${facts.formulas.length}/${expected.length}` },
+        ...facts.formulas.flatMap((f, i) => evaluateFormulaDom(f, expected[i])),
+      ])
+    }
+
+    // ── 8. Remove a formula (same section) ──────────────────────────────
+    {
+      const removed = removeFormula(deps.getMarkdown(), 2)
+      deps.replaceContent(removed)
+      const { facts, expected } = await snapshot()
+      push('formula-remove', '删除公式后同节后续公式递减', [
+        { id: 'remove.count', ok: facts.formulas.length === expected.length, detail: `${facts.formulas.length}/${expected.length}` },
+        ...facts.formulas.flatMap((f, i) => evaluateFormulaDom(f, expected[i])),
+      ])
+    }
+
+    // ── 9. Move a formula across scopes ─────────────────────────────────
+    {
+      const moved = swapFormulas(deps.getMarkdown(), 0, 3)
+      deps.replaceContent(moved)
+      const { facts, expected } = await snapshot()
+      push('formula-move', '公式跨节移动后重新编号', [
+        { id: 'move.count', ok: facts.formulas.length === expected.length, detail: `${facts.formulas.length}/${expected.length}` },
+        ...facts.formulas.flatMap((f, i) => evaluateFormulaDom(f, expected[i])),
+      ])
+    }
+
+    // ── 10. Heading text change must not destroy numbering ──────────────
+    {
+      const retitled = deps.getMarkdown().replace('## 研究背景', '## 研究背景（已改名）')
+      deps.replaceContent(retitled)
+      const { facts, expected } = await snapshot()
+      push('heading-retitle', '标题改名后公式编号保持', [
+        { id: 'retitle.count', ok: facts.formulas.length === expected.length, detail: `${facts.formulas.length}/${expected.length}` },
+        ...facts.formulas.flatMap((f, i) => evaluateFormulaDom(f, expected[i])),
+      ])
+    }
+
+    // ── 11. Heading move / level change renumbers formulas ──────────────
+    {
+      const movedHeading = deps.getMarkdown()
+        .replace('### 数据特征', '## 数据特征')
+        .replace('### 模型构建', '## 模型构建')
+      deps.replaceContent(movedHeading)
+      const { facts, expected } = await snapshot()
+      push('heading-level', '标题层级变化后公式重新编号', [
+        { id: 'level.count', ok: facts.formulas.length === expected.length, detail: `${facts.formulas.length}/${expected.length}` },
+        ...facts.formulas.flatMap((f, i) => evaluateFormulaDom(f, expected[i])),
+      ])
+    }
+
+    // ── 12. Narrow / wide body width ────────────────────────────────────
+    {
+      deps.setWriteWidth(520)
+      const narrow = await snapshot()
+      deps.setWriteWidth(1100)
+      const wide = await snapshot()
+      deps.setWriteWidth(null)
+      push('width', '窄窗口与宽窗口编号位置稳定', [
+        { id: 'width.narrow', ok: narrow.facts.formulas.every(f => f.visibleNumberTexts.length === 1 && f.numberVisible && f.numberRightOfHost === true), detail: JSON.stringify(narrow.facts.formulas.map(f => f.numberVisible)) },
+        { id: 'width.wide', ok: wide.facts.formulas.every(f => f.visibleNumberTexts.length === 1 && f.numberVisible && f.numberRightOfHost === true), detail: JSON.stringify(wide.facts.formulas.map(f => f.numberVisible)) },
+        { id: 'width.no-duplicate', ok: narrow.facts.formulas.every(f => f.tagTexts.length + f.decorationTexts.length <= 1) && wide.facts.formulas.every(f => f.tagTexts.length + f.decorationTexts.length <= 1), detail: '每式最多一个编号节点' },
+      ])
+    }
+
+    // ── 13. Disabled setting → no number (state follows the setting) ────
+    {
+      const restore = deps.applyConfig({ enabled: false })
+      const { facts } = await snapshot()
+      push('setting-disabled', '关闭公式编号后不再投影', [
+        { id: 'disabled.no-number', ok: facts.formulas.every(f => f.tagTexts.length === 0 && f.decorationTexts.length === 0), detail: JSON.stringify(facts.formulas.map(f => f.tagTexts)) },
+      ])
+      restore()
+      await deps.wait(1200)
+    }
+
+    // ── 14. Typora-native configured but unavailable → takeover ─────────
+    {
+      const restore = deps.applyConfig({ enabled: true, formulaMode: 'typora-native', preset: 'section-dash' })
+      const { facts, expected } = await snapshot()
+      push('setting-native-fallback', '原生不可用时墨章接管编号', [
+        { id: 'fallback.visible', ok: facts.formulas.length === expected.length && facts.formulas.every((f, i) => f.visibleNumberTexts.length === 1 && sameToken(f.visibleNumberTexts[0], expected[i]?.rawNumber ?? '')), detail: facts.formulas.map(f => f.visibleNumberTexts[0] ?? 'none').join(' | ') },
+        { id: 'fallback.dedupe', ok: facts.formulas.every(f => f.tagTexts.length + f.decorationTexts.length <= 1), detail: '不得出现双编号' },
+      ])
+      restore()
+      await deps.wait(1200)
+    }
+
+    // ── 15. Source persistence mode: per-formula dedupe only when valid ──
+    {
+      const restore = deps.applyObjectPersistenceMode('source')
+      await deps.wait(1200)
+      const beforeSync = deps.readDomFacts()
+      push('source-before-sync', '源码模式尚无源码编号时仍显示投影', [
+        { id: 'source-before.visible', ok: beforeSync.formulas.length > 0 && beforeSync.formulas.every(f => f.visibleNumberTexts.length === 1), detail: beforeSync.formulas.map(f => f.visibleNumberTexts[0] ?? 'none').join(' | ') },
+      ])
+      // Simulate an already-persisted source number for the FIRST formula only.
+      const firstNumber = deps.getExpected()[0]?.rawNumber ?? ''
+      let seen = -1
+      const withSourceNumber = deps.getMarkdown().replace(/\$\$([\s\S]*?)\$\$/g, (whole) => {
+        seen++
+        return seen === 0 && firstNumber !== '' ? `${whole}\n\n（${firstNumber}）` : whole
+      })
+      deps.replaceContent(withSourceNumber)
+      await deps.wait(1800)
+      const afterSync = deps.readDomFacts()
+      const expectedAfter = deps.getExpected()
+      const firstFormula = afterSync.formulas[0]
+      push('source-after-sync', '源码已有有效编号后才允许去重', [
+        { id: 'source-after.paragraphs', ok: afterSync.sourceNumberParagraphCount > 0, detail: String(afterSync.sourceNumberParagraphCount) },
+        {
+          id: 'source-after.first-deduped',
+          ok: firstFormula != null && firstFormula.tagTexts.length + firstFormula.decorationTexts.length === 0,
+          detail: `tag=${JSON.stringify(firstFormula?.tagTexts ?? [])} deco=${JSON.stringify(firstFormula?.decorationTexts ?? [])}`,
+        },
+        {
+          id: 'source-after.others-visible',
+          ok: afterSync.formulas.slice(1).every((f, i) => f.visibleNumberTexts.length === 1 && sameToken(f.visibleNumberTexts[0], expectedAfter[i + 1]?.rawNumber ?? '')),
+          detail: afterSync.formulas.slice(1).map(f => f.visibleNumberTexts[0] ?? 'none').join(' | '),
+        },
+        { id: 'source-after.no-double', ok: afterSync.formulas.every(f => f.tagTexts.length + f.decorationTexts.length <= 1), detail: '不得出现第二套编号' },
+      ])
+      restore()
+      await deps.wait(1500)
+    }
+
+    // ── 16. Reload the document from its template ───────────────────────
+    {
+      deps.replaceContent(template)
+      const { facts, expected } = await snapshot()
+      push('document-reload', '文档重新加载后编号恢复', [
+        { id: 'reload.count', ok: facts.formulas.length === expected.length && facts.formulas.length === 7, detail: `${facts.formulas.length}/${expected.length}` },
+        ...facts.formulas.flatMap((f, i) => evaluateFormulaDom(f, expected[i])),
+      ])
+    }
+
+    // ── 17. The user's real academic template (5.3 formula) ─────────────
+    {
+      const userDocument = deps.readUserDocument?.() ?? null
+      if (userDocument == null) {
+        push('user-document', '用户学术模板中的公式显示编号', [
+          { id: 'user.available', ok: false, detail: 'user template unavailable' },
+        ])
+      } else {
+        deps.replaceContent(userDocument)
+        const { facts, expected } = await snapshot()
+        push('user-document', '用户学术模板中的公式显示编号', [
+          { id: 'user.count', ok: facts.formulas.length === 2 && expected.length === 2, detail: `${facts.formulas.length}/${expected.length}` },
+          {
+            id: 'user.visible',
+            ok: facts.formulas.length > 0 && facts.formulas.every((f, i) => f.visibleNumberTexts.length === 1 && sameToken(f.visibleNumberTexts[0], expected[i]?.rawNumber ?? '')),
+            detail: facts.formulas.map(f => f.visibleNumberTexts[0] ?? 'none').join(' | '),
+          },
+          { id: 'user.right-aligned', ok: facts.formulas.every(f => f.numberRightOfHost === true), detail: JSON.stringify(facts.formulas.map(f => f.numberRightOfHost)) },
+          // The template's first formula is under `数据与方法 → 模型构建` (chapter 5).
+          // Assert chapter linkage without hard-coding the screenshot's `5.3-1`:
+          // chapter-dash gives `5-1`, section-dash gives `5.3-1` — both are valid.
+          { id: 'user.chapter-linkage', ok: /^5(?:\.\d+)?-1$/.test(expected[0]?.rawNumber ?? ''), detail: expected[0]?.rawNumber ?? 'none' },
+          { id: 'user.no-double', ok: facts.formulas.every(f => f.tagTexts.length + f.decorationTexts.length <= 1), detail: '不得出现双编号' },
+        ])
+      }
+    }
+
+    const verdict: FormulaNumberingAcceptanceReport['verdict'] = failures.length === 0 ? 'PASS' : 'FAIL'
+    return {
+      schema: 'inkchapter.formula-numbering-acceptance/v1',
+      requestToken: token,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      documentPath: deps.getActiveFilePath(),
+      steps,
+      domFacts: lastFacts,
+      expected: lastExpected,
+      failures,
+      verdict,
+      error: null,
+    }
+  } finally {
+    deps.setWriteWidth(null)
+    restoreConfig()
+    try { deps.replaceContent(template) } catch { /* restore best effort */ }
+  }
+}
+
+export const FORMULA_NUMBER_TEXT_PATTERN = NUMBER_TEXT

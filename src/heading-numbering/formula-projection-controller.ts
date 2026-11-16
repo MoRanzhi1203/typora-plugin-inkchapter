@@ -58,6 +58,48 @@ import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
 export type TyporaFormulaAutoNumberingPolicy = 'off' | 'ams' | 'all' | 'unknown'
 
+/** Configured implementation mode of the Formula numbering setting. */
+export type FormulaConfiguredMode = 'typora-native' | 'inkchapter'
+
+export interface EffectiveFormulaModeDecision {
+  /** Mode that actually governs projection for this document. */
+  mode: FormulaConfiguredMode
+  reason:
+    | 'INKCHAPTER_SELECTED'
+    | 'NATIVE_SELECTED_AND_AVAILABLE'
+    | 'NATIVE_UNAVAILABLE_INKCHAPTER_TAKEOVER'
+    | 'FORMULA_NUMBERING_DISABLED'
+}
+
+/**
+ * Resolve the EFFECTIVE Formula projection mode from the user's saved setting.
+ *
+ * The saved `formulaMode` is never rewritten. When the user enabled Formula
+ * numbering and selected Typora-native numbering, but Typora itself will not
+ * produce a number for ordinary `$$...$$` display math (auto numbering off /
+ * AMS-only / unknown), InkChapter transparently owns the projection. Otherwise
+ * "enabled" would mean "no number at all" for the default Typora preference.
+ *
+ * Only `policy === 'all'` is treated as native-available: `ams` numbers AMS
+ * environments only, and `off`/`unknown` produce nothing for plain display math.
+ */
+export function resolveEffectiveFormulaMode(input: {
+  configuredMode: FormulaConfiguredMode
+  enabled: boolean
+  typoraAutoNumberingPolicy: TyporaFormulaAutoNumberingPolicy
+}): EffectiveFormulaModeDecision {
+  if (!input.enabled) {
+    return { mode: input.configuredMode, reason: 'FORMULA_NUMBERING_DISABLED' }
+  }
+  if (input.configuredMode === 'inkchapter') {
+    return { mode: 'inkchapter', reason: 'INKCHAPTER_SELECTED' }
+  }
+  if (input.typoraAutoNumberingPolicy === 'all') {
+    return { mode: 'typora-native', reason: 'NATIVE_SELECTED_AND_AVAILABLE' }
+  }
+  return { mode: 'inkchapter', reason: 'NATIVE_UNAVAILABLE_INKCHAPTER_TAKEOVER' }
+}
+
 export type FormulaProjectionAuthority =
   | 'typora-native'
   | 'inkchapter-native-transient'
@@ -300,6 +342,36 @@ export function scanDisplayMathSources(markdown: string): string[] {
     sources.push(m[1])
   }
   return sources
+}
+
+/**
+ * Detect a SOURCE-persisted Formula number paragraph for every display-math
+ * block, in the SAME order as `scanDisplayMathSources`.
+ *
+ * R10 source persistence writes a standalone paragraph `（5-1）` directly below
+ * an untagged formula. That paragraph is the real source-level number. Only when
+ * this exact formula already carries a VALID number representation may the
+ * render layer skip its projection (otherwise a manual "sync later" state would
+ * silently hide every number). Formula numbering is NOT heading numbering — this
+ * scan reads only the formula's own adjacent caption line.
+ *
+ * Returns the number text WITHOUT the wrapping parentheses, or `null`.
+ */
+export function scanFormulaSourceNumberParagraphs(markdown: string): Array<string | null> {
+  const masked = maskFencedCode(markdown ?? '')
+  const results: Array<string | null> = []
+  const re = /\$\$([\s\S]*?)\$\$/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(masked)) !== null) {
+    const after = masked.slice(m.index + m[0].length)
+    const lines = after.split('\n')
+    let lineIndex = 0
+    while (lineIndex < lines.length && lines[lineIndex].trim() === '') lineIndex++
+    const candidate = lineIndex < lines.length ? lines[lineIndex].trim() : ''
+    const match = /^[（(]\s*([0-9][0-9.\-－]*)\s*[）)]$/.exec(candidate)
+    results.push(match ? match[1].replace(/－/g, '-') : null)
+  }
+  return results
 }
 
 /**
@@ -991,14 +1063,6 @@ export class FormulaProjectionController {
       emitLookup(host, 'EXPLICIT_USER_TAG_PRESERVED')
       return { tex, injected: false, authority: 'explicit-user-tag-preserved', sourceHash, host, ...ambiguousResolution }
     }
-    // PA-12 CORRECTION — an EMPTY source keeps its ordinal in the plan, but a
-    // tag-only input (`\tag{n}` without a body) makes MathJax return an empty
-    // container and the block renders BLANK. Never inject here.
-    if (tex.trim() === '') {
-      emitLookup(host, 'EMPTY_SOURCE_NO_INJECTION')
-      return { tex, injected: false, authority: 'defer', sourceHash, host, ...ambiguousResolution }
-    }
-
     // Phase 7R.3.6 §36: if the current activation no longer matches the CURRENT
     // plan signature, this lookup is stale — never inject an old activation tag.
     const sig = hashProjectionSignature(projectionSignatureOf(host, plan))
@@ -1016,7 +1080,12 @@ export class FormulaProjectionController {
       ? 'REVISION_DRIFT_SEMANTIC_EQUIVALENT_ACCEPTED'
       : 'MATCHED'
 
-    const injectedTex = `${tex}\\tag{${plan.rawNumber}}`
+    // PA-12 — an EMPTY source (`$$$$`) still owns its ordinal and must show its
+    // number. A tag-only input renders a BLANK container, so the transient input
+    // keeps an invisible `\phantom{}` body and only the tag becomes visible.
+    const injectedTex = tex.trim() === ''
+      ? `\\phantom{}\\tag{${plan.rawNumber}}`
+      : `${tex}\\tag{${plan.rawNumber}}`
     s.lastLookupDecision = decision
     s.executionState = 'rendering'
     if (currentActivation) {
