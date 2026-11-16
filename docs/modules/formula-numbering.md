@@ -113,6 +113,7 @@ CanonicalHeadingFrame（stableIdentity + semanticState.physicalLevel）
   - 多行 / `aligned` / `cases` / `matrix` / 空公式块只读取结构，不改写 LaTeX 正文。
 - 编号消费 `computeSemanticHeadingNumbers()` 的章节/节序号与对象编号预设（全局 / 章节 / 节内）。
 - 已知边界：`（1-1）` 是普通 Markdown 段落，**不是** MathJax 原生 tag；Word/PDF 的最终编号排版由 Typora 宿主导出完成，当前 Runtime 验收只验证源码副本与 DOM 文本，未声称已验证 Word 原生 SEQ 字段或 PDF 排版。
+- **结构变化自动修正（R11）**：标题编号语义提交（章节移动、标题层级/文本/顺序变化）后，若对象编号处于源码持久化模式，失效的源码编号会按新章节自动重写，即使 `syncTiming=manual`。自动修正只在 `existingCaptionPolicy` 为 `adopt` / `replace` 时执行；`preserve` / `detect-only` 永不改写源码。写入走 `File.reloadContent` 保留撤销历史，并以 `lastWrittenHash` 阻断自身写入回流。
 - 相关：`src/heading-numbering/object-number-persistence.ts`、`src/heading-numbering/object-number-persistence-service.ts`、`src/runtime/object-number-acceptance-runner.ts`。
 
 ## §16 编号可见性收口（R11，2026-11）

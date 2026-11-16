@@ -315,6 +315,12 @@ export default class extends Plugin<InkChapterSettings> {
   private numberingPersistence?: NumberingPersistenceService
   private objectNumberingPersistence?: ObjectNumberPersistenceService
   private captionService?: CaptionService
+  /**
+   * R11 acceptance-only Formula config override. It is applied to the runtime
+   * service WITHOUT persisting to the user's saved settings, so an acceptance
+   * run can never leak its temporary preset/mode into the user configuration.
+   */
+  private formulaAcceptanceOverride: Record<string, unknown> | null = null
   private captionContextMenu?: CaptionContextMenu
   private numberingCoordinator?: DocumentNumberingCoordinator
   private documentUtilities?: DocumentUtilities
@@ -1195,7 +1201,7 @@ export default class extends Plugin<InkChapterSettings> {
       service.setFormulaSourceDedupe(suppress)
       if (!suppress) {
         service.applySettings(rawCaption as never)
-        const rawFormula = this.settings.get('captionFormula' as keyof InkChapterSettings)
+        const rawFormula = this.formulaAcceptanceOverride ?? this.settings.get('captionFormula' as keyof InkChapterSettings)
         if (rawFormula) service.applyFormulaSettings(rawFormula as never)
         return
       }
@@ -1210,7 +1216,7 @@ export default class extends Plugin<InkChapterSettings> {
         },
       }
       service.applySettings(next as never)
-      const rawFormula = this.settings.get('captionFormula' as keyof InkChapterSettings)
+      const rawFormula = this.formulaAcceptanceOverride ?? this.settings.get('captionFormula' as keyof InkChapterSettings)
       if (rawFormula) {
         service.applyFormulaSettings(migrateObjectNumberingConfig('formula', rawFormula) as never)
       }
@@ -1642,6 +1648,12 @@ export default class extends Plugin<InkChapterSettings> {
           const disposeLeaf = this.app.workspace.on('active-leaf:change' as never, listener as never)
           return () => { disposeOpen(); disposeLeaf() }
         },
+        // R11 — structure commits (chapter move / heading change) must repair
+        // stale SOURCE numbers even when syncTiming=manual.
+        onHeadingStructureChange: (listener) =>
+          this.numberingService?.subscribeHeadingNumberingSnapshot((_snapshot, reason) => {
+            if (reason === 'COMMITTED') listener()
+          }) ?? (() => {}),
         registerDisposable: (fn) => this.register(fn),
       })
       objectPersistence.start()
@@ -2460,27 +2472,34 @@ export default class extends Plugin<InkChapterSettings> {
           readDomFacts: readDom,
           getExpected: () => captionService.getFormulaNumberingFacts(),
           applyConfig: (patch) => {
-            const raw = this.settings.get('captionFormula' as keyof InkChapterSettings) as Record<string, unknown> | null | undefined
-            // Deep, immutable snapshot: later framework merges must never mutate
-            // the restore value (this bug previously leaked the acceptance preset
-            // into the user's saved Formula configuration).
-            const originalJson = raw == null ? null : JSON.stringify(raw)
-            const next = { ...migrateObjectNumberingConfig('formula', raw), ...patch }
-            this.settings.set('captionFormula' as keyof InkChapterSettings, next as never)
+            const persisted = this.settings.get('captionFormula' as keyof InkChapterSettings) as Record<string, unknown> | null | undefined
+            const previousOverride = this.formulaAcceptanceOverride
+            // Runtime-only override — the user's saved configuration is NEVER
+            // written by an acceptance run.
+            const base = previousOverride ?? persisted
+            const next = { ...migrateObjectNumberingConfig('formula', base), ...patch }
+            this.formulaAcceptanceOverride = next
             captionService.applyFormulaSettings(next)
             return () => {
-              const restored = originalJson == null ? undefined : JSON.parse(originalJson) as Record<string, unknown>
-              this.settings.set('captionFormula' as keyof InkChapterSettings, restored as never)
-              captionService.applyFormulaSettings(migrateObjectNumberingConfig('formula', restored))
+              this.formulaAcceptanceOverride = previousOverride
+              captionService.applyFormulaSettings(
+                migrateObjectNumberingConfig('formula', previousOverride ?? persisted),
+              )
             }
           },
-          applyObjectPersistenceMode: (mode) => {
+          applyObjectPersistenceMode: (mode, policy) => {
             if (!objectPersistence) return () => {}
-            const original = objectPersistence.getSettings().storageMode
-            objectPersistence.setSettings({ storageMode: mode }, 'document')
+            const original = objectPersistence.getSettings()
+            objectPersistence.setSettings({
+              storageMode: mode,
+              ...(policy ? { existingCaptionPolicy: policy } : {}),
+            }, 'document')
             this.applyObjectCaptionRenderPolicy()
             return () => {
-              objectPersistence.setSettings({ storageMode: original }, 'document')
+              objectPersistence.setSettings({
+                storageMode: original.storageMode,
+                existingCaptionPolicy: original.existingCaptionPolicy,
+              }, 'document')
               this.applyObjectCaptionRenderPolicy()
             }
           },

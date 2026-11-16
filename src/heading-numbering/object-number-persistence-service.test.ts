@@ -41,6 +41,7 @@ interface Harness {
   setDocumentKey: (key: string) => void
   fireEdit: () => void
   fireSave: () => void
+  fireStructure: () => void
   exported: Array<{ fileName: string; content: string }>
 }
 
@@ -60,6 +61,7 @@ function createHarness(initial: string): Harness {
   const exported: Array<{ fileName: string; content: string }> = []
   const editListeners: Array<() => void> = []
   const saveListeners: Array<() => void> = []
+  const structureListeners: Array<() => void> = []
 
   const deps: ObjectNumberPersistenceDeps = {
     settings,
@@ -92,6 +94,13 @@ function createHarness(initial: string): Harness {
         if (index >= 0) saveListeners.splice(index, 1)
       }
     },
+    onHeadingStructureChange: (listener) => {
+      structureListeners.push(listener)
+      return () => {
+        const index = structureListeners.indexOf(listener)
+        if (index >= 0) structureListeners.splice(index, 1)
+      }
+    },
   }
 
   const service = new ObjectNumberPersistenceService(deps)
@@ -105,6 +114,7 @@ function createHarness(initial: string): Harness {
     setDocumentKey: value => { documentKey = value },
     fireEdit: () => { for (const listener of editListeners) listener() },
     fireSave: () => { for (const listener of saveListeners) listener() },
+    fireStructure: () => { for (const listener of structureListeners) listener() },
     exported,
   }
 }
@@ -235,5 +245,68 @@ describe('R10 object number persistence service', () => {
     expect(summary.storageMode).toBe('source')
     expect(summary.objectsByKind.figure).toBe(1)
     expect(summary.captionedCount).toBe(1)
+  })
+})
+
+describe('R11 structure-change stale source number repair', () => {
+  const FORMULA_DOC = [
+    '# 文档',
+    '',
+    '## 第一章',
+    '',
+    '$$',
+    'a = 1',
+    '$$',
+    '',
+    '（9-9）',
+    '',
+  ].join('\n')
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('auto-repairs a stale formula number even with manual sync timing', () => {
+    const harness = createHarness(FORMULA_DOC)
+    harness.service.setSettings({ storageMode: 'source', existingCaptionPolicy: 'adopt', syncTiming: 'manual' })
+    vi.useFakeTimers()
+    harness.fireStructure()
+    vi.advanceTimersByTime(500)
+    expect(harness.writes.length).toBe(1)
+    expect(harness.markdown()).not.toContain('（9-9）')
+    expect(harness.markdown()).toContain('（1-1）')
+  })
+
+  it('does not auto-repair under detect-only / preserve policies', () => {
+    for (const policy of ['detect-only', 'preserve'] as const) {
+      const harness = createHarness(FORMULA_DOC)
+      harness.service.setSettings({ storageMode: 'source', existingCaptionPolicy: policy, syncTiming: 'manual' })
+      vi.useFakeTimers()
+      harness.fireStructure()
+      vi.advanceTimersByTime(500)
+      expect(harness.writes.length).toBe(0)
+      expect(harness.markdown()).toBe(FORMULA_DOC)
+    }
+  })
+
+  it('does not write in render mode', () => {
+    const harness = createHarness(FORMULA_DOC)
+    harness.service.setSettings({ storageMode: 'render', existingCaptionPolicy: 'adopt', syncTiming: 'manual' })
+    vi.useFakeTimers()
+    harness.fireStructure()
+    vi.advanceTimersByTime(500)
+    expect(harness.writes.length).toBe(0)
+  })
+
+  it('does not re-write when the buffer already matches the last repair', () => {
+    const harness = createHarness(FORMULA_DOC)
+    harness.service.setSettings({ storageMode: 'source', existingCaptionPolicy: 'adopt', syncTiming: 'manual' })
+    vi.useFakeTimers()
+    harness.fireStructure()
+    vi.advanceTimersByTime(500)
+    expect(harness.writes.length).toBe(1)
+    harness.fireStructure()
+    vi.advanceTimersByTime(500)
+    expect(harness.writes.length).toBe(1)
   })
 })

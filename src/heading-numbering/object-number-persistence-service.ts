@@ -53,6 +53,12 @@ export interface ObjectNumberPersistenceDeps {
   onEditorEdit?: (listener: () => void) => () => void
   onBeforeSave?: (listener: () => void) => () => void
   onDocumentSwitch?: (listener: () => void) => () => void
+  /**
+   * R11 — heading/document structure commits (chapter move, heading level/text
+   * change). Used to auto-repair SOURCE numbers that became stale even when the
+   * user's sync timing is `manual`.
+   */
+  onHeadingStructureChange?: (listener: () => void) => () => void
   registerDisposable?: (fn: () => void) => void
 }
 
@@ -100,6 +106,8 @@ export class ObjectNumberPersistenceService {
   private lastWrittenHash: number | null = null
   private lastSignature: string | null = null
   private autoTimer: ReturnType<typeof setTimeout> | null = null
+  /** R11 — structure-change stale-number repair (independent of syncTiming). */
+  private structureTimer: ReturnType<typeof setTimeout> | null = null
   private listeners = new Set<() => void>()
   private disposers: Array<() => void> = []
   private sourceUnavailable = false
@@ -111,6 +119,9 @@ export class ObjectNumberPersistenceService {
     if (this.deps.onEditorEdit) this.disposers.push(this.deps.onEditorEdit(() => this.scheduleAutoSync()))
     if (this.deps.onBeforeSave) this.disposers.push(this.deps.onBeforeSave(() => this.handleBeforeSave()))
     if (this.deps.onDocumentSwitch) this.disposers.push(this.deps.onDocumentSwitch(() => this.resetDocumentState()))
+    if (this.deps.onHeadingStructureChange) {
+      this.disposers.push(this.deps.onHeadingStructureChange(() => this.scheduleStructureRepair()))
+    }
     for (const dispose of this.disposers) this.deps.registerDisposable?.(dispose)
   }
 
@@ -118,6 +129,10 @@ export class ObjectNumberPersistenceService {
     if (this.autoTimer !== null) {
       clearTimeout(this.autoTimer)
       this.autoTimer = null
+    }
+    if (this.structureTimer !== null) {
+      clearTimeout(this.structureTimer)
+      this.structureTimer = null
     }
     for (const dispose of this.disposers.splice(0)) dispose()
     this.listeners.clear()
@@ -489,6 +504,38 @@ export class ObjectNumberPersistenceService {
     this.runSync('save-object')
   }
 
+  /**
+   * R11 — a heading/document STRUCTURE commit invalidates persisted object
+   * numbers even when the user chose `syncTiming=manual`. Auto-repair is
+   * intentionally limited to policies that authorize source rewriting
+   * (`adopt` / `replace`); `preserve` / `detect-only` never write the source.
+   */
+  private scheduleStructureRepair(): void {
+    const hot = this.readHotSettings()
+    if (hot.storageMode !== 'source') return
+    const policy = this.getSettings().existingCaptionPolicy
+    if (policy !== 'adopt' && policy !== 'replace') return
+    if (this.writing) return
+    if (this.structureTimer !== null) clearTimeout(this.structureTimer)
+    this.structureTimer = setTimeout(() => {
+      this.structureTimer = null
+      this.handleStructureRepair()
+    }, AUTO_SYNC_DEBOUNCE_MS)
+  }
+
+  private handleStructureRepair(): void {
+    const hot = this.readHotSettings()
+    if (hot.storageMode !== 'source') return
+    const policy = this.getSettings().existingCaptionPolicy
+    if (policy !== 'adopt' && policy !== 'replace') return
+    const markdown = this.deps.getMarkdown()
+    if (markdown == null) return
+    // Self-write echo guard: a structure commit caused by our own write must
+    // never trigger another write.
+    if (this.lastWrittenHash !== null && hashMarkdown(markdown) === this.lastWrittenHash) return
+    this.runSync('auto-structure-stale-repair')
+  }
+
   private readHotSettings(): Pick<ObjectNumberPersistenceSettings, 'storageMode' | 'syncTiming'> {
     try {
       const raw = this.deps.settings.get(OBJECT_NUMBER_PERSISTENCE_SETTINGS_KEY as keyof InkChapterSettings) as unknown as {
@@ -512,6 +559,10 @@ export class ObjectNumberPersistenceService {
     if (this.autoTimer !== null) {
       clearTimeout(this.autoTimer)
       this.autoTimer = null
+    }
+    if (this.structureTimer !== null) {
+      clearTimeout(this.structureTimer)
+      this.structureTimer = null
     }
     this.writing = false
     this.lastWrittenHash = null

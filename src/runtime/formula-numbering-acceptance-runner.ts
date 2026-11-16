@@ -88,7 +88,10 @@ export interface FormulaNumberingAcceptanceDeps {
   /** Apply a temporary Formula config; returns a restore function. */
   applyConfig(patch: FormulaNumberingConfigPatch): () => void
   /** Switch object-number persistence mode; returns a restore function. */
-  applyObjectPersistenceMode(mode: 'render' | 'source'): () => void
+  applyObjectPersistenceMode(
+    mode: 'render' | 'source',
+    policy?: 'adopt' | 'replace' | 'preserve' | 'detect-only',
+  ): () => void
   /** Write object numbers into the Markdown source (source mode only). */
   syncObjectNumbers(): { status: string; detail?: string }
   /** Temporarily force the editor body width; `null` restores the original. */
@@ -715,7 +718,50 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
       restore()
     }
 
-    // ── 19. The user's real academic template (5.3 formula) ─────────────
+    // ── 19. Source persistence: structure commit repairs stale numbers ──
+    {
+      const restore = deps.applyObjectPersistenceMode('source', 'adopt')
+      deps.replaceContent(template)
+      await deps.wait(1500)
+      // Force a stale source number under the first formula.
+      const staleDocument = deps.getMarkdown().replace(
+        /\$\$([\s\S]*?)\$\$/,
+        (whole) => `${whole}\n\n（9-9）`,
+      )
+      deps.replaceContent(staleDocument)
+      await deps.wait(1200)
+      // A chapter move invalidates the persisted number; auto-repair must
+      // rewrite the SOURCE (syncTiming is manual here).
+      const movedSource = moveSectionAfter(deps.getMarkdown(), '## 研究背景', '## 实验设置')
+      deps.replaceContent(movedSource)
+      await deps.wait(3000)
+      const repaired = deps.getMarkdown()
+      const facts = deps.readDomFacts()
+      push('source-structure-repair', '结构变化后自动修正失效源码编号', [
+        { id: 'source-repair.stale-removed', ok: !repaired.includes('（9-9）'), detail: repaired.includes('（9-9）') ? 'still present' : 'replaced' },
+        {
+          id: 'source-repair.new-number',
+          ok: /（2(?:\.\d+)?-1）/.test(repaired),
+          detail: /（2(?:\.\d+)?-1）/.exec(repaired)?.[0] ?? 'missing',
+        },
+        {
+          id: 'source-repair.source-numbers',
+          ok: facts.sourceNumberParagraphCount >= 7,
+          detail: String(facts.sourceNumberParagraphCount),
+        },
+        {
+          id: 'source-repair.no-double',
+          ok: facts.formulas.every(f => f.tagTexts.length + f.decorationTexts.length <= 1)
+            && facts.formulas.every(f => f.visibleNumberTexts.length <= 1),
+          detail: facts.formulas.map(f => `tag=${f.tagTexts.length},deco=${f.decorationTexts.length}`).join(' | '),
+        },
+      ])
+      deps.replaceContent(template)
+      await deps.wait(1200)
+      restore()
+    }
+
+    // ── 20. The user's real academic template (5.3 formula) ─────────────
     {
       const userDocument = deps.readUserDocument?.() ?? null
       if (userDocument == null) {
