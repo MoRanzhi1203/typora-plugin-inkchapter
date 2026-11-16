@@ -47,6 +47,8 @@ export interface FormulaNumberingDomEntry {
   numberRects: FormulaNumberingRect[]
   numberRightOfHost: boolean | null
   numberVisible: boolean
+  /** Nearest preceding heading (same source as the heading projection). */
+  precedingHeading: FormulaNumberingHeadingFact | null
 }
 
 export interface FormulaNumberingHeadingFact {
@@ -269,6 +271,29 @@ function sameToken(observed: string, expected: string): boolean {
   return a === b || a === `(${b})` || `(${a})` === b
 }
 
+/**
+ * R11 — formula number vs the heading projection it belongs to.
+ *
+ * `section` preset: prefix must equal the preceding heading number
+ * (`5.3` + `5.3-1`). A formula under an H2 with no H3 legally falls back to the
+ * chapter scope (`5-1` is still consistent with heading `5.1`). `global` preset
+ * intentionally carries no chapter/section prefix and is not checked here.
+ */
+function headingPrefixConsistency(
+  formulaText: string,
+  heading: FormulaNumberingHeadingFact | null,
+): { ok: boolean; detail: string } {
+  if (!heading || heading.projectedNumber === '') return { ok: true, detail: 'no heading projection' }
+  const observed = normalizeNumberText(formulaText).replace(/[（）()]/g, '')
+  if (observed === '') return { ok: true, detail: 'number lives in source paragraph' }
+  const prefix = observed.replace(/-[0-9]+$/, '')
+  const headingNumber = heading.projectedNumber
+  if (prefix === headingNumber) return { ok: true, detail: `prefix=${prefix} heading=${headingNumber}` }
+  const chapter = headingNumber.split('.')[0]
+  if (prefix === chapter) return { ok: true, detail: `chapter-fallback prefix=${prefix} heading=${headingNumber}` }
+  return { ok: false, detail: `prefix=${prefix} heading=${headingNumber}` }
+}
+
 /** Exactly ONE visible number node per formula + visible + right of the body. */
 function evaluateFormulaDom(entry: FormulaNumberingDomEntry, expected: FormulaNumberingExpectedFact | undefined): FormulaNumberingAssertion[] {
   const out: FormulaNumberingAssertion[] = []
@@ -400,6 +425,18 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
     for (const a of assertions) if (!a.ok) failures.push(`${a.id}: ${a.detail}`)
   }
 
+  const pushHeadingConsistency = (id: string, label: string, facts: FormulaNumberingDomFacts): void => {
+    push(id, label, facts.formulas.map((f, i) => {
+      const observed = f.visibleNumberTexts[0] ?? ''
+      const consistency = headingPrefixConsistency(observed, f.precedingHeading)
+      return {
+        id: `${id}.f${i}`,
+        ok: consistency.ok,
+        detail: `${consistency.detail}; formula=${observed || 'none'} heading=${f.precedingHeading?.text ?? 'none'}`,
+      }
+    }))
+  }
+
   const snapshot = async (): Promise<{ facts: FormulaNumberingDomFacts; expected: FormulaNumberingExpectedFact[] }> => {
     await deps.wait(1200)
     const facts = deps.readDomFacts()
@@ -437,6 +474,10 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
         // fallback is the chapter scope (`2-1`), never a fabricated `2.0-1`.
         { id: 'scope.chapter-reset', ok: expected.some(v => v.startsWith('2-') || v.startsWith('2.1-')), detail: expected.join(' | ') },
       ])
+      const factsNow = lastFacts as FormulaNumberingDomFacts | null
+      if (factsNow) {
+        pushHeadingConsistency('scope-heading-consistency', '节内编号与前置标题编号一致', factsNow)
+      }
     }
 
     // ── 3. Chapter-dash preset (the saved user preset) ──────────────────
@@ -671,6 +712,7 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
           detail: `${expectedBefore[0]?.rawNumber ?? 'none'} → ${expected[2]?.rawNumber ?? 'none'}`,
         },
       ])
+      pushHeadingConsistency('chapter-move-heading-consistency', '整节移动后公式与标题编号一致', facts)
       restore()
       await deps.wait(1500)
     }
@@ -713,6 +755,7 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
           detail: after.formulas.map(f => `tag=${f.tagTexts.length},deco=${f.decorationTexts.length}`).join(' | '),
         },
       ])
+      pushHeadingConsistency('dom-move-heading-consistency', '直接移动章节 DOM 后公式与标题编号一致', after)
       deps.replaceContent(template)
       await deps.wait(1200)
       restore()
@@ -812,6 +855,7 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
               detail: moved.facts.formulas.map(f => `tag=${f.tagTexts.length},deco=${f.decorationTexts.length}`).join(' | '),
             },
           ])
+          pushHeadingConsistency('user-move-heading-consistency', '用户模板移动后公式与标题编号一致', moved.facts)
           // Restore the user's original template (read-only fixture).
           deps.replaceContent(userDocument)
           await deps.wait(1200)

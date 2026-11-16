@@ -2392,6 +2392,25 @@ export default class extends Plugin<InkChapterSettings> {
             } catch { return null }
           }
           const hosts = Array.from(rootEl.querySelectorAll<HTMLElement>('.md-math-block'))
+          // Preceding heading per formula (document order) — the SAME source the
+          // heading projection uses, so prefix consistency can be asserted.
+          const precedingHeadingByHost = new Map<HTMLElement, {
+            text: string
+            level: number
+            projectedNumber: string
+          } | null>()
+          let currentHeading: { text: string; level: number; projectedNumber: string } | null = null
+          for (const el of Array.from(rootEl.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6, .md-math-block'))) {
+            if (/^H[1-6]$/.test(el.tagName)) {
+              currentHeading = {
+                level: Number(el.tagName.slice(1)),
+                text: (el.textContent ?? '').trim().slice(0, 80),
+                projectedNumber: el.getAttribute('data-inkchapter-heading-number') ?? '',
+              }
+            } else {
+              precedingHeadingByHost.set(el, currentHeading)
+            }
+          }
           const formulas = hosts.map((host, index) => {
             const tags = Array.from(host.querySelectorAll<HTMLElement>('mjx-tag'))
             const decorations = Array.from(host.querySelectorAll<HTMLElement>('[data-inkchapter-formula-number]'))
@@ -2443,6 +2462,7 @@ export default class extends Plugin<InkChapterSettings> {
               numberRects,
               numberRightOfHost,
               numberVisible: visibleNumberTexts.length > 0,
+              precedingHeading: precedingHeadingByHost.get(host) ?? null,
             }
           })
           const sourceNumberParagraphCount = Array.from(rootEl.querySelectorAll<HTMLElement>('p'))
