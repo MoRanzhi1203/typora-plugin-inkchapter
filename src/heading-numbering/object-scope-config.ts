@@ -109,13 +109,107 @@ export interface ObjectScopeResolution {
   diagnostic: { code: string; level: HeadingLevel; message: string } | null
 }
 
+/**
+ * R12 — display-aligned prefix scope for the standard legacy presets.
+ *
+ * A preset asks for "chapter" (1 component) or "section" (2 components). The
+ * components come from the bound heading's canonical PHYSICAL display path, so
+ * the object prefix always follows the heading number that is actually shown
+ * (skipped levels, unnumbered ancestors, custom start/restart rules included).
+ */
+export interface ObjectDisplayScope {
+  scopeKey: string
+  components: readonly number[]
+  style: NumberingStyle
+  componentCount: number
+  degraded: boolean
+}
+
+function valuePathOf(node: SemanticHeadingNumberState): readonly (number | null)[] | null {
+  return node.physicalPathByLevel ?? null
+}
+
+/** Canonical path only — required for display-aligned prefix scopes. */
+function canonicalPathOf(node: SemanticHeadingNumberState): readonly (number | null)[] | null {
+  return node.physicalPathCanonical === true ? node.physicalPathByLevel ?? null : null
+}
+
+function hasVisibleNumberAtLevel(node: SemanticHeadingNumberState, level: HeadingLevel): boolean {
+  const path = valuePathOf(node)
+  if (path) return (path[level - 1] ?? null) != null
+  return node.logicalOrdinal != null
+}
+
+/**
+ * Standard preset → prefix component count + separator style.
+ * `null` means the legacy template path (never display-aligned).
+ */
+export function displayPrefixForPreset(
+  preset: ObjectNumberingPreset,
+): { componentCount: number; style: NumberingStyle } | null {
+  switch (preset) {
+    case 'global': return { componentCount: 0, style: 'dot' }
+    case 'chapter-dot': return { componentCount: 1, style: 'dot' }
+    case 'section-dot': return { componentCount: 2, style: 'dot' }
+    case 'chapter-dash': return { componentCount: 1, style: 'dash' }
+    case 'section-dash': return { componentCount: 2, style: 'dash' }
+    case 'legacy-custom': return null
+  }
+}
+
+/**
+ * Resolve the standard-preset prefix from the heading display path.
+ * Returns `null` when the state has no canonical path (legacy fixtures).
+ */
+export function resolveDisplayPrefixScope(
+  kind: CaptionObjectKind,
+  componentCount: number,
+  style: NumberingStyle,
+  state: SemanticHeadingNumberState | null,
+  byIdentity: ReadonlyMap<string, SemanticHeadingNumberState>,
+): ObjectDisplayScope | null {
+  if (!state) {
+    return {
+      scopeKey: `${kind}:display:document`,
+      components: [],
+      style,
+      componentCount,
+      degraded: componentCount > 0,
+    }
+  }
+  const path = canonicalPathOf(state)
+  if (!path) return null
+  const dense: Array<{ level: number; value: number }> = []
+  for (let level = 1; level <= 6; level++) {
+    const value = path[level - 1]
+    if (typeof value === 'number' && value > 0) dense.push({ level, value })
+  }
+  const selected = dense.slice(0, Math.max(0, componentCount))
+  const components = selected.map(entry => entry.value)
+
+  // Counter grouping identity = the heading that supplied the LAST component.
+  let identity = 'document'
+  const last = selected[selected.length - 1]
+  if (last) {
+    const chain = headingAncestorChain(state, byIdentity)
+    const owner = chain.find(node => node.physicalLevel === last.level && hasVisibleNumberAtLevel(node, last.level as HeadingLevel))
+    identity = owner?.stableIdentity ?? 'document'
+  }
+
+  return {
+    scopeKey: `${kind}:display:${state?.strictBoundaryIdentity ?? 'no-boundary'}:${identity}`,
+    components,
+    style,
+    componentCount,
+    degraded: components.length < componentCount,
+  }
+}
+
 function pathOf(node: SemanticHeadingNumberState, level: number): number[] {
-  const path = node.physicalPathByLevel
+  const path = valuePathOf(node)
   if (path) {
     return path.slice(0, level).filter((v): v is number => typeof v === 'number' && v > 0)
   }
-  // Legacy fixture without physical path: fall back to the node's own ordinal
-  // only. Never fabricates ancestor numbers.
   return node.logicalOrdinal != null ? [node.logicalOrdinal] : []
 }
 
@@ -125,7 +219,7 @@ function resetIdentityOf(
   policy: ObjectMissingLevelPolicy,
 ): string {
   const exact = ancestorAtPhysicalLevel(chain, level)
-  if (exact && exact.logicalOrdinal != null) return exact.stableIdentity
+  if (exact && hasVisibleNumberAtLevel(exact, level)) return exact.stableIdentity
   if (policy === 'document') return 'document'
   const nearest = nearestNumberedAncestorBelowLevel(chain, level)
   return nearest?.stableIdentity ?? 'document'
@@ -177,7 +271,7 @@ export function resolveObjectNumberScope(
 
   if (requested != null) {
     const exact = ancestorAtPhysicalLevel(chain, requested)
-    if (exact && exact.logicalOrdinal != null) {
+    if (exact && hasVisibleNumberAtLevel(exact, requested)) {
       prefixComponents = pathOf(exact, requested)
       prefixLevel = requested
     } else {
@@ -191,7 +285,12 @@ export function resolveObjectNumberScope(
           prefixLevel = nearest.physicalLevel as HeadingLevel
           fallback = 'nearest-ancestor'
         } else {
-          fallback = 'document'
+          // No shallower numbered ancestor: keep the bound heading's own visible
+          // components (e.g. a document that starts at H3). Never drops to an
+          // empty prefix while the heading itself is visibly numbered.
+          prefixComponents = pathOf(state, state.physicalLevel)
+          prefixLevel = state.physicalLevel
+          fallback = prefixComponents.length > 0 ? 'nearest-ancestor' : 'document'
         }
       }
     }
@@ -226,10 +325,20 @@ export function formatObjectScopeNumber(
   ordinal: number,
   minDigits = 1,
 ): string {
+  return formatObjectNumberFromComponents(resolution.prefixComponents, resolution.style, ordinal, minDigits)
+}
+
+/** R12 — format a raw number from ordered prefix components (dense). */
+export function formatObjectNumberFromComponents(
+  components: readonly number[],
+  style: NumberingStyle,
+  ordinal: number,
+  minDigits = 1,
+): string {
   const n = String(Math.max(0, Math.floor(ordinal))).padStart(Math.max(1, minDigits), '0')
-  if (resolution.prefixComponents.length === 0) return n
-  const prefix = resolution.prefixComponents.join('.')
-  return resolution.style === 'dash' ? `${prefix}-${n}` : `${prefix}.${n}`
+  if (components.length === 0) return n
+  const prefix = components.join('.')
+  return style === 'dash' ? `${prefix}-${n}` : `${prefix}.${n}`
 }
 
 /** Build the canonical identity map for resolution lookups. */

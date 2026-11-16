@@ -103,6 +103,13 @@ export interface SemanticHeadingNumberState {
    * canonical engine always produces it.
    */
   physicalPathByLevel?: readonly (number | null)[]
+  /**
+   * R12 — whether `physicalPathByLevel` came from the canonical physical
+   * display engine (`computePhysicalHeadingPaths`) rather than the simplified
+   * fallback counters. Only a canonical path may drive display-aligned object
+   * prefixes; a fallback path is kept for backward-compatible callers/tests.
+   */
+  physicalPathCanonical?: boolean
   logicalOrdinal: number | null
   chapterOrdinal: number | null
   sectionOrdinal: number | null
@@ -194,7 +201,10 @@ export function nearestNumberedAncestorBelowLevel(
   let best: SemanticHeadingNumberState | null = null
   for (const node of chain) {
     if (node.physicalLevel >= level) continue
-    if (node.logicalOrdinal == null) continue
+    const hasNumber = node.physicalPathByLevel
+      ? node.physicalPathByLevel.some(v => typeof v === 'number' && v > 0)
+      : node.logicalOrdinal != null
+    if (!hasNumber) continue
     if (best == null || node.physicalLevel > best.physicalLevel) best = node
   }
   return best

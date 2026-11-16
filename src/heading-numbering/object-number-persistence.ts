@@ -16,14 +16,14 @@
 
 import type { HeadingNumberingSettings, UnnumberedCounterPolicy } from './heading-types'
 import type { HeadingStructureMode, PhysicalHeading, SemanticHeadingNumberState } from './semantic-heading-types'
-import { computeSemanticHeadingNumbers, resolveSemanticStartAt, resolvePhysicalStartAt } from './semantic-heading-numbering'
+import { computeSemanticHeadingNumbers, resolveSemanticStartAt, resolvePhysicalStartAt, computePhysicalHeadingPaths } from './semantic-heading-numbering'
 import { resolveHeadingStructure } from './heading-structure'
 import { normalizeHeadingTitle, parseMarkdownHeadings, type SourceHeadingLine, type SourceOverrideEntry } from './heading-number-persistence'
 import { canonicalNumberLabel, scanHeadingNumber } from './heading-number-source-scanner'
 import { parseMarkdownImageTokens, type MarkdownImageToken } from './figure-token-locator'
 import { resolveCaptionScope } from './caption-scope-resolver'
 import { formatObjectNumber, presetToScopeStyle, type NumberingPreset } from './numbering-preset-formatter'
-import { formatObjectScopeNumber, resolveObjectNumberScope } from './object-scope-config'
+import { formatObjectNumberFromComponents, formatObjectScopeNumber, displayPrefixForPreset, resolveDisplayPrefixScope, resolveObjectNumberScope } from './object-scope-config'
 import {
   buildObjectNumberingLabel,
   renderNumberTemplate,
@@ -462,6 +462,7 @@ export function buildObjectHeadingContext(
   const states = computeSemanticHeadingNumbers(physical, mode, {
     startAt: resolveSemanticStartAt(settings, mode),
     physicalStartAt: resolvePhysicalStartAt(settings),
+    physicalPathsByKey: computePhysicalHeadingPaths(physical, settings, mode, overrideMap, counterPolicy),
     sourceRevision: 0,
     overrideMap: overrideMap.size > 0 ? overrideMap : undefined,
     counterPolicy,
@@ -1167,6 +1168,36 @@ function computeExpectedNumber(
       missingScopeLevel: explicitScope.missingRequestedLevel,
       scopeFallback: explicitScope.fallback,
       requestedPrefixLevel: explicitScope.requestedPrefixLevel,
+    }
+  }
+
+  // R12 — standard presets follow the heading's VISIBLE number path.
+  const presetSpec = displayPrefixForPreset(config.preset ?? 'global')
+  const displayScope = presetSpec
+    ? resolveDisplayPrefixScope(object.kind, presetSpec.componentCount, presetSpec.style, state, semanticByIdentity)
+    : null
+  if (displayScope) {
+    const ordinal = (counters.get(displayScope.scopeKey) ?? 0) + 1
+    counters.set(displayScope.scopeKey, ordinal)
+    const minDigits = Math.max(1, config.minDigits ?? 1)
+    const effectiveOrdinal = (config.startAt ?? 1) + ordinal - 1
+    const rawNumber = formatObjectNumberFromComponents(displayScope.components, displayScope.style, effectiveOrdinal, minDigits)
+    const componentCount = displayScope.components.length
+    return {
+      rawNumber,
+      numberText: rawNumber,
+      label: buildObjectNumberingLabel(config.prefix, rawNumber, ''),
+      scope: componentCount === 0 ? 'global' : componentCount === 1 ? 'chapter' : 'section',
+      chapter: displayScope.components[0] ?? null,
+      section: componentCount > 1 ? displayScope.components[1] : null,
+      scopeKey: displayScope.scopeKey,
+      ...(displayScope.degraded
+        ? {
+            missingScopeLevel: true,
+            scopeFallback: 'nearest-ancestor' as const,
+            requestedPrefixLevel: presetSpec?.componentCount ?? null,
+          }
+        : {}),
     }
   }
 

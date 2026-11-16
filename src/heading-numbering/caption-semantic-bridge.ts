@@ -18,7 +18,10 @@ import { formatObjectNumber, presetToScopeStyle, type NumberingPreset, type Obje
 import { buildObjectNumberingLabel, renderNumberTemplate, type ObjectNumberingConfig } from './object-numbering-engine'
 import { buildObjectSemanticScopeIdentity, objectScopeKey, type ObjectSemanticScopeIdentity } from './object-semantic-scope'
 import {
+  displayPrefixForPreset,
+  formatObjectNumberFromComponents,
   formatObjectScopeNumber,
+  resolveDisplayPrefixScope,
   resolveObjectNumberScope,
 } from './object-scope-config'
 import type { CaptionScope } from './semantic-heading-types'
@@ -161,6 +164,46 @@ export function computeProductionDesiredCaptionStates(
     }
 
     const requestedScope = requestedScopeForPreset(preset, config.template)
+
+    // R12 — standard presets follow the heading's VISIBLE number path (skipped
+    // levels, unnumbered ancestors and custom start/restart rules included).
+    const presetSpec = displayPrefixForPreset(preset)
+    const displayScope = presetSpec
+      ? resolveDisplayPrefixScope(obj.objectKind, presetSpec.componentCount, presetSpec.style, precedingHeading ?? null, semanticByIdentity)
+      : null
+    if (displayScope) {
+      const ordinal = (counters.get(displayScope.scopeKey) ?? 0) + 1
+      counters.set(displayScope.scopeKey, ordinal)
+      const effectiveOrdinal = (config.startAt ?? 1) + ordinal - 1
+      const rawNumber = formatObjectNumberFromComponents(
+        displayScope.components,
+        displayScope.style,
+        effectiveOrdinal,
+        config.minDigits ?? 1,
+      )
+      const renderedLabel = buildObjectNumberingLabel(config.prefix, rawNumber, obj.name ?? '')
+      const componentCount = displayScope.components.length
+      results.push({
+        documentKey: snapshot.documentKey,
+        revision: snapshot.revision,
+        stableIdentity: obj.stableIdentity,
+        objectKind: obj.objectKind,
+        requestedScope,
+        effectiveScope: componentCount === 0 ? 'global' : componentCount === 1 ? 'chapter' : 'section',
+        chapterOrdinal: displayScope.components[0] ?? null,
+        sectionOrdinal: componentCount > 1 ? displayScope.components[1] : null,
+        scopeKey: displayScope.scopeKey,
+        ordinal,
+        rawNumber,
+        renderedLabel,
+        resolutionStatus: displayScope.degraded ? 'degraded' : 'exact',
+        strictBoundaryIdentity,
+        structuralChapterIdentity,
+        structuralSectionIdentity,
+      })
+      continue
+    }
+
     const scope = resolveCaptionScope(requestedScope, chapterOrdinal, sectionOrdinal)
 
     const scopeIdentity = buildObjectSemanticScopeIdentity({

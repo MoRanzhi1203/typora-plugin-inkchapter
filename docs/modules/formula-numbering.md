@@ -132,11 +132,22 @@ CanonicalHeadingFrame（stableIdentity + semanticState.physicalLevel）
 - **物理标题路径**：`SemanticHeadingNumberState` 新增 `physicalPathByLevel`（H1–H6 祖先序号）。它由 `computeSemanticHeadingNumbers()` 在同一语义计数器内产生，严格模式 H1 文档题目不占路径槽位；对象前缀只从这里读取，永不解析 DOM 文本、`data-inkchapter-heading-number` 或可见编号。
 - **显式作用域**：`ObjectNumberingConfig.scope`（可选）定义 `resetLevel`（`document` 或 H1–H6）、`prefixLevel`（`none` 或 H1–H6）、`style`（dot/dash）与 `missingLevelPolicy`（`nearest-ancestor` / `document` / `diagnostic`）。`resolveObjectNumberScope()` 是四类对象共用的唯一解析器。
 - **不再隐式降级**：显式作用域下缺少指定层级时不会把 H2 前缀改成章前缀，而是按配置回退：最近上级标题、全文连续编号或报告诊断。公式规划器通过 `FormulaSemanticContext.resolvedScope` 消费预解析结果，`effectiveScope` 仅用于投影布局（section/chapter/global），不改变用户选择。
-- **兼容**：没有 `scope` 的旧配置继续走 `resolveCaptionScope()` 的 SECTION→CHAPTER→GLOBAL 旧路径，迁移不会写入 `scope`，因此已保存文档的编号结果不变。切换「编号类型」预设会清除显式作用域。
+- **兼容**：标准预设（global / chapter / section）已改为读取标题显示路径（见 §18），默认配置下的编号结果与旧语义一致；`legacy-custom` 仍走原模板路径。显式 `scope` 未保存时迁移不写入，切换「编号类型」预设会清除显式作用域。
 - **结构联动**：R11 的结构变化自动修正链路复用同一解析器，章节移动后公式源码编号与投影编号一起更新；`preserve` / `detect-only` 仍不改写源码。
 - **诊断**：`OBJECT_NUMBER_SCOPE_MISSING_LEVEL` 只在 `missingLevelPolicy='diagnostic'` 且存在真实题注补丁时产生，带准确行号与「同步对象编号」修复入口。
 
 详见 `src/heading-numbering/object-scope-config.ts` 与 `src/heading-numbering/semantic-heading-numbering.ts`。
+
+## §18 公式与标题的层级关联修复（R12）
+
+- **根因**：公式前缀此前由语义深度（chapter/section ordinal）推导，标题显示却由物理 `computeHeadingNumbering()` 计数器决定。两者在「中间标题不编号、跳过层级、`restartAfterLevel: null`、自定义 `startAt`、关闭某级标题」时会产生不同结果。
+- **修复**：新增 `computePhysicalHeadingPaths()`，直接从标题显示的计数器生成 H1–H6 物理路径：
+  - 严格模式 H1 文档题目不占路径；
+  - 关闭的级别、超出 `maxDepth` 的级别、未配置的 loose H6 不参与路径；
+  - 未编号标题不贡献自身层级，且其后代省略该层级；
+  - 严格模式在第一个缺失中间层级处截断（对齐“零填充抑制”）。
+- **消费方式**：图片 / 表格 / 代码 / 公式的标准预设（chapter/section）改为从该路径取前 1/2 个可见分量，并按“最后一个分量的所属标题身份”分组计数；显式作用域仍按用户选择的重置/前缀层级解析。
+- **验证**：`object-scope-hierarchy.test.ts` 覆盖未编号中间标题、连续计数、自定义起始值、关闭层级、严格缺层级五类回归；标题显示与公式前缀逐项一致。
 
 ## §12 启动时序与权威门禁（Phase 7R.3.9R）
 

@@ -59,7 +59,7 @@ import {
 import { migrateObjectNumberingConfig } from './object-numbering-settings'
 import { FormulaNumberingAdapter, type FormulaReconcileItem, type FormulaTarget } from './formula-numbering-adapter'
 import { planFormulaSemanticNumbers, type FormulaSemanticContext, type FormulaSemanticPlanEntry } from './formula-semantic-planner'
-import { resolveObjectNumberScope } from './object-scope-config'
+import { resolveObjectNumberScope, displayPrefixForPreset, resolveDisplayPrefixScope } from './object-scope-config'
 import {
   FormulaProjectionController,
   classifyFormulaProjectionVerify,
@@ -3182,10 +3182,15 @@ export class CaptionService {
           const headingState = res.decision !== 'TRANSIENT_UNRESOLVED' && res.headingStableIdentity
             ? semanticByIdentity.get(res.headingStableIdentity) ?? null
             : null
+          // R12 — standard presets follow the visible heading number path.
+          const presetSpec = displayPrefixForPreset(cfg.preset ?? 'global')
           return {
             ...ctx,
             mode: snap.structureMode,
             resolvedScope: resolveObjectNumberScope('formula', cfg, headingState, semanticByIdentity),
+            displayScope: presetSpec
+              ? resolveDisplayPrefixScope('formula', presetSpec.componentCount, presetSpec.style, headingState, semanticByIdentity)
+              : null,
           }
         })
         const planned = planFormulaSemanticNumbers(formulaContexts, cfg)

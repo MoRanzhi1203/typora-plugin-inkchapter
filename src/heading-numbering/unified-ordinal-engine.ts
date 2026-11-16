@@ -28,7 +28,10 @@ import type {
 import { resolveCaptionScope } from './caption-scope-resolver'
 import { formatObjectNumber, presetToScopeStyle, type NumberingPreset } from './numbering-preset-formatter'
 import {
+  displayPrefixForPreset,
+  formatObjectNumberFromComponents,
   formatObjectScopeNumber,
+  resolveDisplayPrefixScope,
   resolveObjectNumberScope,
   type ObjectNumberingScopeConfig,
 } from './object-scope-config'
@@ -149,6 +152,33 @@ export function computeDesiredNumberState(
     }
 
     const { requestedScope, style } = presetToScopeStyle(rule.preset)
+
+    // R12 — standard presets follow the heading's VISIBLE number path.
+    const presetSpec = displayPrefixForPreset(rule.preset)
+    const displayScope = presetSpec
+      ? resolveDisplayPrefixScope(block.objectKind, presetSpec.componentCount, presetSpec.style, currentHeadingState, nodeByKey)
+      : null
+    if (displayScope) {
+      const ordinal = (counters.get(displayScope.scopeKey) ?? 0) + 1
+      counters.set(displayScope.scopeKey, ordinal)
+      const componentCount = displayScope.components.length
+      results.push({
+        stableIdentity: block.stableIdentity,
+        objectKind: block.objectKind,
+        requestedScope,
+        effectiveScope: componentCount === 0 ? 'global' : componentCount === 1 ? 'chapter' : 'section',
+        chapter: displayScope.components[0] ?? null,
+        section: componentCount > 1 ? displayScope.components[1] : null,
+        scopeKey: displayScope.scopeKey,
+        ordinal,
+        numberingStyle: displayScope.style,
+        formattedNumber: formatObjectNumberFromComponents(displayScope.components, displayScope.style, ordinal),
+        resolutionStatus: displayScope.degraded ? 'degraded' : 'exact',
+        revision,
+      })
+      continue
+    }
+
     const scope = resolveCaptionScope(requestedScope, currentChapter, currentSection)
 
     const scopeKey = buildScopeKey(block.objectKind, scope.effectiveScope, scope.chapter, scope.section)

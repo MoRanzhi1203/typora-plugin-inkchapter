@@ -16,7 +16,12 @@ import { resolveCaptionScope } from './caption-scope-resolver'
 import { formatObjectNumber, presetToScopeStyle, type NumberingPreset, type ObjectNumberingPreset } from './numbering-preset-formatter'
 import { renderNumberTemplate, formatSequenceNumber, type ObjectNumberingConfig } from './object-numbering-engine'
 import { buildObjectSemanticScopeIdentity, objectScopeKey } from './object-semantic-scope'
-import { formatObjectScopeNumber, type ObjectScopeResolution } from './object-scope-config'
+import {
+  formatObjectNumberFromComponents,
+  formatObjectScopeNumber,
+  type ObjectDisplayScope,
+  type ObjectScopeResolution,
+} from './object-scope-config'
 import type { CaptionScope } from './semantic-heading-types'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
@@ -35,6 +40,12 @@ export interface FormulaSemanticContext {
    * planner then uses it instead of the legacy preset degradation path.
    */
   resolvedScope?: ObjectScopeResolution | null
+  /**
+   * R12 — display-aligned prefix scope derived from the SAME heading display
+   * numbering. Used for the standard presets (chapter/section) so a skipped,
+   * unnumbered or custom-restart level never breaks the hierarchy association.
+   */
+  displayScope?: ObjectDisplayScope | null
 }
 
 export interface FormulaSemanticPlanEntry {
@@ -104,6 +115,37 @@ export function planFormulaSemanticNumbers(
     }
 
     const requestedScope = requestedScopeForFormulaPreset(preset, config.template)
+
+    // R12 — standard presets follow the heading's visible number path.
+    const display = f.displayScope ?? null
+    if (display) {
+      const ordinal = (counters.get(display.scopeKey) ?? 0) + 1
+      counters.set(display.scopeKey, ordinal)
+      const effectiveOrdinal = (config.startAt ?? 1) + ordinal - 1
+      const rawNumber = formatObjectNumberFromComponents(
+        display.components,
+        display.style,
+        effectiveOrdinal,
+        config.minDigits ?? 1,
+      )
+      const componentCount = display.components.length
+      const effectiveScope: CaptionScope = componentCount === 0
+        ? 'global'
+        : componentCount === 1 ? 'chapter' : 'section'
+      return {
+        chapterOrdinal: display.components[0] ?? null,
+        sectionOrdinal: componentCount > 1 ? display.components[1] : null,
+        requestedScope,
+        effectiveScope,
+        ordinal,
+        rawNumber,
+        renderedNumber: `(${rawNumber})`,
+        strictBoundaryIdentity: f.strictBoundaryIdentity ?? null,
+        structuralChapterIdentity: f.structuralChapterIdentity ?? null,
+        structuralSectionIdentity: f.structuralSectionIdentity ?? null,
+      }
+    }
+
     const scope = resolveCaptionScope(requestedScope, f.chapterOrdinal, f.sectionOrdinal)
     const mode = f.mode ?? 'loose'
     const strictBoundaryIdentity = f.strictBoundaryIdentity ?? null

@@ -21,6 +21,7 @@
 
 import type { UnnumberedCounterPolicy, HeadingNumberingSettings } from './heading-types'
 import type { HeadingOverrideMap } from './numbering-engine'
+import { computeHeadingNumbering } from './numbering-engine'
 import { resolveSemanticRoles } from './semantic-heading-resolver'
 import type {
   HeadingLevel,
@@ -38,6 +39,14 @@ export interface SemanticCounterOptions {
    * physical levels start at 1.
    */
   physicalStartAt?: readonly number[]
+  /**
+   * R12 — canonical PHYSICAL display path per heading key, produced by
+   * `computePhysicalHeadingPaths()` from the SAME physical numbering engine the
+   * heading display consumes. When present it is authoritative; the internal
+   * simplified counters are only a fallback for callers without a settings
+   * context (legacy tests).
+   */
+  physicalPathsByKey?: ReadonlyMap<string, readonly (number | null)[]>
   sourceRevision: number
   overrideMap?: HeadingOverrideMap
   counterPolicy?: UnnumberedCounterPolicy
@@ -68,7 +77,7 @@ export function computeSemanticHeadingNumbers(
   mode: HeadingStructureMode,
   options: SemanticCounterOptions,
 ): SemanticHeadingNumberState[] {
-  const { startAt, sourceRevision, overrideMap, counterPolicy = 'skip', physicalStartAt } = options
+  const { startAt, sourceRevision, overrideMap, counterPolicy = 'skip', physicalStartAt, physicalPathsByKey } = options
   const roles = resolveSemanticRoles(headings, mode)
 
   // nextOrdinal[i] = next ordinal to assign at effective depth i+1.
@@ -115,7 +124,8 @@ export function computeSemanticHeadingNumbers(
         strictBoundaryOrdinal: role.strictBoundaryOrdinal,
         ordinalByDepth: [],
         displayCountedPath: [],
-        physicalPathByLevel: [...currentPhysical],
+        physicalPathByLevel: physicalPathsByKey?.get(role.stableIdentity) ?? [...currentPhysical],
+        physicalPathCanonical: physicalPathsByKey != null,
         logicalOrdinal: null,
         chapterOrdinal: null,
         sectionOrdinal: null,
@@ -174,7 +184,8 @@ export function computeSemanticHeadingNumbers(
       strictBoundaryOrdinal: role.strictBoundaryOrdinal,
       ordinalByDepth,
       displayCountedPath,
-      physicalPathByLevel: [...currentPhysical],
+      physicalPathByLevel: physicalPathsByKey?.get(role.stableIdentity) ?? [...currentPhysical],
+      physicalPathCanonical: physicalPathsByKey != null,
       logicalOrdinal: ownOrdinal,
       chapterOrdinal: ordinalByDepth[0] ?? null,
       sectionOrdinal: ordinalByDepth[1] ?? null,
@@ -186,7 +197,100 @@ export function computeSemanticHeadingNumbers(
 }
 
 /**
- * Derive semantic start values from heading-numbering settings.
+ * R12 — canonical PHYSICAL display path per heading key.
+ *
+ * The path is taken from the SAME `computeHeadingNumbering()` counters that
+ * produce the visible heading label, so object numbering can never invent a
+ * section number that the heading display does not use (custom `startAt`,
+ * `restartAfterLevel: null`, disabled levels, skipped levels, unnumbered
+ * ancestors).
+ *
+ * Rules:
+ *   - strict H1 (document title) is a boundary, never a path component;
+ *   - a level whose style is disabled / outside maxDepth / loose-H6
+ *     unconfigured never contributes a component;
+ *   - an unnumbered heading never contributes its own component, and its
+ *     level is omitted from descendants (matching parent omission);
+ *   - strict mode truncates the path at the FIRST missing intermediate level
+ *     (the display engine suppresses zero-filled paths entirely).
+ *
+ * Loose mode keeps the dense visible path (no zero-fill suppression), matching
+ * its display behavior.
+ */
+export function computePhysicalHeadingPaths(
+  headings: readonly PhysicalHeading[],
+  settings: HeadingNumberingSettings,
+  mode: HeadingStructureMode,
+  overrideMap?: HeadingOverrideMap,
+  counterPolicy: UnnumberedCounterPolicy = 'skip',
+): Map<string, (number | null)[]> {
+  const numbered = computeHeadingNumbering(headings, settings, overrideMap, counterPolicy)
+  const countersByKey = new Map(numbered.map(n => [n.key, n.counters]))
+  const visible = physicalLevelVisibility(settings, mode)
+
+  const paths = new Map<string, (number | null)[]>()
+  const unnumberedLevels = new Set<number>()
+
+  for (const heading of headings) {
+    const level = heading.level
+    // A heading at level L ends the unnumbered marker of L and every deeper level.
+    for (const marked of [...unnumberedLevels]) {
+      if (marked >= level) unnumberedLevels.delete(marked)
+    }
+
+    const path: Array<number | null> = [null, null, null, null, null, null]
+    const counters = countersByKey.get(heading.key)
+    const isUnnumbered = overrideMap?.get(heading.key) === 'unnumbered'
+
+    if (counters) {
+      for (let lv = 1; lv <= level; lv++) {
+        if (!visible[lv - 1]) continue
+        if (unnumberedLevels.has(lv)) continue
+        const counter = counters[lv - 1] ?? 0
+        if (counter >= 1) path[lv - 1] = counter
+      }
+      if (isUnnumbered) path[level - 1] = null
+
+      if (mode === 'strict') {
+        // Strict display suppresses a number entirely when an intermediate
+        // component is missing; keep only the prefix before the first gap.
+        for (let lv = 2; lv <= level; lv++) {
+          if (!visible[lv - 1]) continue
+          if (path[lv - 1] == null) {
+            for (let deeper = lv - 1; deeper < 6; deeper++) path[deeper] = null
+            break
+          }
+        }
+      }
+    }
+
+    if (isUnnumbered) unnumberedLevels.add(level)
+    paths.set(heading.key, path)
+  }
+
+  return paths
+}
+
+/** Physical level → whether it contributes to the visible heading number. */
+function physicalLevelVisibility(
+  settings: HeadingNumberingSettings,
+  mode: HeadingStructureMode,
+): boolean[] {
+  const visible: boolean[] = [false, false, false, false, false, false]
+  for (let lv = 1; lv <= 6; lv++) {
+    if (lv > settings.maxDepth) continue
+    if (mode === 'strict' && lv === 1) continue
+    if (mode === 'loose' && lv === 6 && !settings.s6Configured) continue
+    // Strict H2-H6 consume the shifted slot levels[1..5].
+    const slot = (mode === 'strict' ? lv - 1 : lv) as HeadingLevel
+    if (slot < 1) continue
+    visible[lv - 1] = settings.levels[slot]?.enabled !== false
+  }
+  return visible
+}
+
+/**
+ * R12: derive semantic start values from heading-numbering settings.
  *
  * Mapping decision (documented, deterministic):
  *   - strict: semantic depth D inherits physical level D+1 (chapter→H2,
