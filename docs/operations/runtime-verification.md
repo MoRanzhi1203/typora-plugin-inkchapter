@@ -80,7 +80,7 @@
 
 夹具：`test/vault/runtime/acceptance/FormulaNumbering-R11-Runtime-Acceptance.template.md`（2 个 H1、3 个 H2/H3 作用域、7 个公式块，含空公式、多行、`aligned`、`cases`）。
 
-真实 Typora 1.6.7 / Windows 运行结果（报告：`test/vault/runtime/acceptance/formula-numbering-acceptance-last-run.json`，`verdict=PASS`，19 个步骤、0 失败）：
+真实 Typora 1.6.7 / Windows 运行结果（报告：`test/vault/runtime/acceptance/formula-numbering-acceptance-last-run.json`，`verdict=PASS`，20 个步骤、0 失败）：
 
 | 项目 | 结果 |
 |---|---|
@@ -91,6 +91,7 @@
 | 公式编辑 | 修改公式体后编号与数量稳定 |
 | 新增 / 删除 | 同节后续公式依次递增 / 递减 |
 | 跨节移动 | 移动后按新作用域重新编号 |
+| 整节移动 | 将「研究背景」整节移动到「实验设置」之后：其公式由 `1.1-1` 变为 `2.1-1`，同节公式为 `2.2-1/2.2-2`，DOM 编号同步更新 |
 | 标题改名 / 层级变化 | 改名保持编号；层级变化后重新编号 |
 | 设置切换 | 全局 `1,2,3`、节内 `1.1-1`、关闭后无编号、Typora 原生不可用时自动接管 |
 | 源码持久化 | 尚无源码编号时仍投影；插入有效 `（1-1）` 后仅该公式去重，其余继续显示 |

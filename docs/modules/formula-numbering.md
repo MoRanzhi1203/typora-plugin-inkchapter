@@ -122,6 +122,7 @@ CanonicalHeadingFrame（stableIdentity + semanticState.physicalLevel）
 - **空公式**：零长度源码不再直接 DEFER，瞬态输入改为 `\phantom{}\tag{rawNumber}`——保留不可见主体，只显示编号，避免裸 `\tag` 导致 MathJax 空容器。
 - **源码模式按公式去重**：不再因 `storageMode=source` 整体关闭公式投影。`scanFormulaSourceNumberParagraphs()` 逐公式读取紧邻 `$$…$$` 的源码编号段落；仅当该段落存在且与当前计算 `rawNumber` 严格相等时才跳过该公式的投影（`FORMULA-SOURCE-NUMBER-DEDUPE`）。标题归属逻辑不参与公式判断。
 - **文档级覆盖与切换**：`file:open` 时重新应用对象编号渲染策略，文档级 `storageMode` 覆盖即时生效；设置改变经 `applyFormulaSettings()` 立即刷新。
+- **章节移动联动**：移动标题/整节会在编辑 DOM 产生 heading 结构 mutation（`mutationIndicatesEditorStructureChange`）→ 递增 `editorStructureEpoch` 并以 `HEADING_SEMANTICS_CHANGED + OBJECT_STRUCTURE_CHANGED` 调度 reconcile → 标题服务提交新的 canonical frame → 公式用 `resolvePrecedingSemanticHeadingBatch()` 重新绑定前置标题并生成新投影签名。编号随新章节/节序号更新，不依赖定时轮询或文档重开；`SEMANTIC_NOOP` 快速路径只在标题语义指纹完全不变时跳过。
 - **真实 Runtime 验收**：`pnpm run accept:formula-numbering`（夹具 `FormulaNumbering-R11-Runtime-Acceptance.template.md`；运行器 `src/runtime/formula-numbering-acceptance-runner.ts`）以 DOM 优先方式验证真实 `.md-math-block` 内的可见编号节点、唯一性、右侧对齐、逐公式计划一致性，以及章节/设置/结构变化后的稳定重投影。结果记录见 [runtime-verification](../operations/runtime-verification.md)。
 
 ## §12 启动时序与权威门禁（Phase 7R.3.9R）

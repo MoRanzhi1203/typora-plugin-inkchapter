@@ -348,6 +348,27 @@ function swapFormulas(markdown: string, a: number, b: number): string {
   })
 }
 
+/**
+ * Move a whole H2 section (heading + its H3 subsections + bodies) to the end of
+ * another H2 section. This is the closest buffer-level equivalent of dragging a
+ * chapter in Typora's outline: heading order, chapter/section ordinals and all
+ * formula scopes change while the formula bodies stay byte-identical.
+ */
+function moveSectionAfter(markdown: string, sectionHeading: string, afterHeading: string): string {
+  const lines = markdown.split('\n')
+  const start = lines.findIndex(line => line.trim() === sectionHeading)
+  if (start < 0) return markdown
+  let end = start + 1
+  while (end < lines.length && !/^#{1,2}\s/.test(lines[end])) end++
+  const section = lines.slice(start, end)
+  const remaining = [...lines.slice(0, start), ...lines.slice(end)]
+  const afterStart = remaining.findIndex(line => line.trim() === afterHeading)
+  if (afterStart < 0) return markdown
+  let afterEnd = afterStart + 1
+  while (afterEnd < remaining.length && !/^#{1,2}\s/.test(remaining[afterEnd])) afterEnd++
+  return [...remaining.slice(0, afterEnd), ...section, ...remaining.slice(afterEnd)].join('\n')
+}
+
 async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string): Promise<FormulaNumberingAcceptanceReport> {
   const startedAt = new Date().toISOString()
   const steps: FormulaNumberingStep[] = []
@@ -609,7 +630,35 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
       ])
     }
 
-    // ── 17. The user's real academic template (5.3 formula) ─────────────
+    // ── 17. Whole chapter move (outline drag equivalent) ────────────────
+    {
+      const restore = deps.applyConfig({ preset: 'section-dash' })
+      await deps.wait(1200)
+      const expectedBefore = deps.getExpected()
+      const moved = moveSectionAfter(deps.getMarkdown(), '## 研究背景', '## 实验设置')
+      deps.replaceContent(moved)
+      const { facts, expected } = await snapshot()
+      push('chapter-move', '整节移动后公式编号随章节更新', [
+        { id: 'chapter-move.count', ok: facts.formulas.length === 7 && expected.length === 7, detail: `${facts.formulas.length}/${expected.length}` },
+        // 实验设置 becomes chapter section 1, 研究背景 becomes section 2:
+        // D/E → 1-1,1-2 (H2 body, chapter fallback), A → 2.1-1, B/C → 2.2-1,2.2-2.
+        { id: 'chapter-move.scope', ok: expected.slice(0, 3).map(e => e.rawNumber).join(',') === '1-1,1-2,2.1-1' && expected.slice(3, 5).map(e => e.rawNumber).join(',') === '2.2-1,2.2-2', detail: expected.map(e => e.rawNumber).join(' | ') },
+        {
+          id: 'chapter-move.dom',
+          ok: facts.formulas.every((f, i) => f.visibleNumberTexts.length === 1 && sameToken(f.visibleNumberTexts[0], expected[i]?.rawNumber ?? '')),
+          detail: facts.formulas.map(f => f.visibleNumberTexts[0] ?? 'none').join(' | '),
+        },
+        {
+          id: 'chapter-move.renumbered',
+          ok: expectedBefore[0]?.rawNumber === '1.1-1' && expected[2]?.rawNumber === '2.1-1',
+          detail: `${expectedBefore[0]?.rawNumber ?? 'none'} → ${expected[2]?.rawNumber ?? 'none'}`,
+        },
+      ])
+      restore()
+      await deps.wait(1500)
+    }
+
+    // ── 18. The user's real academic template (5.3 formula) ─────────────
     {
       const userDocument = deps.readUserDocument?.() ?? null
       if (userDocument == null) {
