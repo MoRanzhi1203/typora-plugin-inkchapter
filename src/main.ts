@@ -2366,7 +2366,7 @@ export default class extends Plugin<InkChapterSettings> {
           const rootEl = document.getElementById('write') as HTMLElement | null
           const documentKey = this.numberingService?.getDocumentKey() ?? null
           if (!rootEl) {
-            return { documentKey, writeWidth: 0, formulas: [], sourceNumberParagraphCount: 0 }
+            return { documentKey, writeWidth: 0, formulas: [], headings: [], sourceNumberParagraphCount: 0 }
           }
           const visibleRect = (el: Element) => {
             try {
@@ -2435,10 +2435,16 @@ export default class extends Plugin<InkChapterSettings> {
           })
           const sourceNumberParagraphCount = Array.from(rootEl.querySelectorAll<HTMLElement>('p'))
             .filter(p => FORMULA_NUMBER_TEXT_PATTERN.test((p.textContent ?? '').trim())).length
+          const headings = Array.from(rootEl.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')).map(h => ({
+            level: Number(h.tagName.slice(1)),
+            text: (h.textContent ?? '').trim().slice(0, 80),
+            projectedNumber: h.getAttribute('data-inkchapter-heading-number') ?? '',
+          }))
           return {
             documentKey,
             writeWidth: rootEl.getBoundingClientRect().width,
             formulas,
+            headings,
             sourceNumberParagraphCount,
           }
         }
@@ -2498,6 +2504,32 @@ export default class extends Plugin<InkChapterSettings> {
             try {
               return fs.readFileSync(path.join(vaultRoot ?? '', '墨章插件测试', '01-中文学术论文模板.md'), 'utf8')
             } catch { return null }
+          },
+          moveSectionDom: (sectionText: string, afterSectionText: string) => {
+            const rootEl = document.getElementById('write') as HTMLElement | null
+            if (!rootEl) return false
+            const headings = Array.from(rootEl.querySelectorAll<HTMLElement>('h1, h2'))
+            const start = headings.find(h => (h.textContent ?? '').trim() === sectionText)
+            const after = headings.find(h => (h.textContent ?? '').trim() === afterSectionText)
+            if (!start || !after) return false
+            const parent = start.parentElement
+            if (!parent || parent !== after.parentElement) return false
+            const children = Array.from(parent.children)
+            const startIndex = children.indexOf(start)
+            const afterIndex = children.indexOf(after)
+            if (startIndex < 0 || afterIndex < 0 || startIndex > afterIndex) return false
+            let endIndex = children.length
+            for (let i = startIndex + 1; i < children.length; i++) {
+              if (/^H[12]$/.test(children[i].tagName)) { endIndex = i; break }
+            }
+            let insertBefore: Element | null = null
+            for (let i = afterIndex + 1; i < children.length; i++) {
+              if (/^H[12]$/.test(children[i].tagName)) { insertBefore = children[i]; break }
+            }
+            for (const el of children.slice(startIndex, endIndex)) {
+              parent.insertBefore(el, insertBefore)
+            }
+            return true
           },
           subscribeFileOpen: (callback) => this.app.workspace.on('file:open' as never, (() => callback()) as never),
           log: (message) => console.info(`[InkChapter] ${message}`),

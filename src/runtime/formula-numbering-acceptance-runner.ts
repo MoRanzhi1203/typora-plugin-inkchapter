@@ -49,10 +49,18 @@ export interface FormulaNumberingDomEntry {
   numberVisible: boolean
 }
 
+export interface FormulaNumberingHeadingFact {
+  level: number
+  text: string
+  /** Heading number projected by the heading service (`data-inkchapter-heading-number`). */
+  projectedNumber: string
+}
+
 export interface FormulaNumberingDomFacts {
   documentKey: string | null
   writeWidth: number
   formulas: FormulaNumberingDomEntry[]
+  headings: FormulaNumberingHeadingFact[]
   /** Standalone source number paragraphs OUTSIDE the formula hosts (`（1-1）`). */
   sourceNumberParagraphCount: number
 }
@@ -87,6 +95,12 @@ export interface FormulaNumberingAcceptanceDeps {
   setWriteWidth(widthPx: number | null): void
   /** Read the user's academic template fixture (read-only, no modification). */
   readUserDocument?(): string | null
+  /**
+   * Move a whole chapter directly in the EDITOR DOM (no document reload), the
+   * closest probe for a real outline drag: existing formula hosts are NOT
+   * rebuilt, so their MathJax output must be re-rendered by the plugin.
+   */
+  moveSectionDom?(sectionText: string, afterSectionText: string): boolean
   wait(ms: number): Promise<void> | void
   subscribeFileOpen(callback: () => void): () => void
   log?(message: string): void
@@ -658,7 +672,50 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
       await deps.wait(1500)
     }
 
-    // ── 18. The user's real academic template (5.3 formula) ─────────────
+    // ── 18. Real DOM-level chapter move (formula hosts are NOT rebuilt) ─
+    {
+      const restore = deps.applyConfig({ preset: 'section-dash' })
+      deps.replaceContent(template)
+      await deps.wait(1500)
+      const before = deps.readDomFacts()
+      const moved = deps.moveSectionDom?.('研究背景', '实验设置') ?? false
+      // Deliberately SHORT settle window: a real drag must update the number in
+      // the same event-driven pass, not after a later unrelated refresh.
+      await deps.wait(800)
+      const after = deps.readDomFacts()
+      const headingNumberOf = (facts: FormulaNumberingDomFacts, text: string): string =>
+        facts.headings.find(h => h.text.includes(text))?.projectedNumber ?? ''
+      const beforeResearch = headingNumberOf(before, '研究背景')
+      const afterResearch = headingNumberOf(after, '研究背景')
+      push('chapter-move-dom', '直接移动章节 DOM 后编号随章节更新', [
+        { id: 'dom-move.applied', ok: moved, detail: String(moved) },
+        {
+          id: 'dom-move.count',
+          ok: before.formulas.length === 7 && after.formulas.length === 7,
+          detail: `${before.formulas.length}→${after.formulas.length}`,
+        },
+        {
+          id: 'dom-move.heading-linkage',
+          ok: beforeResearch === '1' && afterResearch === '2' && after.formulas[2]?.visibleNumberTexts[0] === '(2.1-1)',
+          detail: `研究背景 ${beforeResearch || 'none'}→${afterResearch || 'none'}; formula=${after.formulas[2]?.visibleNumberTexts[0] ?? 'none'}`,
+        },
+        {
+          id: 'dom-move.renumbered',
+          ok: after.formulas[2]?.visibleNumberTexts[0] === '(2.1-1)',
+          detail: after.formulas.map(f => f.visibleNumberTexts[0] ?? 'none').join(' | '),
+        },
+        {
+          id: 'dom-move.no-duplicate',
+          ok: after.formulas.every(f => f.tagTexts.length + f.decorationTexts.length <= 1),
+          detail: after.formulas.map(f => `tag=${f.tagTexts.length},deco=${f.decorationTexts.length}`).join(' | '),
+        },
+      ])
+      deps.replaceContent(template)
+      await deps.wait(1200)
+      restore()
+    }
+
+    // ── 19. The user's real academic template (5.3 formula) ─────────────
     {
       const userDocument = deps.readUserDocument?.() ?? null
       if (userDocument == null) {
@@ -682,6 +739,38 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
           { id: 'user.chapter-linkage', ok: /^5(?:\.\d+)?-1$/.test(expected[0]?.rawNumber ?? ''), detail: expected[0]?.rawNumber ?? 'none' },
           { id: 'user.no-double', ok: facts.formulas.every(f => f.tagTexts.length + f.decorationTexts.length <= 1), detail: '不得出现双编号' },
         ])
+
+        // Move the user's real chapter `数据与方法` after `实验结果` and verify
+        // BOTH the heading projection and the formula number follow the move.
+        const movedUser = moveSectionAfter(userDocument, '## 数据与方法', '## 实验结果')
+        if (movedUser !== userDocument) {
+          deps.replaceContent(movedUser)
+          const moved = await snapshot()
+          const headingNumberOf = (text: string): string =>
+            moved.facts.headings.find(h => h.text.includes(text))?.projectedNumber ?? ''
+          push('user-document-move', '用户学术模板章节移动后编号联动', [
+            { id: 'user-move.count', ok: moved.facts.formulas.length === 2, detail: String(moved.facts.formulas.length) },
+            {
+              id: 'user-move.formula',
+              ok: moved.expected[0]?.rawNumber === '6.3-1' && moved.facts.formulas[0]?.visibleNumberTexts[0] === '(6.3-1)',
+              detail: `plan=${moved.expected[0]?.rawNumber ?? 'none'} dom=${moved.facts.formulas[0]?.visibleNumberTexts[0] ?? 'none'}`,
+            },
+            {
+              id: 'user-move.heading',
+              ok: headingNumberOf('模型构建') === '6.3',
+              detail: `模型构建=${headingNumberOf('模型构建') || 'none'}`,
+            },
+            {
+              id: 'user-move.no-double',
+              ok: moved.facts.formulas.every(f => f.tagTexts.length + f.decorationTexts.length <= 1),
+              detail: moved.facts.formulas.map(f => `tag=${f.tagTexts.length},deco=${f.decorationTexts.length}`).join(' | '),
+            },
+          ])
+          // Restore the user's original template (read-only fixture).
+          deps.replaceContent(userDocument)
+          await deps.wait(1200)
+          await snapshot()
+        }
       }
     }
 
