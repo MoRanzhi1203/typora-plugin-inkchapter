@@ -131,6 +131,19 @@
 - 源码持久化模式下运行时题注服务停止投影，避免正文出现第二套题注。
 - 运行时服务：`src/heading-numbering/object-number-persistence-service.ts`；命令与设置卡片见 [settings-ui.md](settings-ui.md)。
 
+## R12 — 统一对象编号作用域
+
+- 四类对象（图 / 表 / 代码 / 公式）共用 `src/heading-numbering/object-scope-config.ts`：
+  - `resetLevel`：计数重置边界（`document` 或 H1–H6）；
+  - `prefixLevel`：显示前缀层级（`none` 或 H1–H6）；
+  - `missingLevelPolicy`：缺少层级时的回退策略；
+  - `style`：点号或短横线。
+- 重置层级与前缀层级**互相独立**：例如按 H2 重置 + H1 前缀得到 `图 1-1 / 图 1-2 / 图 1-1`；这是旧预设无法表达的配置。
+- 前缀来自 `physicalPathByLevel`（物理 H1–H6 路径），不读取 DOM 标题编号；缺失层级不会自动改写用户选择的层级。
+- `scope` 为可选字段：旧预设配置没有 `scope` 时保持原有行为；迁移不写入 `scope`。切换「编号类型」预设会清除显式作用域。
+- 四类对象各自计数，作用域键带对象类型前缀；新增图片不会改变公式序号。
+- 诊断新增 `OBJECT_NUMBER_SCOPE_MISSING_LEVEL`（仅在诊断策略且存在真实题注补丁时产生），修复入口为「同步对象编号」。
+
 ## 历史吸收
 
 - 2026-08-19 cleanup absorbed the caption/object-caption series and object-numbering legacy batches into this system doc.

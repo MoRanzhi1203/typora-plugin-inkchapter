@@ -127,6 +127,17 @@ CanonicalHeadingFrame（stableIdentity + semanticState.physicalLevel）
 - **公式 / 标题编号一致性**：公式的 `chapterOrdinal` / `sectionOrdinal` 与标题投影来自同一个 committed canonical frame，逐公式校验“公式编号前缀 == 前置标题投影编号”。H2 下无 H3 的公式允许按文档规则回退到章作用域（标题 `5.1` + 公式 `5-1`）；若该级标题没有投影编号（例如标题编号只显示到 H2），公式仍按语义编号，不伪造标题文本。整节移动、DOM 直接移动与用户模板移动后均保持该一致性。
 - **真实 Runtime 验收**：`pnpm run accept:formula-numbering`（夹具 `FormulaNumbering-R11-Runtime-Acceptance.template.md`；运行器 `src/runtime/formula-numbering-acceptance-runner.ts`）以 DOM 优先方式验证真实 `.md-math-block` 内的可见编号节点、唯一性、右侧对齐、逐公式计划一致性，以及章节/设置/结构变化后的稳定重投影。结果记录见 [runtime-verification](../operations/runtime-verification.md)。
 
+## §17 统一对象编号作用域（R12，2026-11）
+
+- **物理标题路径**：`SemanticHeadingNumberState` 新增 `physicalPathByLevel`（H1–H6 祖先序号）。它由 `computeSemanticHeadingNumbers()` 在同一语义计数器内产生，严格模式 H1 文档题目不占路径槽位；对象前缀只从这里读取，永不解析 DOM 文本、`data-inkchapter-heading-number` 或可见编号。
+- **显式作用域**：`ObjectNumberingConfig.scope`（可选）定义 `resetLevel`（`document` 或 H1–H6）、`prefixLevel`（`none` 或 H1–H6）、`style`（dot/dash）与 `missingLevelPolicy`（`nearest-ancestor` / `document` / `diagnostic`）。`resolveObjectNumberScope()` 是四类对象共用的唯一解析器。
+- **不再隐式降级**：显式作用域下缺少指定层级时不会把 H2 前缀改成章前缀，而是按配置回退：最近上级标题、全文连续编号或报告诊断。公式规划器通过 `FormulaSemanticContext.resolvedScope` 消费预解析结果，`effectiveScope` 仅用于投影布局（section/chapter/global），不改变用户选择。
+- **兼容**：没有 `scope` 的旧配置继续走 `resolveCaptionScope()` 的 SECTION→CHAPTER→GLOBAL 旧路径，迁移不会写入 `scope`，因此已保存文档的编号结果不变。切换「编号类型」预设会清除显式作用域。
+- **结构联动**：R11 的结构变化自动修正链路复用同一解析器，章节移动后公式源码编号与投影编号一起更新；`preserve` / `detect-only` 仍不改写源码。
+- **诊断**：`OBJECT_NUMBER_SCOPE_MISSING_LEVEL` 只在 `missingLevelPolicy='diagnostic'` 且存在真实题注补丁时产生，带准确行号与「同步对象编号」修复入口。
+
+详见 `src/heading-numbering/object-scope-config.ts` 与 `src/heading-numbering/semantic-heading-numbering.ts`。
+
 ## §12 启动时序与权威门禁（Phase 7R.3.9R）
 
 - 分离 `AUTHORITY_NOT_READY` 与 `POST-READY TRANSIENT_UNRESOLVED`；显式状态机 NO_DOCUMENT / WAITING_FOR_DOCUMENT_CONTEXT / WAITING_FOR_HEADING_AUTHORITY / READY。

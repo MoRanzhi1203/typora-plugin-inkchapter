@@ -16,13 +16,14 @@
 
 import type { HeadingNumberingSettings, UnnumberedCounterPolicy } from './heading-types'
 import type { HeadingStructureMode, PhysicalHeading, SemanticHeadingNumberState } from './semantic-heading-types'
-import { computeSemanticHeadingNumbers, resolveSemanticStartAt } from './semantic-heading-numbering'
+import { computeSemanticHeadingNumbers, resolveSemanticStartAt, resolvePhysicalStartAt } from './semantic-heading-numbering'
 import { resolveHeadingStructure } from './heading-structure'
 import { normalizeHeadingTitle, parseMarkdownHeadings, type SourceHeadingLine, type SourceOverrideEntry } from './heading-number-persistence'
 import { canonicalNumberLabel, scanHeadingNumber } from './heading-number-source-scanner'
 import { parseMarkdownImageTokens, type MarkdownImageToken } from './figure-token-locator'
 import { resolveCaptionScope } from './caption-scope-resolver'
 import { formatObjectNumber, presetToScopeStyle, type NumberingPreset } from './numbering-preset-formatter'
+import { formatObjectScopeNumber, resolveObjectNumberScope } from './object-scope-config'
 import {
   buildObjectNumberingLabel,
   renderNumberTemplate,
@@ -460,6 +461,7 @@ export function buildObjectHeadingContext(
   const overrideMap = buildOverrideMap(prepared, overrideEntries)
   const states = computeSemanticHeadingNumbers(physical, mode, {
     startAt: resolveSemanticStartAt(settings, mode),
+    physicalStartAt: resolvePhysicalStartAt(settings),
     sourceRevision: 0,
     overrideMap: overrideMap.size > 0 ? overrideMap : undefined,
     counterPolicy,
@@ -530,6 +532,12 @@ export interface ExpectedObjectNumber {
   chapter: number | null
   section: number | null
   scopeKey: string
+  /** R12: explicit scope requested a heading level that is absent. */
+  missingScopeLevel?: boolean
+  /** R12: which fallback the missing-level policy applied. */
+  scopeFallback?: 'none' | 'nearest-ancestor' | 'document'
+  /** R12: requested prefix level (null = none / legacy). */
+  requestedPrefixLevel?: number | null
 }
 
 function requestedScopeForConfig(config: ObjectNumberingConfig): 'global' | 'chapter' | 'section' {
@@ -728,6 +736,9 @@ export function planObjectNumberPersistence(
   const captionResolutions = resolveObjectCaptions(lines, detected.objects, options.configs)
   const counters = new Map<string, number>()
   const identityOccurrences = new Map<string, number>()
+  // R12: canonical semantic state index for explicit scope resolution.
+  const semanticByIdentity = new Map<string, SemanticHeadingNumberState>()
+  for (const state of context.stateByLine.values()) semanticByIdentity.set(state.stableIdentity, state)
 
   const planned: PlannedObjectNumber[] = []
   const ownership: Record<string, ObjectNumberOwnershipRecord> = {}
@@ -758,7 +769,7 @@ export function planObjectNumberPersistence(
     const object = detected.objects[objectIndex]
     const config = options.configs[object.kind]
     const headingState = precedingHeadingState(context, object.startLine)
-    const expected = computeExpectedNumber(object, config, headingState, counters)
+    const expected = computeExpectedNumber(object, config, headingState, counters, semanticByIdentity)
     const captionScan = captionResolutions[objectIndex] ?? { caption: null, duplicates: [] }
     const caption = captionScan.caption
     const title = caption?.title ?? ''
@@ -1130,7 +1141,35 @@ function computeExpectedNumber(
   config: ObjectNumberingConfig,
   state: SemanticHeadingNumberState | null,
   counters: Map<string, number>,
+  semanticByIdentity: ReadonlyMap<string, SemanticHeadingNumberState>,
 ): ExpectedObjectNumber | null {
+  // R12: explicit scope (physical reset/prefix level). Legacy configs keep the
+  // historical preset + degradation behavior byte-for-byte.
+  const explicitScope = resolveObjectNumberScope(object.kind, config, state, semanticByIdentity)
+  if (explicitScope) {
+    const ordinal = (counters.get(explicitScope.scopeKey) ?? 0) + 1
+    counters.set(explicitScope.scopeKey, ordinal)
+    const minDigits = Math.max(1, config.minDigits ?? 1)
+    const effectiveOrdinal = (config.startAt ?? 1) + ordinal - 1
+    const rawNumber = formatObjectScopeNumber(explicitScope, effectiveOrdinal, minDigits)
+    const componentCount = explicitScope.prefixComponents.length
+    const scope: ExpectedObjectNumber['scope'] = componentCount === 0
+      ? 'global'
+      : componentCount === 1 ? 'chapter' : 'section'
+    return {
+      rawNumber,
+      numberText: rawNumber,
+      label: buildObjectNumberingLabel(config.prefix, rawNumber, ''),
+      scope,
+      chapter: explicitScope.prefixComponents[0] ?? null,
+      section: componentCount > 1 ? explicitScope.prefixComponents[componentCount - 1] : null,
+      scopeKey: explicitScope.scopeKey,
+      missingScopeLevel: explicitScope.missingRequestedLevel,
+      scopeFallback: explicitScope.fallback,
+      requestedPrefixLevel: explicitScope.requestedPrefixLevel,
+    }
+  }
+
   const requested = requestedScopeForConfig(config)
   const chapter = state?.chapterOrdinal ?? null
   const section = state?.sectionOrdinal ?? null

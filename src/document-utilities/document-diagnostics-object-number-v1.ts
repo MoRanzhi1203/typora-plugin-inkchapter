@@ -31,6 +31,8 @@ export const FORMULA_CAPTION_UNMANAGED_CODE = 'FORMULA_CAPTION_UNMANAGED'
 export const OBJECT_NUMBER_CHAPTER_MISMATCH_CODE = 'OBJECT_NUMBER_CHAPTER_MISMATCH'
 export const OBJECT_SOURCE_RENDER_CONFLICT_CODE = 'OBJECT_SOURCE_RENDER_CONFLICT'
 export const OBJECT_DUPLICATE_CAPTION_CODE = 'OBJECT_DUPLICATE_CAPTION'
+/** R12 — explicit scope requested a heading level that does not exist. */
+export const OBJECT_NUMBER_SCOPE_MISSING_LEVEL_CODE = 'OBJECT_NUMBER_SCOPE_MISSING_LEVEL'
 
 export const OBJECT_NUMBER_DIAGNOSTIC_CODES: readonly string[] = [
   FIGURE_CAPTION_UNMANAGED_CODE,
@@ -40,6 +42,7 @@ export const OBJECT_NUMBER_DIAGNOSTIC_CODES: readonly string[] = [
   OBJECT_NUMBER_CHAPTER_MISMATCH_CODE,
   OBJECT_SOURCE_RENDER_CONFLICT_CODE,
   OBJECT_DUPLICATE_CAPTION_CODE,
+  OBJECT_NUMBER_SCOPE_MISSING_LEVEL_CODE,
 ]
 
 const UNMANAGED_CODE: Readonly<Record<NumberedObjectKind, string>> = {
@@ -168,6 +171,28 @@ export function computeObjectNumberDiagnosticFacts(
           severity: 'warning',
         }))
       }
+    }
+
+    // R12: the configured scope requests a heading level that this object's
+    // ancestor chain does not provide, and the user asked for a diagnostic.
+    // Only emitted when a real caption patch exists, so the fix button is live.
+    const scopePolicy = facts.configs[object.kind]?.scope?.missingLevelPolicy
+    if (scopePolicy === 'diagnostic' && object.expected?.missingScopeLevel === true && canFix) {
+      out.push(makeDiagnostic(input, {
+        code: OBJECT_NUMBER_SCOPE_MISSING_LEVEL_CODE,
+        kind: object.kind,
+        identity: object.identity,
+        message: `${KIND_LABEL[object.kind]}编号作用域缺少标题层级`,
+        detail: `配置的前缀层级缺少对应标题，当前按“${object.expected.numberText}”回退显示。`,
+        location,
+        metadata: {
+          ...baseMetadata,
+          reason: 'OBJECT_NUMBER_SCOPE_MISSING_LEVEL',
+          scopeFallback: object.expected.scopeFallback ?? 'document',
+          requestedPrefixLevel: object.expected.requestedPrefixLevel ?? null,
+        },
+        severity: 'warning',
+      }))
     }
 
     if (object.duplicateCaptionLines.length > 0) {

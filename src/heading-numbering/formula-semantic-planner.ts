@@ -16,6 +16,7 @@ import { resolveCaptionScope } from './caption-scope-resolver'
 import { formatObjectNumber, presetToScopeStyle, type NumberingPreset, type ObjectNumberingPreset } from './numbering-preset-formatter'
 import { renderNumberTemplate, formatSequenceNumber, type ObjectNumberingConfig } from './object-numbering-engine'
 import { buildObjectSemanticScopeIdentity, objectScopeKey } from './object-semantic-scope'
+import { formatObjectScopeNumber, type ObjectScopeResolution } from './object-scope-config'
 import type { CaptionScope } from './semantic-heading-types'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
 
@@ -28,6 +29,12 @@ export interface FormulaSemanticContext {
   strictBoundaryIdentity?: string | null
   structuralChapterIdentity?: string | null
   structuralSectionIdentity?: string | null
+  /**
+   * R12: pre-resolved explicit numbering scope (physical reset/prefix level).
+   * Present only when the Formula config carries an explicit `scope`; the
+   * planner then uses it instead of the legacy preset degradation path.
+   */
+  resolvedScope?: ObjectScopeResolution | null
 }
 
 export interface FormulaSemanticPlanEntry {
@@ -68,6 +75,34 @@ export function planFormulaSemanticNumbers(
   const counters = new Map<string, number>()
 
   return formulas.map((f, fi) => {
+    // R12: explicit scope wins — physical reset/prefix level, no implicit
+    // SECTION→CHAPTER degradation caused by a missing H3.
+    const explicit = f.resolvedScope ?? null
+    if (explicit) {
+      const ordinal = (counters.get(explicit.scopeKey) ?? 0) + 1
+      counters.set(explicit.scopeKey, ordinal)
+      const effectiveOrdinal = (config.startAt ?? 1) + ordinal - 1
+      const rawNumber = formatObjectScopeNumber(explicit, effectiveOrdinal, config.minDigits ?? 1)
+      const componentCount = explicit.prefixComponents.length
+      const effectiveScope: CaptionScope = componentCount === 0
+        ? 'global'
+        : componentCount === 1 ? 'chapter' : 'section'
+      const chapterOrdinal = explicit.prefixComponents[0] ?? null
+      const sectionOrdinal = componentCount > 1 ? explicit.prefixComponents[componentCount - 1] : null
+      return {
+        chapterOrdinal,
+        sectionOrdinal,
+        requestedScope: effectiveScope,
+        effectiveScope,
+        ordinal,
+        rawNumber,
+        renderedNumber: `(${rawNumber})`,
+        strictBoundaryIdentity: f.strictBoundaryIdentity ?? null,
+        structuralChapterIdentity: f.structuralChapterIdentity ?? null,
+        structuralSectionIdentity: f.structuralSectionIdentity ?? null,
+      }
+    }
+
     const requestedScope = requestedScopeForFormulaPreset(preset, config.template)
     const scope = resolveCaptionScope(requestedScope, f.chapterOrdinal, f.sectionOrdinal)
     const mode = f.mode ?? 'loose'

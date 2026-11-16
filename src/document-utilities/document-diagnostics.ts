@@ -455,6 +455,7 @@ export function resolveDocumentDiagnosticSeverity(
     case 'OBJECT_SOURCE_RENDER_CONFLICT':
       return 'error'
     case 'OBJECT_DUPLICATE_CAPTION':
+    case 'OBJECT_NUMBER_SCOPE_MISSING_LEVEL':
     case 'FIGURE_CAPTION_UNMANAGED':
     case 'TABLE_CAPTION_UNMANAGED':
     case 'CODE_CAPTION_UNMANAGED':

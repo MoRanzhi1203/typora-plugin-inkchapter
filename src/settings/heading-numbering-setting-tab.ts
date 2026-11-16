@@ -64,6 +64,11 @@ import {
   type ObjectNumberingPreset,
 } from '../heading-numbering/object-numbering-presets'
 import {
+  objectScopeConfigOf,
+  scopeConfigFromPreset,
+  type ObjectNumberingScopeConfig,
+} from '../heading-numbering/object-scope-config'
+import {
   moveSegmentToResolvedIndex,
   calculateTargetIndexAfterRemoval,
   normalizeFormatAfterDrag,
@@ -6229,8 +6234,52 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
 
     const presetSelect = buildSelect<ObjectNumberingPreset>(getPublicPresetOptions(), (get().preset ?? 'global') as ObjectNumberingPreset, 'inkchapter-caption-setting-select')
-    presetSelect.addEventListener('change', () => { apply({ preset: presetSelect.value }); refreshPreview() })
+    // R12: choosing a preset returns to the legacy preset semantics (explicit
+    // scope cleared) so the two configuration paths never fight.
+    presetSelect.addEventListener('change', () => {
+      apply({ preset: presetSelect.value, scope: undefined })
+      refreshPreview()
+    })
     addField('编号类型 ', presetSelect)
+
+    // ── R12 explicit scope: reset level / prefix level / missing-level policy ──
+    const levelOptions = ['1', '2', '3', '4', '5', '6'].map(level => ({ value: level, label: `H${level}` }))
+    const currentScope = (): ObjectNumberingScopeConfig =>
+      objectScopeConfigOf({ scope: get().scope })
+      ?? scopeConfigFromPreset((get().preset ?? 'global') as ObjectNumberingPreset)
+    const commitScope = (patch: Partial<ObjectNumberingScopeConfig>): void => {
+      apply({ scope: { ...currentScope(), ...patch } })
+      refreshPreview()
+    }
+
+    const resetOptions = [{ value: 'document', label: '全文连续' }, ...levelOptions]
+    const resetValue = String(currentScope().resetLevel)
+    const resetSelect = buildSelect<string>(resetOptions, resetValue, 'inkchapter-caption-setting-select')
+    resetSelect.addEventListener('change', () => {
+      commitScope({ resetLevel: resetSelect.value === 'document' ? 'document' : Number(resetSelect.value) as 1 | 2 | 3 | 4 | 5 | 6 })
+    })
+    addField('重置层级 ', resetSelect)
+
+    const prefixOptions = [{ value: 'none', label: '无前缀' }, ...levelOptions]
+    const prefixSelect = buildSelect<string>(prefixOptions, String(currentScope().prefixLevel), 'inkchapter-caption-setting-select')
+    prefixSelect.addEventListener('change', () => {
+      commitScope({ prefixLevel: prefixSelect.value === 'none' ? 'none' : Number(prefixSelect.value) as 1 | 2 | 3 | 4 | 5 | 6 })
+    })
+    addField('前缀层级 ', prefixSelect)
+
+    const missingSelect = buildSelect<string>([
+      { value: 'nearest-ancestor', label: '最近上级标题' },
+      { value: 'document', label: '全文连续编号' },
+      { value: 'diagnostic', label: '报告诊断' },
+    ], currentScope().missingLevelPolicy, 'inkchapter-caption-setting-select')
+    missingSelect.addEventListener('change', () => {
+      commitScope({
+        missingLevelPolicy: missingSelect.value === 'document' || missingSelect.value === 'diagnostic'
+          ? missingSelect.value
+          : 'nearest-ancestor',
+      })
+    })
+    addField('缺少层级 ', missingSelect)
 
     // 序号样式 (Arabic only in ordinary UI) is intentionally hidden.
 
@@ -6289,14 +6338,28 @@ export class HeadingNumberingSettingTab extends SettingTab {
       if (isLegacyCustom) {
         templateInput.value = cfg.template ?? '{n}'
       }
-      const preview = buildPresetPreview(
-        cfg.preset ?? 'global',
-        type,
-        { chapter: 2, section: 1, ordinal: 3, name: sampleName },
-        cfg.startAt ?? 1,
-        cfg.minDigits ?? 1,
-        cfg.template,
-      )
+      const explicitScope = objectScopeConfigOf(cfg)
+      let preview: string
+      if (explicitScope) {
+        // Preview the EXPLICIT reset/prefix scope (sample path 2.1.1…, ordinal 3).
+        const level = explicitScope.prefixLevel === 'none' ? 0 : explicitScope.prefixLevel
+        const prefix = [2, 1, 1, 1, 1, 1].slice(0, level).join('.')
+        const sep = explicitScope.style === 'dash' ? '-' : '.'
+        const raw = prefix === '' ? '3' : `${prefix}${sep}3`
+        const name = sampleName.trim()
+        preview = type === 'formula'
+          ? `(${raw})`
+          : `${cfg.prefix ?? ''} ${raw}${name === '' ? '' : ` ${name}`}`.trim()
+      } else {
+        preview = buildPresetPreview(
+          cfg.preset ?? 'global',
+          type,
+          { chapter: 2, section: 1, ordinal: 3, name: sampleName },
+          cfg.startAt ?? 1,
+          cfg.minDigits ?? 1,
+          cfg.template,
+        )
+      }
       previewEl.textContent = `预览：${preview}`
       errorEl.textContent = ''
     }

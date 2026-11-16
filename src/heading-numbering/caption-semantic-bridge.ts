@@ -17,6 +17,10 @@ import { resolveCaptionScope } from './caption-scope-resolver'
 import { formatObjectNumber, presetToScopeStyle, type NumberingPreset, type ObjectNumberingPreset } from './numbering-preset-formatter'
 import { buildObjectNumberingLabel, renderNumberTemplate, type ObjectNumberingConfig } from './object-numbering-engine'
 import { buildObjectSemanticScopeIdentity, objectScopeKey, type ObjectSemanticScopeIdentity } from './object-semantic-scope'
+import {
+  formatObjectScopeNumber,
+  resolveObjectNumberScope,
+} from './object-scope-config'
 import type { CaptionScope } from './semantic-heading-types'
 import { chapterScopeIdentityOf, sectionScopeIdentityOf } from './semantic-heading-types'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
@@ -118,6 +122,43 @@ export function computeProductionDesiredCaptionStates(
       ? obj.structuralSectionIdentity
       : (precedingHeading ? sectionScopeIdentityOf(precedingHeading) : null)
     const structureMode = obj.structureMode ?? snapshot.structureMode
+
+    // R12: an EXPLICIT scope uses physical heading levels and never degrades
+    // silently. When absent, the legacy preset path stays byte-identical.
+    const explicitScope = resolveObjectNumberScope(obj.objectKind, config, precedingHeading ?? null, semanticByIdentity)
+    if (explicitScope) {
+      const ordinal = (counters.get(explicitScope.scopeKey) ?? 0) + 1
+      counters.set(explicitScope.scopeKey, ordinal)
+      const effectiveOrdinal = (config.startAt ?? 1) + ordinal - 1
+      const rawNumber = formatObjectScopeNumber(explicitScope, effectiveOrdinal, config.minDigits ?? 1)
+      const renderedLabel = buildObjectNumberingLabel(config.prefix, rawNumber, obj.name ?? '')
+      const chapterOrdinal = explicitScope.prefixComponents[0] ?? null
+      const sectionOrdinal = explicitScope.prefixComponents.length > 1
+        ? explicitScope.prefixComponents[explicitScope.prefixComponents.length - 1]
+        : null
+      const effectiveScope: CaptionScope = explicitScope.prefixComponents.length === 0
+        ? 'global'
+        : explicitScope.prefixComponents.length === 1 ? 'chapter' : 'section'
+      results.push({
+        documentKey: snapshot.documentKey,
+        revision: snapshot.revision,
+        stableIdentity: obj.stableIdentity,
+        objectKind: obj.objectKind,
+        requestedScope: effectiveScope,
+        effectiveScope,
+        chapterOrdinal,
+        sectionOrdinal,
+        scopeKey: explicitScope.scopeKey,
+        ordinal,
+        rawNumber,
+        renderedLabel,
+        resolutionStatus: explicitScope.missingRequestedLevel ? 'degraded' : 'exact',
+        strictBoundaryIdentity,
+        structuralChapterIdentity,
+        structuralSectionIdentity,
+      })
+      continue
+    }
 
     const requestedScope = requestedScopeForPreset(preset, config.template)
     const scope = resolveCaptionScope(requestedScope, chapterOrdinal, sectionOrdinal)

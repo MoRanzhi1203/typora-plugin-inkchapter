@@ -141,6 +141,7 @@ export const DOCUMENT_DIAGNOSTIC_RULE_PRIORITY: Readonly<Record<string, number>>
   OBJECT_NUMBER_CHAPTER_MISMATCH: 445,
   OBJECT_SOURCE_RENDER_CONFLICT: 446,
   OBJECT_DUPLICATE_CAPTION: 447,
+  OBJECT_NUMBER_SCOPE_MISSING_LEVEL: 448,
   FIGURE_CAPTION_UNMANAGED: 450,
   TABLE_CAPTION_UNMANAGED: 451,
   CODE_CAPTION_UNMANAGED: 452,
@@ -346,6 +347,7 @@ export const DOCUMENT_DIAGNOSTIC_COPY_TABLE: Readonly<Record<string, DocumentDia
   // ── R10 — source caption lifecycle ───────────────────────────────────────
   OBJECT_NUMBER_CHAPTER_MISMATCH: { title: '对象编号与所在章节不一致', description: '图/表/代码/公式题注中的章节号与标题编号计算结果不一致。', suggestion: '按当前章节重新同步该题注编号。' },
   OBJECT_SOURCE_RENDER_CONFLICT: { title: '源码题注与渲染编号冲突', description: '源码题注编号与渲染层按当前方案计算的编号不同。', suggestion: '接管该题注并按当前方案同步编号。' },
+  OBJECT_NUMBER_SCOPE_MISSING_LEVEL: { title: '对象编号作用域缺少标题层级', description: '对象编号配置的前缀层级在当前标题路径中不存在，已按缺失层级策略回退。', suggestion: '补齐对应层级标题，或改用最近上级/全文连续的前缀层级。' },
   OBJECT_DUPLICATE_CAPTION: { title: '同一对象存在重复题注', description: '同一个图/表/代码/公式对象绑定了多条题注段落。', suggestion: '删除多余的题注，只保留一条。' },
   FIGURE_CAPTION_UNMANAGED: { title: '图片题注尚未接管', description: '源码中已有图题编号，但墨章尚未接管，章节变化时不会同步。', suggestion: '接管该图题并纳入编号管理。' },
   TABLE_CAPTION_UNMANAGED: { title: '表格题注尚未接管', description: '源码中已有表题编号，但墨章尚未接管，章节变化时不会同步。', suggestion: '接管该表题并纳入编号管理。' },

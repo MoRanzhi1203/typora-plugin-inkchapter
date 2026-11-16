@@ -369,6 +369,7 @@ const INTERNAL_SEVERITY_BY_RULE_ID: Readonly<Record<string, 'error' | 'warning' 
   OBJECT_NUMBER_CHAPTER_MISMATCH: 'error',
   OBJECT_SOURCE_RENDER_CONFLICT: 'error',
   OBJECT_DUPLICATE_CAPTION: 'warning',
+  OBJECT_NUMBER_SCOPE_MISSING_LEVEL: 'warning',
   FIGURE_CAPTION_UNMANAGED: 'warning',
   TABLE_CAPTION_UNMANAGED: 'warning',
   CODE_CAPTION_UNMANAGED: 'warning',
@@ -743,6 +744,9 @@ export const DOCUMENT_DIAGNOSTIC_RULE_REGISTRY: Record<string, DocumentDiagnosti
     area: 'caption-numbering', scope: 'object',
   }),
   OBJECT_DUPLICATE_CAPTION: rule('OBJECT_DUPLICATE_CAPTION', 'figure', 'source-range', {
+    area: 'caption-numbering', scope: 'object',
+  }),
+  OBJECT_NUMBER_SCOPE_MISSING_LEVEL: rule('OBJECT_NUMBER_SCOPE_MISSING_LEVEL', 'figure', 'source-range', {
     area: 'caption-numbering', scope: 'object',
   }),
   FIGURE_CAPTION_UNMANAGED: rule('FIGURE_CAPTION_UNMANAGED', 'figure', 'source-range', {

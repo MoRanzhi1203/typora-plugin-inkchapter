@@ -2342,7 +2342,13 @@ export default class extends Plugin<InkChapterSettings> {
               { schemaVersion?: number; types?: Record<string, unknown> } | null | undefined
             const rawFormula = this.settings.get('captionFormula' as keyof InkChapterSettings)
             const force = (kind: 'figure' | 'table' | 'code') =>
-              ({ ...migrateObjectNumberingConfig(kind, rawCaption?.types?.[kind]), enabled: true, preset: 'chapter-dash' })
+              ({
+                ...migrateObjectNumberingConfig(kind, rawCaption?.types?.[kind]),
+                enabled: true,
+                preset: 'chapter-dash',
+                // R12 — exercise the EXPLICIT reset/prefix scope path end to end.
+                scope: { resetLevel: 2 as const, prefixLevel: 2 as const, style: 'dash' as const, missingLevelPolicy: 'nearest-ancestor' as const },
+              })
             const nextCaption = {
               schemaVersion: rawCaption?.schemaVersion ?? 1,
               types: {
@@ -2352,7 +2358,13 @@ export default class extends Plugin<InkChapterSettings> {
                 code: force('code'),
               },
             }
-            const nextFormula = { ...migrateObjectNumberingConfig('formula', rawFormula), enabled: true, preset: 'chapter-dash' }
+            const nextFormula = {
+              ...migrateObjectNumberingConfig('formula', rawFormula),
+              enabled: true,
+              preset: 'chapter-dash',
+              // R12 — same explicit scope as the other three object kinds.
+              scope: { resetLevel: 2 as const, prefixLevel: 2 as const, style: 'dash' as const, missingLevelPolicy: 'nearest-ancestor' as const },
+            }
             this.settings.set('caption' as keyof InkChapterSettings, nextCaption as never)
             this.settings.set('captionFormula' as keyof InkChapterSettings, nextFormula as never)
             this.applyObjectCaptionRenderPolicy()
@@ -2498,6 +2510,13 @@ export default class extends Plugin<InkChapterSettings> {
             // written by an acceptance run.
             const base = previousOverride ?? persisted
             const next = { ...migrateObjectNumberingConfig('formula', base), ...patch }
+            // R12 — same rule as the settings UI: choosing a preset returns to
+            // the legacy preset semantics and clears an explicit scope, unless
+            // the patch itself carries an explicit scope.
+            if (Object.prototype.hasOwnProperty.call(patch, 'preset')
+              && !Object.prototype.hasOwnProperty.call(patch, 'scope')) {
+              next.scope = undefined
+            }
             this.formulaAcceptanceOverride = next
             captionService.applyFormulaSettings(next)
             return () => {

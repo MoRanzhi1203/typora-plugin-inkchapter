@@ -92,6 +92,17 @@ export interface SemanticHeadingNumberState {
   structuralSectionIdentity: string | null
   ordinalByDepth: readonly (number | null)[]
   displayCountedPath: readonly number[]
+  /**
+   * R12: canonical PHYSICAL H1–H6 number path of this heading's ancestor chain.
+   * Index 0 = H1, index 5 = H6. A level that did not consume a number (strict
+   * document title, unnumbered+skip) keeps a `null` slot. This is the ONLY
+   * source for an object numbering prefix that is keyed by a physical heading
+   * level; it never parses rendered heading text or DOM attributes.
+   *
+   * Optional because legacy/manual test fixtures may not carry it; the
+   * canonical engine always produces it.
+   */
+  physicalPathByLevel?: readonly (number | null)[]
   logicalOrdinal: number | null
   chapterOrdinal: number | null
   sectionOrdinal: number | null
@@ -137,4 +148,54 @@ export function chapterScopeIdentityOf(s: SemanticHeadingNumberState): string | 
 export function sectionScopeIdentityOf(s: SemanticHeadingNumberState): string | null {
   if (s.semanticRole === 'section') return s.stableIdentity
   return s.structuralSectionIdentity
+}
+
+/**
+ * R12: walk the canonical structural ancestor chain (self first), using the
+ * resolved `structuralParentIdentity` links. Pure; never reads DOM/visible text.
+ */
+export function headingAncestorChain(
+  state: SemanticHeadingNumberState,
+  byIdentity: ReadonlyMap<string, SemanticHeadingNumberState>,
+): SemanticHeadingNumberState[] {
+  const chain: SemanticHeadingNumberState[] = []
+  const seen = new Set<string>()
+  let current: SemanticHeadingNumberState | null = state
+  while (current && !seen.has(current.stableIdentity)) {
+    seen.add(current.stableIdentity)
+    chain.push(current)
+    current = current.structuralParentIdentity
+      ? byIdentity.get(current.structuralParentIdentity) ?? null
+      : null
+  }
+  return chain
+}
+
+/** R12: the self-or-ancestor heading at an EXACT physical level (null if absent). */
+export function ancestorAtPhysicalLevel(
+  chain: readonly SemanticHeadingNumberState[],
+  level: HeadingLevel,
+): SemanticHeadingNumberState | null {
+  for (const node of chain) {
+    if (node.physicalLevel === level) return node
+  }
+  return null
+}
+
+/**
+ * R12: the nearest self-or-ancestor heading STRICTLY shallower than `level`
+ * that actually consumed a number. Used by the `nearest-ancestor` missing-level
+ * policy — never fabricates a heading that does not exist.
+ */
+export function nearestNumberedAncestorBelowLevel(
+  chain: readonly SemanticHeadingNumberState[],
+  level: HeadingLevel,
+): SemanticHeadingNumberState | null {
+  let best: SemanticHeadingNumberState | null = null
+  for (const node of chain) {
+    if (node.physicalLevel >= level) continue
+    if (node.logicalOrdinal == null) continue
+    if (best == null || node.physicalLevel > best.physicalLevel) best = node
+  }
+  return best
 }

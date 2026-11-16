@@ -8,6 +8,7 @@
 
 import { chapterFromHeadingNumber, sectionFromHeadingNumber } from './heading-context-resolver'
 import type { ObjectNumberingPreset } from './numbering-preset-formatter'
+import type { ObjectNumberingScopeConfig } from './object-scope-config'
 
 export type ObjectNumberingType = 'table' | 'figure' | 'code' | 'formula'
 
@@ -46,6 +47,11 @@ export interface ObjectNumberingConfig {
   formulaMode?: 'typora-native' | 'inkchapter'
   /** Phase 5 semantic preset (additive; legacy numberingMode/template retained). */
   preset?: ObjectNumberingPreset
+  /**
+   * R12 explicit numbering scope (reset level + prefix level + missing-level
+   * policy). ABSENT = legacy preset path, so saved documents keep their result.
+   */
+  scope?: ObjectNumberingScopeConfig
 }
 
 export interface HeadingContext {

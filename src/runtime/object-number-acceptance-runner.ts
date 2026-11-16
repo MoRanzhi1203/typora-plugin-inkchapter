@@ -301,8 +301,11 @@ async function runAcceptance(deps: ObjectNumberAcceptanceDeps, token: string): P
       id: 'chapter-linkage',
       label: '章节变化后重新编号',
       assertions: [
-        { id: 'chapter.applied', ok: resync.status === 'APPLIED', detail: resync.status },
+        // R11 structure-change auto-repair may already have captionned the new
+        // object before the explicit resync; either path is a real APPLY.
+        { id: 'chapter.applied', ok: resync.status === 'APPLIED' || resync.status === 'UNCHANGED', detail: resync.status },
         { id: 'chapter.renumbered', ok: changedCaptions.length > 0, detail: changedCaptions.slice(0, 3).join(' | ') || 'none' },
+        { id: 'chapter.new-object-captioned', ok: captionsAfter.length > captionsBefore.length, detail: `${captionsBefore.length}→${captionsAfter.length}` },
         { id: 'chapter.count-stable', ok: captionsAfter.length >= captionsBefore.length, detail: `${captionsBefore.length}→${captionsAfter.length}` },
         { id: 'chapter.no-double-caption', ok: countDuplicateCaptions(afterChapter, captionsAfter) === 0, detail: '不得出现重复题注' },
       ],

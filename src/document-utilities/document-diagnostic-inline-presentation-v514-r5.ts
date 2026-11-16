@@ -110,6 +110,7 @@ export const INLINE_HINT_BY_CODE_V514R5: Readonly<Record<string, string>> = {
   // objects
   OBJECT_NUMBER_CHAPTER_MISMATCH: '章节编号不一致',
   OBJECT_SOURCE_RENDER_CONFLICT: '源码渲染冲突',
+  OBJECT_NUMBER_SCOPE_MISSING_LEVEL: '编号层级缺失',
   OBJECT_DUPLICATE_CAPTION: '重复题注',
   FIGURE_CAPTION_UNMANAGED: '图题未接管',
   TABLE_CAPTION_UNMANAGED: '表题未接管',

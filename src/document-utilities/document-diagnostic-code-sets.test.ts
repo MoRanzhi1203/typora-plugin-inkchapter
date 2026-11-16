@@ -10,11 +10,11 @@ const audit = computeDocumentDiagnosticCodeSetAudit()
 
 describe('B1 §B1-01 — diagnostic code-set authority', () => {
   it('keeps families, resolved keys, expanded codes and producer codes separate', () => {
-    expect(audit.counts.registeredFamilyCount).toBe(130)
-    expect(audit.counts.registryResolvedKeyCount).toBe(136)
-    expect(audit.counts.expandedRuntimeCodeCount).toBe(141)
-    expect(audit.counts.producerSupportedCodeCount).toBe(137)
-    expect(audit.counts.runtimeReachableCodeCount).toBe(132)
+    expect(audit.counts.registeredFamilyCount).toBe(131)
+    expect(audit.counts.registryResolvedKeyCount).toBe(137)
+    expect(audit.counts.expandedRuntimeCodeCount).toBe(142)
+    expect(audit.counts.producerSupportedCodeCount).toBe(138)
+    expect(audit.counts.runtimeReachableCodeCount).toBe(133)
   })
 
   it('expands LATENT to six concrete codes but keeps one registry sentinel', () => {
@@ -28,8 +28,8 @@ describe('B1 §B1-01 — diagnostic code-set authority', () => {
   })
 
   it('producer 130 and registry 129 differ in BOTH size and set', () => {
-    expect(audit.counts.producerSupportedCodeCount).toBe(137)
-    expect(audit.counts.registryResolvedKeyCount).toBe(136)
+    expect(audit.counts.producerSupportedCodeCount).toBe(138)
+    expect(audit.counts.registryResolvedKeyCount).toBe(137)
     expect(audit.differences.producerNotRegistryResolved).toEqual([...LATENT_ATX_LEVEL_CODES].sort())
     expect(audit.differences.registryResolvedNotProducer).toEqual(
       [
@@ -82,23 +82,23 @@ describe('B1 §B1-01 — diagnostic code-set authority', () => {
     expect(audit.runtimeReachableCodes).not.toContain('FORMULA_SOURCE_LENGTH_EXCEEDING')
     expect(audit.runtimeReachableCodes).not.toContain('FORMULA_SOURCE_LINE_TOO_LONG')
     expect(audit.invariants.reachablePlusUnreachableEqualsProducer).toBe(true)
-    expect(audit.counts.runtimeReachableCodeCount).toBe(132)
+    expect(audit.counts.runtimeReachableCodeCount).toBe(133)
   })
 
   it('severity counts are conserved in baseline and strict modes', () => {
-    expect(audit.counts.expandedBySeverity).toEqual({ error: 29, warning: 83, hint: 29 })
-    expect(audit.counts.expandedBySeverityStrict).toEqual({ error: 31, warning: 87, hint: 23 })
-    expect(audit.counts.producerBySeverity).toEqual({ error: 29, warning: 79, hint: 29 })
-    expect(audit.counts.producerBySeverityStrict).toEqual({ error: 31, warning: 83, hint: 23 })
-    expect(audit.counts.reachableBySeverity).toEqual({ error: 29, warning: 76, hint: 27 })
-    expect(audit.counts.reachableBySeverityStrict).toEqual({ error: 31, warning: 80, hint: 21 })
+    expect(audit.counts.expandedBySeverity).toEqual({ error: 29, warning: 84, hint: 29 })
+    expect(audit.counts.expandedBySeverityStrict).toEqual({ error: 31, warning: 88, hint: 23 })
+    expect(audit.counts.producerBySeverity).toEqual({ error: 29, warning: 80, hint: 29 })
+    expect(audit.counts.producerBySeverityStrict).toEqual({ error: 31, warning: 84, hint: 23 })
+    expect(audit.counts.reachableBySeverity).toEqual({ error: 29, warning: 77, hint: 27 })
+    expect(audit.counts.reachableBySeverityStrict).toEqual({ error: 31, warning: 81, hint: 21 })
     for (const [counts, total] of [
-      [audit.counts.expandedBySeverity, 141],
-      [audit.counts.expandedBySeverityStrict, 141],
-      [audit.counts.producerBySeverity, 137],
-      [audit.counts.producerBySeverityStrict, 137],
-      [audit.counts.reachableBySeverity, 132],
-      [audit.counts.reachableBySeverityStrict, 132],
+      [audit.counts.expandedBySeverity, 142],
+      [audit.counts.expandedBySeverityStrict, 142],
+      [audit.counts.producerBySeverity, 138],
+      [audit.counts.producerBySeverityStrict, 138],
+      [audit.counts.reachableBySeverity, 133],
+      [audit.counts.reachableBySeverityStrict, 133],
     ] as const) {
       expect(counts.error + counts.warning + counts.hint).toBe(total)
     }

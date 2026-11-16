@@ -30,6 +30,7 @@ import {
   OBJECT_NUMBER_CHAPTER_MISMATCH_CODE,
   OBJECT_SOURCE_RENDER_CONFLICT_CODE,
   OBJECT_DUPLICATE_CAPTION_CODE,
+  OBJECT_NUMBER_SCOPE_MISSING_LEVEL_CODE,
 } from './document-diagnostics-object-number-v1'
 
 export interface ObjectNumberFixCapability {
@@ -45,6 +46,8 @@ export const OBJECT_NUMBER_FIX_CAPABILITIES: Readonly<Record<string, ObjectNumbe
   [CODE_CAPTION_UNMANAGED_CODE]: { capability: 'EXPLICIT_ONLY', label: '接管代码题注' },
   [FORMULA_CAPTION_UNMANAGED_CODE]: { capability: 'EXPLICIT_ONLY', label: '接管公式编号' },
   [OBJECT_DUPLICATE_CAPTION_CODE]: { capability: 'AUTO_SAFE', label: '删除重复题注' },
+  // R12 — the fallback number is still a real, computable caption target.
+  [OBJECT_NUMBER_SCOPE_MISSING_LEVEL_CODE]: { capability: 'EXPLICIT_ONLY', label: '同步对象编号' },
 }
 
 function buildCaptionLineFix(

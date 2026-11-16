@@ -28,6 +28,18 @@ function configs(): ObjectNumberingConfigs {
   }
 }
 
+/** R12 — the same benchmark through the EXPLICIT reset/prefix scope path. */
+function scopedConfigs(): ObjectNumberingConfigs {
+  const base = defaultObjectNumberingSettings().types
+  const scope = { resetLevel: 2 as const, prefixLevel: 2 as const, style: 'dash' as const, missingLevelPolicy: 'nearest-ancestor' as const }
+  return {
+    figure: { ...base.figure, preset: 'chapter-dash', scope },
+    table: { ...base.table, preset: 'chapter-dash', scope },
+    code: { ...base.code, preset: 'chapter-dash', scope },
+    formula: { ...base.formula, enabled: true, preset: 'chapter-dash', scope },
+  }
+}
+
 /** Build a mixed document with `count` numbered objects. */
 function buildDocument(count: number): string {
   const lines: string[] = ['# 文档']
@@ -111,6 +123,42 @@ describe('R10 object numbering performance', () => {
       expect(firstMs).toBeLessThan(3000)
       expect(secondMs).toBeLessThan(2000)
       expect(insertMs).toBeLessThan(3000)
+    })
+  }
+})
+
+describe('R12 explicit object scope performance', () => {
+  for (const count of [50, 200, 1000, 3000]) {
+    it(`${count} mixed objects resolve the explicit scope on first and zero-patch second pass`, () => {
+      const markdown = buildDocument(count)
+      let plan: ReturnType<typeof planObjectNumberPersistence> | null = null
+      const firstMs = timed(() => {
+        plan = planObjectNumberPersistence(markdown, {
+          mode: 'source',
+          policy: 'adopt',
+          configs: scopedConfigs(),
+          headingSettings: headingSettings(),
+        })
+      })
+      expect(plan!.stats.scanned).toBe(count)
+      expect(plan!.changed).toBe(true)
+
+      let second: ReturnType<typeof planObjectNumberPersistence> | null = null
+      const secondMs = timed(() => {
+        second = planObjectNumberPersistence(plan!.nextMarkdown, {
+          mode: 'source',
+          policy: 'adopt',
+          configs: scopedConfigs(),
+          headingSettings: headingSettings(),
+          ownership: plan!.ownership,
+        })
+      })
+      expect(second!.changed).toBe(false)
+      expect(second!.edits).toHaveLength(0)
+
+      console.info(`[R12-SCOPE-PERF] objects=${count} first=${firstMs.toFixed(1)}ms second=${secondMs.toFixed(1)}ms`)
+      expect(firstMs).toBeLessThan(count >= 3000 ? 12000 : 4000)
+      expect(secondMs).toBeLessThan(count >= 3000 ? 8000 : 3000)
     })
   }
 })

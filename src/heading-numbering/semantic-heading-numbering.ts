@@ -32,6 +32,12 @@ import type {
 export interface SemanticCounterOptions {
   /** Start value per effective depth. Index 0 = depth 1 (chapter), 1 = section, ... */
   startAt: readonly number[]
+  /**
+   * R12: start value per PHYSICAL heading level (index 0 = H1). Drives the
+   * canonical physical path used by object numbering scopes. When omitted all
+   * physical levels start at 1.
+   */
+  physicalStartAt?: readonly number[]
   sourceRevision: number
   overrideMap?: HeadingOverrideMap
   counterPolicy?: UnnumberedCounterPolicy
@@ -62,7 +68,7 @@ export function computeSemanticHeadingNumbers(
   mode: HeadingStructureMode,
   options: SemanticCounterOptions,
 ): SemanticHeadingNumberState[] {
-  const { startAt, sourceRevision, overrideMap, counterPolicy = 'skip' } = options
+  const { startAt, sourceRevision, overrideMap, counterPolicy = 'skip', physicalStartAt } = options
   const roles = resolveSemanticRoles(headings, mode)
 
   // nextOrdinal[i] = next ordinal to assign at effective depth i+1.
@@ -73,6 +79,19 @@ export function computeSemanticHeadingNumbers(
   // currentCounted[i] = current counted ordinal at effective depth i+1 (null = none).
   const currentCounted: Array<number | null> = [null, null, null, null, null, null]
 
+  // R12: PHYSICAL H1–H6 counters, independent from the semantic depth counters.
+  // They never drive heading display; they only expose "what physical heading
+  // path is this heading under" to object numbering scopes.
+  const nextPhysical: number[] = []
+  const currentPhysical: Array<number | null> = [null, null, null, null, null, null]
+  const resetPhysical = (from: number): void => {
+    for (let i = from; i < 6; i++) {
+      nextPhysical[i] = clamp(physicalStartAt?.[i] ?? 1, 1, 999)
+      currentPhysical[i] = null
+    }
+  }
+  resetPhysical(0)
+
   return roles.map(role => {
     const depth = role.effectiveDepth
     const isTitle = role.semanticRole === 'document-title' || depth < 1
@@ -82,6 +101,8 @@ export function computeSemanticHeadingNumbers(
         nextOrdinal[i] = clamp(startAt[i] ?? 1, 1, 999)
         currentCounted[i] = null
       }
+      // A strict H1 document title is a numbering boundary, not a path level.
+      resetPhysical(0)
       return {
         stableIdentity: role.stableIdentity,
         physicalLevel: role.physicalLevel,
@@ -94,6 +115,7 @@ export function computeSemanticHeadingNumbers(
         strictBoundaryOrdinal: role.strictBoundaryOrdinal,
         ordinalByDepth: [],
         displayCountedPath: [],
+        physicalPathByLevel: [...currentPhysical],
         logicalOrdinal: null,
         chapterOrdinal: null,
         sectionOrdinal: null,
@@ -126,6 +148,17 @@ export function computeSemanticHeadingNumbers(
       currentCounted[i] = null
     }
 
+    // R12: consume the PHYSICAL counter of this heading's own physical level.
+    // Unnumbered+skip keeps a null slot (the level is structural, not counted).
+    const physicalIndex = role.physicalLevel - 1
+    if (isSkip) {
+      currentPhysical[physicalIndex] = null
+    } else {
+      currentPhysical[physicalIndex] = nextPhysical[physicalIndex]
+      nextPhysical[physicalIndex]++
+    }
+    resetPhysical(role.physicalLevel)
+
     const ordinalByDepth = currentCounted.slice(0, depth)
     const displayCountedPath = ordinalByDepth.filter((v): v is number => v !== null)
 
@@ -141,6 +174,7 @@ export function computeSemanticHeadingNumbers(
       strictBoundaryOrdinal: role.strictBoundaryOrdinal,
       ordinalByDepth,
       displayCountedPath,
+      physicalPathByLevel: [...currentPhysical],
       logicalOrdinal: ownOrdinal,
       chapterOrdinal: ordinalByDepth[0] ?? null,
       sectionOrdinal: ordinalByDepth[1] ?? null,
@@ -173,6 +207,19 @@ export function resolveSemanticStartAt(
   for (let depth = 1; depth <= 6; depth++) {
     const physicalLevel = (mode === 'strict' ? Math.min(depth + 1, 6) : depth) as HeadingLevel
     startAt[depth - 1] = settings.levels[physicalLevel]?.startAt ?? 1
+  }
+  return startAt
+}
+
+/**
+ * R12: derive PHYSICAL H1–H6 start values from heading-numbering settings.
+ * Index 0 = H1. Strict mode still reads the physical H1 slot, but the H1
+ * document title never consumes it.
+ */
+export function resolvePhysicalStartAt(settings: HeadingNumberingSettings): number[] {
+  const startAt: number[] = []
+  for (let level = 1; level <= 6; level++) {
+    startAt[level - 1] = settings.levels[level as HeadingLevel]?.startAt ?? 1
   }
   return startAt
 }

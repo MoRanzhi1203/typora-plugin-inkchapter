@@ -17,6 +17,7 @@
  */
 import * as fs from 'fs'
 import * as path from 'path'
+import type { ObjectNumberingScopeConfig } from '../heading-numbering/object-scope-config'
 
 export const FORMULA_NUMBERING_ACCEPTANCE_ENV = 'INKCHAPTER_FORMULA_NUMBER_ACCEPTANCE'
 
@@ -78,6 +79,8 @@ export interface FormulaNumberingConfigPatch {
   enabled?: boolean
   formulaMode?: 'typora-native' | 'inkchapter'
   preset?: 'global' | 'chapter-dot' | 'section-dot' | 'chapter-dash' | 'section-dash' | 'legacy-custom'
+  /** R12 — clear (undefined) or replace the explicit object scope. */
+  scope?: ObjectNumberingScopeConfig | undefined
 }
 
 export interface FormulaNumberingAcceptanceDeps {
@@ -464,7 +467,11 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
 
     // ── 2. H1/H2/H3 scoped numbering (section-dash) ─────────────────────
     {
-      const expected = lastExpected.map(e => e.rawNumber)
+      // R12 — make the section preset EXPLICIT instead of relying on whatever
+      // was persisted; a saved explicit scope must not leak into this step.
+      const restoreScope = deps.applyConfig({ preset: 'section-dash', scope: undefined })
+      const { facts: factsNow, expected: expectedNow } = await snapshot()
+      const expected = expectedNow.map(e => e.rawNumber)
       push('scope-section', 'H1/H2/H3 章节联动编号', [
         { id: 'scope.count', ok: expected.length >= 5, detail: expected.join(' | ') },
         { id: 'scope.first', ok: expected[0] === '1.1-1', detail: expected[0] ?? 'none' },
@@ -474,10 +481,9 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
         // fallback is the chapter scope (`2-1`), never a fabricated `2.0-1`.
         { id: 'scope.chapter-reset', ok: expected.some(v => v.startsWith('2-') || v.startsWith('2.1-')), detail: expected.join(' | ') },
       ])
-      const factsNow = lastFacts as FormulaNumberingDomFacts | null
-      if (factsNow) {
-        pushHeadingConsistency('scope-heading-consistency', '节内编号与前置标题编号一致', factsNow)
-      }
+      pushHeadingConsistency('scope-heading-consistency', '节内编号与前置标题编号一致', factsNow)
+      restoreScope()
+      await deps.wait(1200)
     }
 
     // ── 3. Chapter-dash preset (the saved user preset) ──────────────────
@@ -508,11 +514,15 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
 
     // ── 4. Section numbering setting (restored baseline) ────────────────
     {
+      // R12 — explicit section preset (never inherit a persisted scope).
+      const restore = deps.applyConfig({ preset: 'section-dash', scope: undefined })
       const { facts, expected } = await snapshot()
       push('setting-section', '切换节内编号后立即刷新', [
         { id: 'section.plan', ok: expected[0]?.rawNumber === '1.1-1', detail: expected[0]?.rawNumber ?? 'none' },
         { id: 'section.dom', ok: facts.formulas.every((f, i) => f.visibleNumberTexts.length === 1 && sameToken(f.visibleNumberTexts[0], expected[i]?.rawNumber ?? '')), detail: facts.formulas.map(f => f.visibleNumberTexts[0] ?? 'none').join(' | ') },
       ])
+      restore()
+      await deps.wait(1200)
     }
 
     // ── 5. Empty formula also carries a number ──────────────────────────

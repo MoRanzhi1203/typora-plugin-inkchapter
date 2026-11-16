@@ -18,6 +18,7 @@ import {
 } from './object-numbering-engine'
 import { migrateLegacyTemplateToPreset, type ObjectNumberingPreset } from './object-numbering-presets'
 import { isObjectNumberingPreset } from './numbering-preset-formatter'
+import { normalizeObjectNumberingScope } from './object-scope-config'
 
 export interface ObjectNumberingSettings {
   schemaVersion: number
@@ -76,6 +77,9 @@ export function migrateObjectNumberingConfig(
   const preset: ObjectNumberingPreset = isObjectNumberingPreset(r.preset)
     ? r.preset
     : migrateLegacyTemplateToPreset(template, type === 'formula' ? 'formula' : undefined)
+  // R12: an explicitly saved scope is preserved; legacy configs stay WITHOUT a
+  // scope so their existing numbering result is never changed by migration.
+  const scope = normalizeObjectNumberingScope(r.scope)
 
   return {
     enabled,
@@ -89,6 +93,7 @@ export function migrateObjectNumberingConfig(
     resetHeadingLevel,
     customExpression,
     preset,
+    ...(scope ? { scope } : {}),
     ...(type === 'formula' ? { formulaMode } : {}),
   }
 }

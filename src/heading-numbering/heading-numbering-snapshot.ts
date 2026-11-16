@@ -20,7 +20,7 @@ import type {
 } from './heading-types'
 import { computeHeadingNumbering, type HeadingOverrideMap } from './numbering-engine'
 import { resolveHeadingStructure } from './heading-structure'
-import { computeSemanticHeadingNumbers, resolveSemanticStartAt } from './semantic-heading-numbering'
+import { computeSemanticHeadingNumbers, resolveSemanticStartAt, resolvePhysicalStartAt } from './semantic-heading-numbering'
 import type { HeadingStructureMode, SemanticHeadingNumberState } from './semantic-heading-types'
 import { computeHeadingSemanticFingerprint } from './numbering-fast-path'
 import { emitRuntimeAudit } from '../runtime/forensic-log-sink'
@@ -71,6 +71,7 @@ export function buildHeadingNumberingSnapshotForRevision(
   const physical = computeHeadingNumbering(headings, settings, overrideMap, counterPolicy)
   const semantic = computeSemanticHeadingNumbers(headings, structureMode, {
     startAt: resolveSemanticStartAt(settings, structureMode),
+    physicalStartAt: resolvePhysicalStartAt(settings),
     sourceRevision: revision,
     overrideMap,
     counterPolicy,

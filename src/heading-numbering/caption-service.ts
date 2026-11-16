@@ -59,6 +59,7 @@ import {
 import { migrateObjectNumberingConfig } from './object-numbering-settings'
 import { FormulaNumberingAdapter, type FormulaReconcileItem, type FormulaTarget } from './formula-numbering-adapter'
 import { planFormulaSemanticNumbers, type FormulaSemanticContext, type FormulaSemanticPlanEntry } from './formula-semantic-planner'
+import { resolveObjectNumberScope } from './object-scope-config'
 import {
   FormulaProjectionController,
   classifyFormulaProjectionVerify,
@@ -3171,10 +3172,21 @@ export class CaptionService {
       if (decision === 'COMPLETE') {
         // Phase 7R.3.7: each context carries boundary + structural provenance
         // so Formula scopeKey and projection signature are boundary-aware.
+        // R12: an explicit Formula scope is resolved here from the canonical
+        // semantic state so a missing H3 never changes the configured level.
+        const semanticByIdentity = new Map(snap.semantic.map(s => [s.stableIdentity, s]))
         const formulaContexts = formulaTargets.map((_t, i) => {
-          const ctx = resolutionToFormulaContext(resolutions[i])
+          const res = resolutions[i]
+          const ctx = resolutionToFormulaContext(res)
           if (!ctx) return { chapterOrdinal: null, sectionOrdinal: null, mode: snap.structureMode }
-          return { ...ctx, mode: snap.structureMode }
+          const headingState = res.decision !== 'TRANSIENT_UNRESOLVED' && res.headingStableIdentity
+            ? semanticByIdentity.get(res.headingStableIdentity) ?? null
+            : null
+          return {
+            ...ctx,
+            mode: snap.structureMode,
+            resolvedScope: resolveObjectNumberScope('formula', cfg, headingState, semanticByIdentity),
+          }
         })
         const planned = planFormulaSemanticNumbers(formulaContexts, cfg)
         // Numbering Integrity V2 §9 — canonical effective-number facts of THIS

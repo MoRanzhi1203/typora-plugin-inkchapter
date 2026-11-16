@@ -27,11 +27,18 @@ import type {
 } from './semantic-heading-types'
 import { resolveCaptionScope } from './caption-scope-resolver'
 import { formatObjectNumber, presetToScopeStyle, type NumberingPreset } from './numbering-preset-formatter'
+import {
+  formatObjectScopeNumber,
+  resolveObjectNumberScope,
+  type ObjectNumberingScopeConfig,
+} from './object-scope-config'
 
 export interface ObjectNumberingRule {
   enabled: boolean
   prefix: string
   preset: NumberingPreset
+  /** R12: explicit reset/prefix scope. Absent = legacy preset degradation. */
+  scope?: ObjectNumberingScopeConfig
 }
 
 export type ObjectNumberingRules = Record<CaptionObjectKind, ObjectNumberingRule>
@@ -99,6 +106,7 @@ export function computeDesiredNumberState(
 
   let currentChapter: number | null = null
   let currentSection: number | null = null
+  let currentHeadingState: SemanticHeadingNumberState | null = null
   const counters = new Map<string, number>()
   const results: DesiredCaptionNumberState[] = []
 
@@ -108,11 +116,37 @@ export function computeDesiredNumberState(
       if (!node) continue
       currentChapter = node.chapterOrdinal
       currentSection = node.sectionOrdinal
+      currentHeadingState = node
       continue
     }
 
     const rule = rules[block.objectKind]
     if (!rule || !rule.enabled) continue
+
+    // R12: explicit physical reset/prefix scope, never degraded by a missing H3.
+    const explicitRuleScope = rule.scope
+      ? resolveObjectNumberScope(block.objectKind, rule, currentHeadingState, nodeByKey)
+      : null
+    if (explicitRuleScope) {
+      const ordinal = (counters.get(explicitRuleScope.scopeKey) ?? 0) + 1
+      counters.set(explicitRuleScope.scopeKey, ordinal)
+      const componentCount = explicitRuleScope.prefixComponents.length
+      results.push({
+        stableIdentity: block.stableIdentity,
+        objectKind: block.objectKind,
+        requestedScope: componentCount === 0 ? 'global' : componentCount === 1 ? 'chapter' : 'section',
+        effectiveScope: componentCount === 0 ? 'global' : componentCount === 1 ? 'chapter' : 'section',
+        chapter: explicitRuleScope.prefixComponents[0] ?? null,
+        section: componentCount > 1 ? explicitRuleScope.prefixComponents[componentCount - 1] : null,
+        scopeKey: explicitRuleScope.scopeKey,
+        ordinal,
+        numberingStyle: explicitRuleScope.style,
+        formattedNumber: formatObjectScopeNumber(explicitRuleScope, ordinal),
+        resolutionStatus: explicitRuleScope.missingRequestedLevel ? 'degraded' : 'exact',
+        revision,
+      })
+      continue
+    }
 
     const { requestedScope, style } = presetToScopeStyle(rule.preset)
     const scope = resolveCaptionScope(requestedScope, currentChapter, currentSection)
