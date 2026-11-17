@@ -66,6 +66,10 @@ test/vault/runtime/acceptance/ObjectNumbering-R10-Runtime-Acceptance.md
 test/vault/runtime/acceptance/ObjectNumbering-R10-Runtime-Acceptance.numbered.md
 test/vault/runtime/acceptance/object-numbering-acceptance-request.json
 test/vault/runtime/acceptance/object-numbering-acceptance-last-run.json
+# R11/R13 — formula numbering runtime acceptance (generated working document / request / report).
+test/vault/runtime/acceptance/FormulaNumbering-R11-Runtime-Acceptance.md
+test/vault/runtime/acceptance/formula-numbering-acceptance-request.json
+test/vault/runtime/acceptance/formula-numbering-acceptance-last-run.json
 
 # Archived raw test-vault backups (may contain unpublished user documents).
 docs/archive/test-vault/

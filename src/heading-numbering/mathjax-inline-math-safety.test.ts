@@ -145,4 +145,66 @@ describe('MathJax hook — inline formula safety', () => {
     expect(result).toEqual({ rendered: 'a = 1' })
     expect(getMathJaxHookCallStats().fallbackCount).toBe(before + 1)
   })
+
+  it('does not inject into a SYNC tex2svg inline call (editor preview path)', () => {
+    const calls: Array<{ tex: string; options?: unknown }> = []
+    const fake: FakeMathJax = {
+      tex2svgPromise: (tex => Promise.resolve({ rendered: tex })) as Tex2Svg,
+      tex2svg: ((tex, options) => {
+        calls.push({ tex: String(tex), options })
+        return { rendered: tex }
+      }) as Tex2Svg,
+    }
+    ;(globalThis as unknown as { MathJax?: FakeMathJax }).MathJax = fake
+    installHook()
+
+    fake.tex2svg!('a = 1', { display: false })
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0].tex).not.toContain('\\tag')
+  })
+
+  it('still injects when Typora omits display (block render path)', async () => {
+    const calls: string[] = []
+    installFakeMathJax(async (tex) => {
+      calls.push(tex)
+      return { rendered: tex }
+    })
+    installHook()
+
+    const M = (globalThis as unknown as { MathJax: FakeMathJax }).MathJax
+    await M.tex2svgPromise('a = 1')
+
+    expect(calls).toEqual(['a = 1\\tag{1-1}'])
+  })
+
+  it('counts inline skips and display modes without injecting tags', async () => {
+    installFakeMathJax(async (tex) => ({ rendered: tex }))
+    installHook()
+
+    const before = getMathJaxHookCallStats()
+    const M = (globalThis as unknown as { MathJax: FakeMathJax }).MathJax
+    await M.tex2svgPromise('a = 1', { display: false })
+    await M.tex2svgPromise('E = mc^2', { display: false })
+    await M.tex2svgPromise('a = 1')
+
+    const after = getMathJaxHookCallStats()
+    expect(after.displayFalseCount - before.displayFalseCount).toBe(2)
+    expect(after.inlineSkippedCount - before.inlineSkippedCount).toBe(2)
+    expect(after.displayUnknownCount - before.displayUnknownCount).toBe(1)
+    expect(after.injectedCount - before.injectedCount).toBe(1)
+  })
+
+  it('restores the original MathJax entry points on uninstall', async () => {
+    const fake = installFakeMathJax(async (tex) => ({ rendered: tex }))
+    const originalPromise = fake.tex2svgPromise
+    installHook()
+
+    expect(isMathJaxRenderInputHookInstalled()).toBe(true)
+    uninstallMathJaxRenderInputHook()
+
+    expect(isMathJaxRenderInputHookInstalled()).toBe(false)
+    expect(fake.tex2svgPromise).toBe(originalPromise)
+    await fake.tex2svgPromise('a = 1', { display: false })
+  })
 })

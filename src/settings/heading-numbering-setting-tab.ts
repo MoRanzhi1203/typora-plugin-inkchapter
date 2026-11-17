@@ -1,5 +1,6 @@
 import { SettingTab } from '@typora-community-plugin/core'
 import type { PluginSettings } from '@typora-community-plugin/core'
+import { describeTyporaInlineMathHint, readTyporaNativeMathSettings } from '../infrastructure/typora-native-settings'
 import type { InkChapterSettings } from './settings-model'
 import { captureSettingsScroll, preserveSettingsScroll, restoreSettingsScroll } from './settings-scroll'
 import type {
@@ -6172,6 +6173,16 @@ export class HeadingNumberingSettingTab extends SettingTab {
       { value: 'left' as ObjectPosition, label: '左侧' },
       { value: 'right' as ObjectPosition, label: '右侧' },
     ], '', true)
+
+    // R13 — `$...$` rendering is controlled by Typora itself. If the native
+    // preference disables inline math (or strict mode blocks it), InkChapter
+    // cannot render anything; surface WHY instead of silently showing nothing.
+    const nativeInlineHint = describeTyporaInlineMathHint(readTyporaNativeMathSettings())
+    if (nativeInlineHint) {
+      const hint = el('div', 'inkchapter-caption-setting-hint', body)
+      hint.textContent = nativeInlineHint
+      hint.style.cssText = 'margin-top:8px;padding:8px 10px;border-left:3px solid #d97706;background:rgba(217,119,6,0.08);font-size:12px;line-height:1.6;'
+    }
   }
 
   private renderNumberingGroup(

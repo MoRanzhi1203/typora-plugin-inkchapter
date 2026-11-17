@@ -123,6 +123,7 @@ import { writeHeadingConflictBridgeReport, readHeadingConflictBridgeFile, consum
 import { DocumentViewContextMenu, type DocViewPlatform } from './document-utilities/document-view-context-menu'
 import { TabCloseVisibilityEnhancer, measureTabCloseVisibility, evaluateTabCloseVisibility, measureTabCloseCentering, evaluateTabCloseCentering } from './document-utilities/document-utility-tab-close-visibility'
 import { FileCopyService } from './file-transfer/file-copy-service'
+import { readTyporaNativeMathSettings } from './infrastructure/typora-native-settings'
 import { resolveModifiedState } from './file-transfer/file-transfer-policy'
 import { FileTreeDragAdapter } from './file-transfer/file-tree-drag-adapter'
 import { NativeDragBridge, type ElectronRendererLike } from './file-transfer/native-drag-bridge'
@@ -2534,6 +2535,7 @@ export default class extends Plugin<InkChapterSettings> {
             headings,
             inlineFormulas,
             mathJaxCallStats: getMathJaxHookCallStats(),
+            nativeSettings: readTyporaNativeMathSettings(),
             sourceNumberParagraphCount,
           }
         }

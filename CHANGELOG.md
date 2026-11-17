@@ -10,8 +10,13 @@
 
 ### Fixed
 
+- 行内公式渲染（R13 专项）：真实 Typora 1.6.7 验收定位到行内公式不显示的第二层根因是 **Typora 原生数学设置**，不是编号算法：`strict_mode=true` 且 `enable_inline_math` 未启用时，Typora 根本不生成 `.md-inline-math` 宿主，块级 `$$…$$` 仍正常，导致此前验收只看到块公式通过。现在：
+  - 新增只读设置检测（`src/infrastructure/typora-native-settings.ts`，绝不写入 Typora 配置），设置页「公式编号」在原生开关关闭或严格模式开启时给出明确提示与修复路径；
+  - 依据 Typora 真实渲染契约区分宿主：行内调用携带 `display:false`，块级调用传度量对象（无 `display`）；行内渲染永不注入 `\tag`；
+  - `accept:formula-numbering` 新增 `inline.host-rendered` 硬门禁与原生设置证据，源码含 `$...$` 但宿主为 0 直接判 FAIL，不再把 `HOST_RENDERED_NO_INLINE_HOSTS` 当作 PASS；夹具新增 `$a=1$`、`$E=mc^2$`、分式、希腊字母、列表、引用与表格单元格场景；
+  - 真实结果：7 个行内宿主全部完成 MathJax 渲染、无编号注入；块级 7 个公式编号（`1.1-1`…`1-2`）无回归。
 - 行内公式渲染（R12 修复）：MathJax 的 `tex2svgPromise` / `tex2svg` 是行内 `$…$` 与块级 `$$…$$` 共用的全局入口。此前钩子仅按 TeX 源哈希匹配块公式计划，行内公式与某个块公式内容相同时会被注入 `\tag{…}`，MathJax 拒绝行内 tag 导致行内公式空白/报错。现在：
-  - 明确的行内渲染（`display:false`）永不注入块编号（Typora 1.6.7 不传该参数，仅作为兼容保护）；
+  - 明确的行内渲染（`display:false`）永不注入块编号；
   - 注入后的渲染若同步抛错、Promise 拒绝或返回 MathJax 错误节点，自动用原始 TeX 重试一次，避免行内公式空白；
   - 公式编号、章节联动与块级公式渲染行为保持不变。
 - 公式编号与标题编号的层级关联（R12 修复）：对象前缀改为读取与标题显示同一套物理编号计数器（`computePhysicalHeadingPaths`），不再用语义深度重新推导。修复以下偏差：

@@ -149,17 +149,26 @@ CanonicalHeadingFrame（stableIdentity + semanticState.physicalLevel）
 - **消费方式**：图片 / 表格 / 代码 / 公式的标准预设（chapter/section）改为从该路径取前 1/2 个可见分量，并按“最后一个分量的所属标题身份”分组计数；显式作用域仍按用户选择的重置/前缀层级解析。
 - **验证**：`object-scope-hierarchy.test.ts` 覆盖未编号中间标题、连续计数、自定义起始值、关闭层级、严格缺层级五类回归；标题显示与公式前缀逐项一致。
 
-## §19 行内公式渲染安全（R12）
+## §19 行内公式渲染安全（R12 / R13）
 
-- **根因**：`MathJax.tex2svgPromise` / `tex2svg` 是**全局共享**的渲染入口，行内 `$…$` 与块级 `$$…$$` 都会经过它。插件为了保证块公式编号可见而包装了该入口，但旧逻辑只按 TeX 源哈希匹配块公式计划：
-  - 当行内公式的 TeX 与某个块公式相同（例如正文 `$a = 1$` 与块 `$$ a = 1 $$`），哈希相同 → 行内调用被误判为块公式渲染；
-  - 钩子向其注入 `\tag{…}`，MathJax 在行内模式拒绝 tag，行内公式渲染失败（空白或错误节点）。
+- **第一层根因（R12）**：`MathJax.tex2svgPromise` / `tex2svg` 是**全局共享**的渲染入口，行内 `$…$` 与块级 `$$…$$` 都会经过它。旧逻辑只按 TeX 源哈希匹配块公式计划：当行内公式与某个块公式内容相同（例如 `$a = 1$` 与 `$$ a = 1 $$`），行内调用被误判为块公式并注入 `\tag{…}`，MathJax 在行内模式拒绝 tag，行内公式空白或返回错误节点。
+- **第二层根因（R13，真实 Typora 验收定位）**：修完注入污染后，真实验收仍返回 `HOST_RENDERED_NO_INLINE_HOSTS`（`.md-inline-math` 数量为 0）。解码 `%APPDATA%\Typora\profile.data`（Typora 以十六进制存储 UTF-8 JSON）后确认是 **Typora 原生数学设置**导致，与编号算法无关：
+  - `strict_mode: true` → 严格 Markdown 解析，`$...$` 不被识别；
+  - 缺少 `enable_inline_math`（偏好设置 → Markdown → 语法支持 → Inline Math）→ 行内公式功能本身关闭。
+  - 块级 `$$...$$` 不受这两个开关影响，因此块公式验收一直是 PASS，掩盖了行内宿主根本没有生成。
+- **宿主识别（Typora 1.6.7 真实渲染契约）**：从 Typora 渲染器 `appsrc/window/frame.js` 确认：
+  - 行内渲染：`MathJax.tex2svgPromise(tex, { display: false })`（同步入口 `tex2svg` 同样带 `display:false`）；
+  - 块级渲染：`MathJax.tex2svgPromise(tex, metrics)`，`metrics` 是 `MathJax.getMetricsFor(...)` 度量对象，**不含 `display`**。
+  - 因此 `display:false` 是可靠的行内身份，`display` 缺失即块级路径；无需扫描 DOM 猜测宿主。
 - **修复**：
-  - `prepare()` 读取 MathJax 调用参数中的 `display`：`display === false` 的明确行内渲染直接跳过编号注入，并记录 `FORMULA-MATHJAX-INLINE-SKIP`（实测 Typora 1.6.7 的调用未携带 `display`，因此该判断只作为兼容保护）；
-  - 块级渲染保留原有的 transient tag 注入；
-  - **主兜底**：注入后的 `tex2svgPromise` 同步抛错、Promise 拒绝、或**返回 `mjx-merror` 错误节点**时，自动使用**原始 TeX** 重试一次（`FORMULA-MATHJAX-TAG-RENDER-FALLBACK`），避免公式空白；`tex2svg` 同步入口同样处理；
-  - 实时上下文 provider 抛错时降级为“无上下文”，绝不让钩子异常冒泡到宿主渲染器；调用统计（`getMathJaxHookCallStats`）随验收报告输出，便于确认 display/injected/skipped/fallback 实际数量。
-- **验证**：新增 `mathjax-inline-math-safety.test.ts`（行内不注入、块级仍注入、tag 失败自动回退）；公式验收夹具加入行内公式场景（普通、与块同源、列表/引用内），runner 记录 `inline.host-rendered` 与 `mathJaxCallStats`。若宿主机本身未解析行内数学（本机 Typora 会话返回 `HOST_RENDERED_NO_INLINE_HOSTS`），报告如实记录而不伪报通过；插件侧的“不注入 / 失败回退”由单元测试确定性覆盖。
+  - `prepare()` 对 `display === false` 的明确行内渲染直接跳过注入并记录 `FORMULA-MATHJAX-INLINE-SKIP`（真实验收：15 次行内调用全部跳过，注入 175 次均为块级）；
+  - 块级渲染保留 transient tag 注入；
+  - **异常兜底**：注入后的 `tex2svgPromise` 同步抛错、Promise 拒绝、或返回 `mjx-merror` 错误节点时，用**原始 TeX** 重试一次（`FORMULA-MATHJAX-TAG-RENDER-FALLBACK`）；`tex2svg` 同步入口同样处理；
+  - 实时上下文 provider 抛错时降级为“无上下文”，绝不冒泡到宿主渲染器；调用统计随验收报告输出；
+  - 新增只读模块 `src/infrastructure/typora-native-settings.ts`：读取 `profile.data` 的 `strict_mode` / `enable_inline_math` / `auto_numbering_for_math`（**绝不写入**），设置页「公式编号」在原生开关关闭或严格模式开启时给出明确提示与修复路径。
+- **验证**：
+  - 单元：`mathjax-inline-math-safety.test.ts`（行内 promise/sync 不注入、块级 `display:true` 与 `display` 缺失仍注入、拒绝/错误节点回退、统计计数）；`typora-native-settings.test.ts`（hex/JSON 解码、禁用与严格模式提示、不可读时不猜测）。
+  - Runtime：公式验收夹具加入 `$a=1$`、`$E=mc^2$`、`$\frac{a}{b}$`、`$\alpha+\beta$`、与块同源行内、列表、引用、表格单元格。`inline.host-rendered` 现在是**硬门禁**：源码含 `$...$` 但宿主为 0 直接 FAIL，并在 detail 中给出 Typora 原生设置状态；不再把 `HOST_RENDERED_NO_INLINE_HOSTS` 当作 PASS。真实结果：7 个行内宿主、7/7 获得 MathJax、无 tag/编号；块级 7 个公式编号全部正确（`1.1-1`…`1-2`）。
 
 ## §12 启动时序与权威门禁（Phase 7R.3.9R）
 

@@ -18,6 +18,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import type { ObjectNumberingScopeConfig } from '../heading-numbering/object-scope-config'
+import type { TyporaNativeMathSettings } from '../infrastructure/typora-native-settings'
 
 export const FORMULA_NUMBERING_ACCEPTANCE_ENV = 'INKCHAPTER_FORMULA_NUMBER_ACCEPTANCE'
 
@@ -86,6 +87,13 @@ export interface FormulaNumberingDomFacts {
     inlineSkippedCount: number
     fallbackCount: number
   }
+  /**
+   * R13 — Typora's OWN math preferences (read-only). Inline math can only
+   * render when `enable_inline_math` is true and `strict_mode` is off; when the
+   * native host produces zero inline hosts the acceptance must say WHY instead
+   * of passing with `HOST_RENDERED_NO_INLINE_HOSTS`.
+   */
+  nativeSettings?: TyporaNativeMathSettings
   /** Standalone source number paragraphs OUTSIDE the formula hosts (`（1-1）`). */
   sourceNumberParagraphCount: number
 }
@@ -478,6 +486,39 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
     return { facts, expected }
   }
 
+  /**
+   * R13 — inline formulas must keep rendering across edits / reload / setting
+   * switches, never acquire a block tag or a number. Kept as one helper so the
+   * same DOM evidence is asserted at every lifecycle point.
+   */
+  const evaluateInlineRendering = (
+    id: string,
+    inline: FormulaNumberingInlineFact[],
+    minCount = 1,
+  ): FormulaNumberingAssertion[] => {
+    const rendered = inline.filter(f => f.hasMathJax).length
+    const tagged = inline.filter(f => f.tagTexts.length > 0)
+    const numbered = inline.filter(f => f.numberTexts.length > 0)
+    return [
+      { id: `${id}.inline-count`, ok: inline.length >= minCount, detail: String(inline.length) },
+      {
+        id: `${id}.inline-rendered`,
+        ok: inline.length > 0 && rendered === inline.length,
+        detail: `${rendered}/${inline.length}`,
+      },
+      {
+        id: `${id}.inline-no-tag`,
+        ok: tagged.length === 0,
+        detail: tagged.map(f => f.tagTexts.join(',')).join(' | ') || 'none',
+      },
+      {
+        id: `${id}.inline-no-number`,
+        ok: numbered.length === 0,
+        detail: numbered.map(f => f.numberTexts.join(',')).join(' | ') || 'none',
+      },
+    ]
+  }
+
   try {
     // ── 1. Initial: every formula has exactly one visible number ───────
     {
@@ -494,7 +535,7 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
       push('initial', '真实公式节点显示唯一编号', assertions)
     }
 
-    // ── 1b. R12 — inline `$…$` formulas render untouched ───────────────
+    // ── 1b. R12/R13 — inline `$…$` formulas render untouched ──────────
     {
       const { facts } = await snapshot()
       const inline = facts.inlineFormulas
@@ -503,19 +544,41 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
       const rendered = inline.filter(f => f.hasMathJax).length
       const tagged = inline.filter(f => f.tagTexts.length > 0)
       const numbered = inline.filter(f => f.numberTexts.length > 0)
-      // The HOST may not parse inline math at all in some environments (feature
-      // disabled / preview mode). In that case there is no inline host for the
-      // plugin to damage; the run records it instead of inventing a failure.
       const hostRenderedInline = inline.length > 0
+      const native = facts.nativeSettings
+      const stats = facts.mathJaxCallStats
+      // R13 — `$...$` in the source with ZERO native inline hosts is a REAL
+      // failure: Typora's own preference keeps the host from parsing inline
+      // math, so nothing can render. Never pass this state silently.
+      const nativeInlineDisabled = native?.available === true && native.inlineMathEnabled !== true
+      const nativeStrict = native?.available === true && native.strictMode === true
+      const nativeDetail = native
+        ? `available=${native.available} strictMode=${String(native.strictMode)} inlineMath=${String(native.inlineMathEnabled)} autoNumbering=${String(native.autoNumberingForMath)}`
+        : 'UNAVAILABLE'
+      const hostDetail = hostRenderedInline
+        ? `${inline.length} hosts`
+        : `HOST_RENDERED_NO_INLINE_HOSTS native(${nativeDetail})${nativeInlineDisabled ? ' — Typora 未启用行内公式' : ''}${nativeStrict ? ' — Typora 严格模式已开启' : ''}`
       push('inline-formulas', '行内公式正常渲染且不携带块编号', [
         { id: 'inline.source', ok: inlineSourcePresent, detail: inlineSourcePresent ? 'present' : 'MISSING_IN_BUFFER' },
         {
           id: 'inline.host-rendered',
-          ok: true,
-          detail: hostRenderedInline ? `${inline.length} hosts` : 'HOST_RENDERED_NO_INLINE_HOSTS',
+          ok: !inlineSourcePresent || hostRenderedInline,
+          detail: hostDetail,
+        },
+        {
+          id: 'inline.native-setting',
+          ok: !inlineSourcePresent || !nativeInlineDisabled,
+          detail: nativeDetail,
         },
         { id: 'inline.count', ok: !hostRenderedInline || inline.length >= 5, detail: String(inline.length) },
         { id: 'inline.all-rendered', ok: !hostRenderedInline || rendered === inline.length, detail: `${rendered}/${inline.length}` },
+        {
+          // Typora marks inline renders with `{ display: false }`; this proves
+          // the host really used the inline code path rather than display math.
+          id: 'inline.display-false',
+          ok: !hostRenderedInline || stats.displayFalseCount > 0,
+          detail: `displayFalse=${stats.displayFalseCount} unknown=${stats.displayUnknownCount} skipped=${stats.inlineSkippedCount} injected=${stats.injectedCount} fallback=${stats.fallbackCount}`,
+        },
         { id: 'inline.no-tag', ok: tagged.length === 0, detail: tagged.map(f => f.tagTexts.join(',')).join(' | ') || 'none' },
         { id: 'inline.no-number', ok: numbered.length === 0, detail: numbered.map(f => f.numberTexts.join(',')).join(' | ') || 'none' },
       ])
@@ -609,6 +672,7 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
       push('formula-edit', '编辑公式后编号保持稳定', [
         { id: 'edit.count', ok: facts.formulas.length === expected.length, detail: `${facts.formulas.length}/${expected.length}` },
         ...facts.formulas.flatMap((f, i) => evaluateFormulaDom(f, expected[i])),
+        ...evaluateInlineRendering('edit', facts.inlineFormulas, 5),
       ])
     }
 
@@ -689,6 +753,7 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
       const { facts } = await snapshot()
       push('setting-disabled', '关闭公式编号后不再投影', [
         { id: 'disabled.no-number', ok: facts.formulas.every(f => f.tagTexts.length === 0 && f.decorationTexts.length === 0), detail: JSON.stringify(facts.formulas.map(f => f.tagTexts)) },
+        ...evaluateInlineRendering('disabled', facts.inlineFormulas, 5),
       ])
       restore()
       await deps.wait(1200)
@@ -701,6 +766,7 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
       push('setting-native-fallback', '原生不可用时墨章接管编号', [
         { id: 'fallback.visible', ok: facts.formulas.length === expected.length && facts.formulas.every((f, i) => f.visibleNumberTexts.length === 1 && sameToken(f.visibleNumberTexts[0], expected[i]?.rawNumber ?? '')), detail: facts.formulas.map(f => f.visibleNumberTexts[0] ?? 'none').join(' | ') },
         { id: 'fallback.dedupe', ok: facts.formulas.every(f => f.tagTexts.length + f.decorationTexts.length <= 1), detail: '不得出现双编号' },
+        ...evaluateInlineRendering('fallback', facts.inlineFormulas, 5),
       ])
       restore()
       await deps.wait(1200)
@@ -751,6 +817,7 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
       push('document-reload', '文档重新加载后编号恢复', [
         { id: 'reload.count', ok: facts.formulas.length === expected.length && facts.formulas.length === 7, detail: `${facts.formulas.length}/${expected.length}` },
         ...facts.formulas.flatMap((f, i) => evaluateFormulaDom(f, expected[i])),
+        ...evaluateInlineRendering('reload', facts.inlineFormulas, 5),
       ])
     }
 
@@ -777,6 +844,7 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
           ok: expectedBefore[0]?.rawNumber === '1.1-1' && expected[2]?.rawNumber === '2.1-1',
           detail: `${expectedBefore[0]?.rawNumber ?? 'none'} → ${expected[2]?.rawNumber ?? 'none'}`,
         },
+        ...evaluateInlineRendering('chapter-move', facts.inlineFormulas, 5),
       ])
       pushHeadingConsistency('chapter-move-heading-consistency', '整节移动后公式与标题编号一致', facts)
       restore()
@@ -820,6 +888,7 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
           ok: after.formulas.every(f => f.tagTexts.length + f.decorationTexts.length <= 1),
           detail: after.formulas.map(f => `tag=${f.tagTexts.length},deco=${f.decorationTexts.length}`).join(' | '),
         },
+        ...evaluateInlineRendering('dom-move', after.inlineFormulas, 5),
       ])
       pushHeadingConsistency('dom-move-heading-consistency', '直接移动章节 DOM 后公式与标题编号一致', after)
       deps.replaceContent(template)
@@ -893,6 +962,7 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
           // chapter-dash gives `5-1`, section-dash gives `5.3-1` — both are valid.
           { id: 'user.chapter-linkage', ok: /^5(?:\.\d+)?-1$/.test(expected[0]?.rawNumber ?? ''), detail: expected[0]?.rawNumber ?? 'none' },
           { id: 'user.no-double', ok: facts.formulas.every(f => f.tagTexts.length + f.decorationTexts.length <= 1), detail: '不得出现双编号' },
+          ...evaluateInlineRendering('user', facts.inlineFormulas, 1),
         ])
 
         // Move the user's real chapter `数据与方法` after `实验结果` and verify
