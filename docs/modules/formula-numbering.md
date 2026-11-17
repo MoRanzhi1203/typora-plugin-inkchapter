@@ -149,6 +149,18 @@ CanonicalHeadingFrame（stableIdentity + semanticState.physicalLevel）
 - **消费方式**：图片 / 表格 / 代码 / 公式的标准预设（chapter/section）改为从该路径取前 1/2 个可见分量，并按“最后一个分量的所属标题身份”分组计数；显式作用域仍按用户选择的重置/前缀层级解析。
 - **验证**：`object-scope-hierarchy.test.ts` 覆盖未编号中间标题、连续计数、自定义起始值、关闭层级、严格缺层级五类回归；标题显示与公式前缀逐项一致。
 
+## §19 行内公式渲染安全（R12）
+
+- **根因**：`MathJax.tex2svgPromise` / `tex2svg` 是**全局共享**的渲染入口，行内 `$…$` 与块级 `$$…$$` 都会经过它。插件为了保证块公式编号可见而包装了该入口，但旧逻辑只按 TeX 源哈希匹配块公式计划：
+  - 当行内公式的 TeX 与某个块公式相同（例如正文 `$a = 1$` 与块 `$$ a = 1 $$`），哈希相同 → 行内调用被误判为块公式渲染；
+  - 钩子向其注入 `\tag{…}`，MathJax 在行内模式拒绝 tag，行内公式渲染失败（空白或错误节点）。
+- **修复**：
+  - `prepare()` 读取 MathJax 调用参数中的 `display`：`display === false` 的明确行内渲染直接跳过编号注入，并记录 `FORMULA-MATHJAX-INLINE-SKIP`（实测 Typora 1.6.7 的调用未携带 `display`，因此该判断只作为兼容保护）；
+  - 块级渲染保留原有的 transient tag 注入；
+  - **主兜底**：注入后的 `tex2svgPromise` 同步抛错、Promise 拒绝、或**返回 `mjx-merror` 错误节点**时，自动使用**原始 TeX** 重试一次（`FORMULA-MATHJAX-TAG-RENDER-FALLBACK`），避免公式空白；`tex2svg` 同步入口同样处理；
+  - 实时上下文 provider 抛错时降级为“无上下文”，绝不让钩子异常冒泡到宿主渲染器；调用统计（`getMathJaxHookCallStats`）随验收报告输出，便于确认 display/injected/skipped/fallback 实际数量。
+- **验证**：新增 `mathjax-inline-math-safety.test.ts`（行内不注入、块级仍注入、tag 失败自动回退）；公式验收夹具加入行内公式场景（普通、与块同源、列表/引用内），runner 记录 `inline.host-rendered` 与 `mathJaxCallStats`。若宿主机本身未解析行内数学（本机 Typora 会话返回 `HOST_RENDERED_NO_INLINE_HOSTS`），报告如实记录而不伪报通过；插件侧的“不注入 / 失败回退”由单元测试确定性覆盖。
+
 ## §12 启动时序与权威门禁（Phase 7R.3.9R）
 
 - 分离 `AUTHORITY_NOT_READY` 与 `POST-READY TRANSIENT_UNRESOLVED`；显式状态机 NO_DOCUMENT / WAITING_FOR_DOCUMENT_CONTEXT / WAITING_FOR_HEADING_AUTHORITY / READY。

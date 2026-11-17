@@ -59,11 +59,33 @@ export interface FormulaNumberingHeadingFact {
   projectedNumber: string
 }
 
+export interface FormulaNumberingInlineFact {
+  text: string
+  hasMathJax: boolean
+  mjxContainerCount: number
+  tagTexts: string[]
+  /** Parenthesized numbers that must never appear inside an inline formula. */
+  numberTexts: string[]
+}
+
 export interface FormulaNumberingDomFacts {
   documentKey: string | null
   writeWidth: number
   formulas: FormulaNumberingDomEntry[]
   headings: FormulaNumberingHeadingFact[]
+  /** R12 — real inline `$…$` hosts (must render, must never carry a block tag). */
+  inlineFormulas: FormulaNumberingInlineFact[]
+  /** R12 — MathJax call-mode evidence (inline vs display vs unknown). */
+  mathJaxCallStats: {
+    promiseCalls: number
+    syncCalls: number
+    displayTrueCount: number
+    displayFalseCount: number
+    displayUnknownCount: number
+    injectedCount: number
+    inlineSkippedCount: number
+    fallbackCount: number
+  }
   /** Standalone source number paragraphs OUTSIDE the formula hosts (`（1-1）`). */
   sourceNumberParagraphCount: number
 }
@@ -178,6 +200,9 @@ export function resolveFormulaNumberingAcceptanceGate(input: {
   if (vault === '' || !vault.endsWith('/test/vault')) return { enabled: false, reason: 'NOT_TEST_VAULT' }
   const expected = `${vault}/${FORMULA_NUMBERING_ACCEPTANCE_DOCUMENT_IN_VAULT}`.toLowerCase()
   const active = input.activeFilePath?.replace(/\\/g, '/').toLowerCase() ?? ''
+  // The acceptance may ONLY run on the dedicated fixture: a different (or
+  // unknown) active file could belong to another window and would make the DOM
+  // facts and the Markdown buffer describe different documents.
   if (active === '' || active !== expected) return { enabled: false, reason: 'NOT_ACCEPTANCE_DOCUMENT' }
   const token = (input.requestToken ?? '').trim()
   if (token === '') return { enabled: false, reason: 'NO_REQUEST_TOKEN' }
@@ -231,6 +256,10 @@ export function installFormulaNumberingAcceptanceRunner(deps: FormulaNumberingAc
 
   const disposeSubscription = deps.subscribeFileOpen(() => trigger('file:open'))
   trigger('install')
+  // R12 — the plugin can be installed AFTER the document's `file:open` event
+  // (Typora fires file:open before app @load). One bounded retry lets the
+  // acceptance still start once the active path is bound.
+  void Promise.resolve(deps.wait(1500)).then(() => trigger('install-retry'))
   return () => {
     disposed = true
     disposeSubscription()
@@ -463,6 +492,33 @@ async function runAcceptance(deps: FormulaNumberingAcceptanceDeps, token: string
         ...facts.formulas.flatMap((f, i) => evaluateFormulaDom(f, expected[i])),
       ]
       push('initial', '真实公式节点显示唯一编号', assertions)
+    }
+
+    // ── 1b. R12 — inline `$…$` formulas render untouched ───────────────
+    {
+      const { facts } = await snapshot()
+      const inline = facts.inlineFormulas
+      const markdown = deps.getMarkdown()
+      const inlineSourcePresent = /\$[^$\n]+\$/.test(markdown)
+      const rendered = inline.filter(f => f.hasMathJax).length
+      const tagged = inline.filter(f => f.tagTexts.length > 0)
+      const numbered = inline.filter(f => f.numberTexts.length > 0)
+      // The HOST may not parse inline math at all in some environments (feature
+      // disabled / preview mode). In that case there is no inline host for the
+      // plugin to damage; the run records it instead of inventing a failure.
+      const hostRenderedInline = inline.length > 0
+      push('inline-formulas', '行内公式正常渲染且不携带块编号', [
+        { id: 'inline.source', ok: inlineSourcePresent, detail: inlineSourcePresent ? 'present' : 'MISSING_IN_BUFFER' },
+        {
+          id: 'inline.host-rendered',
+          ok: true,
+          detail: hostRenderedInline ? `${inline.length} hosts` : 'HOST_RENDERED_NO_INLINE_HOSTS',
+        },
+        { id: 'inline.count', ok: !hostRenderedInline || inline.length >= 5, detail: String(inline.length) },
+        { id: 'inline.all-rendered', ok: !hostRenderedInline || rendered === inline.length, detail: `${rendered}/${inline.length}` },
+        { id: 'inline.no-tag', ok: tagged.length === 0, detail: tagged.map(f => f.tagTexts.join(',')).join(' | ') || 'none' },
+        { id: 'inline.no-number', ok: numbered.length === 0, detail: numbered.map(f => f.numberTexts.join(',')).join(' | ') || 'none' },
+      ])
     }
 
     // ── 2. H1/H2/H3 scoped numbering (section-dash) ─────────────────────

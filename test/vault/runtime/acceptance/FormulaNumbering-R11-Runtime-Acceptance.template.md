@@ -45,3 +45,19 @@ $$
 $$
 g = 4
 $$
+
+## 行内公式验证
+
+Inline math: $x^2 + y^2 = z^2$.
+
+Inline math sharing a block source: $a = 1$.
+
+Another inline math sharing a block source: $g = 4$.
+
+普通行内公式：$x^2 + y^2 = z^2$。
+
+与块公式同源的行内公式：$a = 1$。
+
+行内公式在列表内：- 列表项 $b = 2$
+
+行内公式在引用内：> 引用 $c = 3$

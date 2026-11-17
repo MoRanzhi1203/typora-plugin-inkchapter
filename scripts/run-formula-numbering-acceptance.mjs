@@ -55,8 +55,14 @@ async function runAcceptance() {
   console.log(`[formula-number-acceptance] token:    ${token}`)
   console.log(`[formula-number-acceptance] document: ${DOCUMENT}`)
 
+  // R12 — open ONLY the acceptance document. Opening another document first
+  // leaves it active and the gate then rejects the run.
   const loaded = await openTestVault({ vaultDir: VAULT, docPath: DOCUMENT })
   console.log(`[formula-number-acceptance] plugin loaded from vault: ${loaded}`)
+  // A cold Typora start can drop the first document hand-off; re-open it once
+  // the app is ready so a REAL `file:open` reaches the runner.
+  await sleep(4000)
+  await openTestVault({ vaultDir: VAULT, docPath: DOCUMENT })
 
   const deadline = Date.now() + timeoutMs
   let report = null

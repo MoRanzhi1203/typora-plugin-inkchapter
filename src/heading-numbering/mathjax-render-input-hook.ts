@@ -54,6 +54,37 @@ let firstCallObserved = false
 
 export type MathJaxHookLifecycle = 'UNINITIALIZED' | 'WAITING_FOR_MATHJAX' | 'INSTALLED'
 
+/**
+ * R12 — bounded call statistics (diagnostics / acceptance evidence only).
+ * They let the runtime acceptance prove whether Typora marks a render call as
+ * inline (`display:false`) or display (`display:true`).
+ */
+export interface MathJaxHookCallStats {
+  promiseCalls: number
+  syncCalls: number
+  displayTrueCount: number
+  displayFalseCount: number
+  displayUnknownCount: number
+  injectedCount: number
+  inlineSkippedCount: number
+  fallbackCount: number
+}
+
+const callStats: MathJaxHookCallStats = {
+  promiseCalls: 0,
+  syncCalls: 0,
+  displayTrueCount: 0,
+  displayFalseCount: 0,
+  displayUnknownCount: 0,
+  injectedCount: 0,
+  inlineSkippedCount: 0,
+  fallbackCount: 0,
+}
+
+export function getMathJaxHookCallStats(): MathJaxHookCallStats {
+  return { ...callStats }
+}
+
 export function getMathJaxHookLifecycle(): MathJaxHookLifecycle {
   if (hookInstalled) return 'INSTALLED'
   return getMathJax() ? 'WAITING_FOR_MATHJAX' : 'UNINITIALIZED'
@@ -84,6 +115,17 @@ function getMathJax(): MathJaxLike | null {
     return M && typeof M.tex2svgPromise === 'function' ? M : null
   } catch {
     return null
+  }
+}
+
+/** R12 — MathJax error output (e.g. `\tag` rejected in inline mode). */
+export function hasMathJaxErrorNode(node: unknown): boolean {
+  try {
+    const el = node as Element
+    if (!el || typeof el.querySelector !== 'function') return false
+    return el.querySelector('mjx-merror, merror, [data-mjx-error]') != null
+  } catch {
+    return false
   }
 }
 
@@ -163,8 +205,10 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
   const origPromise = M.tex2svgPromise!
   const origSync = M.tex2svg
 
-  const prepare = (tex: unknown, callKind: 'tex2svgPromise' | 'tex2svg'): {
+  const prepare = (tex: unknown, callKind: 'tex2svgPromise' | 'tex2svg', options?: unknown): {
     tex: unknown
+    /** Untouched original TeX — used by the no-tag fallback. */
+    originalTex: unknown
     injected: boolean
     inputHashBefore: string
     sourceHash: string
@@ -180,8 +224,23 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
   } => {
     const inputHashBefore = typeof tex === 'string' ? hashFormulaSource(tex) : ''
     const inputLength = typeof tex === 'string' ? tex.length : 0
+    const optionRecord = (options && typeof options === 'object') ? options as Record<string, unknown> : null
+    const displayOption = optionRecord && typeof optionRecord['display'] === 'boolean'
+      ? optionRecord['display'] as boolean
+      : null
+    if (callKind === 'tex2svgPromise') callStats.promiseCalls++
+    else callStats.syncCalls++
+    if (displayOption === true) callStats.displayTrueCount++
+    else if (displayOption === false) callStats.displayFalseCount++
+    else callStats.displayUnknownCount++
     // LIVE context — read fresh on EVERY call (never the install-time closure).
-    const live = liveProvider ? liveProvider() : { documentKey: null, controller: null, headingSnapshotRevision: null }
+    // A failing provider must never break the host renderer.
+    let live: FormulaProjectionLiveContext = { documentKey: null, controller: null, headingSnapshotRevision: null }
+    try {
+      live = liveProvider ? liveProvider() : live
+    } catch {
+      live = { documentKey: null, controller: null, headingSnapshotRevision: null }
+    }
     emitRuntimeAudit('FORMULA-MATHJAX-HOOK-CALL', {
       callKind,
       hookInstallDocumentKey: installForensic?.documentKey ?? null,
@@ -191,15 +250,34 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
       contextSource: 'LIVE_PROVIDER',
       inputHash: inputHashBefore,
       inputLength,
+      displayOption,
+      optionKeys: optionRecord ? Object.keys(optionRecord) : [],
       inputHasExplicitTag: typeof tex === 'string' && /(^|[^\\])\\tag\s*\{/.test(tex),
       activePlanCount: live.controller ? live.controller.inventory().planCount : 0,
       decision: 'OBSERVED',
     })
     if (typeof tex !== 'string' || !live.controller || !live.documentKey) {
-      return { tex, injected: false, inputHashBefore, sourceHash: inputHashBefore }
+      return { tex, originalTex: tex, injected: false, inputHashBefore, sourceHash: inputHashBefore }
+    }
+    // R12 — MathJax is a GLOBAL renderer shared by inline `$…$` and display
+    // `$$…$$`. Plans exist only for block formula hosts, but an inline TeX that
+    // equals a block TeX produces the SAME source hash. Injecting `\tag{…}`
+    // there makes MathJax reject the inline formula ("tag not allowed"), so an
+    // explicitly inline render is never numbered.
+    if (displayOption === false) {
+      callStats.inlineSkippedCount++
+      emitRuntimeAudit('FORMULA-MATHJAX-INLINE-SKIP', {
+        callKind,
+        documentKey: live.documentKey,
+        inputHash: inputHashBefore,
+        displayOption,
+        decision: 'INLINE_RENDER_NOT_NUMBERED',
+      })
+      return { tex, originalTex: tex, injected: false, inputHashBefore, sourceHash: inputHashBefore }
     }
     try {
       const decision = live.controller.prepareTransientRenderInput(tex, live.documentKey, live.headingSnapshotRevision ?? -1)
+      if (decision.injected) callStats.injectedCount++
       // PA-10 — with duplicate TeX the hash alone maps to several hosts, so the
       // plan MUST be read from the host the controller actually correlated.
       const correlatedPlan = decision.host
@@ -236,6 +314,7 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
       }
       return {
         tex: decision.tex,
+        originalTex: tex,
         injected: decision.injected,
         inputHashBefore,
         sourceHash: decision.sourceHash,
@@ -248,14 +327,30 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
         host: decision.host,
       }
     } catch {
-      return { tex, injected: false, inputHashBefore, sourceHash: inputHashBefore }
+      return { tex, originalTex: tex, injected: false, inputHashBefore, sourceHash: inputHashBefore }
     }
   }
 
   M.tex2svgPromise = function (tex: unknown, options?: unknown) {
     markPerfFirstCall()
-    const prepared = prepare(tex, 'tex2svgPromise')
-    const result = origPromise.call(M, prepared.tex, options)
+    const prepared = prepare(tex, 'tex2svgPromise', options)
+    let result: unknown
+    try {
+      result = origPromise.call(M, prepared.tex, options)
+    } catch (error) {
+      // R12 §4 — a synchronous tag failure must fall back to the original input.
+      if (!prepared.injected) throw error
+      emitRuntimeAudit('FORMULA-MATHJAX-TAG-RENDER-FALLBACK', {
+        callKind: 'tex2svgPromise',
+        documentKey: prepared.documentKey ?? null,
+        inputHash: prepared.inputHashBefore,
+        formulaRuntimeKey: prepared.formulaRuntimeKey ?? null,
+        rawNumber: prepared.rawNumber ?? null,
+        error: error instanceof Error ? error.message : String(error),
+        decision: 'RETRIED_WITHOUT_TAG_SYNC_THROW',
+      })
+      return origPromise.call(M, prepared.originalTex, options)
+    }
     if (prepared.injected && result && typeof (result as Promise<unknown>).then === 'function') {
       const sourceHash = prepared.sourceHash
       const txnPlanSetEpoch = prepared.planSetEpoch ?? -1
@@ -263,7 +358,38 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
       const txnSignatureHash = prepared.signatureHash ?? ''
       const txnDocumentKey = prepared.documentKey ?? null
       const txnFormulaRuntimeKey = prepared.formulaRuntimeKey ?? null
-      ;(result as Promise<unknown>).then((node: unknown) => {
+      // R12 §4 — a tag-render rejection must never leave the formula blank.
+      // Retry ONCE with the untouched input (no `\tag`), then audit honestly.
+      result = (result as Promise<unknown>).catch((error: unknown) => {
+        callStats.fallbackCount++
+        emitRuntimeAudit('FORMULA-MATHJAX-TAG-RENDER-FALLBACK', {
+          callKind: 'tex2svgPromise',
+          documentKey: txnDocumentKey,
+          inputHash: prepared.inputHashBefore,
+          formulaRuntimeKey: txnFormulaRuntimeKey,
+          rawNumber: prepared.rawNumber ?? null,
+          error: error instanceof Error ? error.message : String(error),
+          decision: 'RETRIED_WITHOUT_TAG',
+        })
+        return origPromise.call(M, prepared.originalTex, options)
+      })
+      result = (result as Promise<unknown>).then((node: unknown) => {
+        // R12 §4 — MathJax may RESOLVE with an error node instead of rejecting
+        // (e.g. `\tag` not allowed in an inline render). Retry without the tag
+        // so the formula can never stay blank.
+        if (hasMathJaxErrorNode(node)) {
+          callStats.fallbackCount++
+          emitRuntimeAudit('FORMULA-MATHJAX-TAG-RENDER-FALLBACK', {
+            callKind: 'tex2svgPromise',
+            documentKey: txnDocumentKey,
+            inputHash: prepared.inputHashBefore,
+            formulaRuntimeKey: txnFormulaRuntimeKey,
+            rawNumber: prepared.rawNumber ?? null,
+            error: 'MATHJAX_ERROR_NODE',
+            decision: 'RETRIED_WITHOUT_TAG_ERROR_NODE',
+          })
+          return origPromise.call(M, prepared.originalTex, options)
+        }
         // Phase 7R.3.6 §35: STALE_ACTIVATION_COMMIT_IGNORED — an old activation's
         // async output must never commit over the CURRENT activation.
         const live = liveProvider ? liveProvider() : null
@@ -297,7 +423,7 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
               currentPlanSetEpoch: hostInfo?.activation?.planSetEpoch ?? null,
               decision: 'STALE_ACTIVATION_COMMIT_IGNORED',
             })
-            return
+            return node
           }
         }
         const scan = scanOutputForTags(node)
@@ -314,16 +440,30 @@ export function ensureMathJaxRenderInputHook(options: { getLiveContext: FormulaP
             ? (scan.sequentialTagEvidenceCount > 0 ? 'DUPLICATE_TAGS_IN_RETURNED_OUTPUT' : 'SEMANTIC_TAG_PRESENT')
             : 'NO_SEMANTIC_TAG_IN_RETURNED_OUTPUT',
         })
-      }, () => {
-        /* render failure — no output audit */
+        return node
       })
     }
     return result
   }
   if (origSync) {
     M.tex2svg = function (tex: unknown, options?: unknown) {
-      const prepared = prepare(tex, 'tex2svg')
-      return origSync.call(M, prepared.tex, options)
+      const prepared = prepare(tex, 'tex2svg', options)
+      try {
+        return origSync.call(M, prepared.tex, options)
+      } catch (error) {
+        if (!prepared.injected) throw error
+        callStats.fallbackCount++
+        emitRuntimeAudit('FORMULA-MATHJAX-TAG-RENDER-FALLBACK', {
+          callKind: 'tex2svg',
+          documentKey: prepared.documentKey ?? null,
+          inputHash: prepared.inputHashBefore,
+          formulaRuntimeKey: prepared.formulaRuntimeKey ?? null,
+          rawNumber: prepared.rawNumber ?? null,
+          error: error instanceof Error ? error.message : String(error),
+          decision: 'RETRIED_WITHOUT_TAG',
+        })
+        return origSync.call(M, prepared.originalTex, options)
+      }
     }
   }
 

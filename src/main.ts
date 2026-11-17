@@ -83,6 +83,7 @@ import { formatNumberingConflictSummary } from './heading-numbering/heading-numb
 
 import { CaptionService } from './heading-numbering/caption-service'
 import type { CaptionServiceContext } from './heading-numbering/caption-service'
+import { getMathJaxHookCallStats } from './heading-numbering/mathjax-render-input-hook'
 import { DocumentNumberingCoordinator } from './heading-numbering/document-numbering-coordinator'
 import { CaptionContextMenu } from './heading-numbering/caption-context-menu'
 import { generateDocumentKey } from './heading-numbering/heading-numbering-scope-store'
@@ -2390,7 +2391,15 @@ export default class extends Plugin<InkChapterSettings> {
           const rootEl = document.getElementById('write') as HTMLElement | null
           const documentKey = this.numberingService?.getDocumentKey() ?? null
           if (!rootEl) {
-            return { documentKey, writeWidth: 0, formulas: [], headings: [], sourceNumberParagraphCount: 0 }
+            return {
+              documentKey,
+              writeWidth: 0,
+              formulas: [],
+              headings: [],
+              inlineFormulas: [],
+              mathJaxCallStats: getMathJaxHookCallStats(),
+              sourceNumberParagraphCount: 0,
+            }
           }
           const visibleRect = (el: Element) => {
             try {
@@ -2484,11 +2493,47 @@ export default class extends Plugin<InkChapterSettings> {
             text: (h.textContent ?? '').trim().slice(0, 80),
             projectedNumber: h.getAttribute('data-inkchapter-heading-number') ?? '',
           }))
+          // R12 — real inline `$…$` hosts. They must render and must NEVER carry
+          // a block tag/number (the MathJax hook is globally shared).
+          // Typora versions differ: `.md-inline-math` (expanded) and `.md-math`
+          // (plain inline) are both real inline containers.
+          const inlineCandidates = Array.from(rootEl.querySelectorAll<HTMLElement>(
+            '.md-inline-math, .md-math, .md-mathjax-midline, [md-inline="math"]',
+          )).filter(el => !el.closest('.md-math-block')
+            && !el.classList.contains('md-math-block')
+            && !el.classList.contains('md-math-container'))
+          // Any MathJax container OUTSIDE a block host is an inline formula —
+          // this is class-name independent and catches host/theme variants.
+          const inlineContainerParents = Array.from(rootEl.querySelectorAll<HTMLElement>('mjx-container'))
+            .filter(container => !container.closest('.md-math-block'))
+            .map(container => container.closest<HTMLElement>(
+              '.md-inline-math, .md-math, .md-mathjax-midline, [md-inline="math"]',
+            ) ?? container.parentElement)
+            .filter((host): host is HTMLElement => host != null)
+          const inlineHosts = [...new Set([...inlineCandidates, ...inlineContainerParents])]
+          const inlineFormulas = inlineHosts.map(host => {
+            const tagTexts = Array.from(host.querySelectorAll<HTMLElement>('mjx-tag'))
+              .map(tag => (tag.textContent ?? '').trim())
+              .filter(text => text !== '')
+            const numberTexts = Array.from(host.querySelectorAll<HTMLElement>('mjx-math *'))
+              .filter(node => node.children.length === 0)
+              .map(node => (node.textContent ?? '').trim())
+              .filter(text => FORMULA_NUMBER_TEXT_PATTERN.test(text))
+            return {
+              text: (host.textContent ?? '').trim().slice(0, 80),
+              hasMathJax: host.querySelector('mjx-container, .MathJax') != null,
+              mjxContainerCount: host.querySelectorAll('mjx-container, .MathJax').length,
+              tagTexts,
+              numberTexts,
+            }
+          })
           return {
             documentKey,
             writeWidth: rootEl.getBoundingClientRect().width,
             formulas,
             headings,
+            inlineFormulas,
+            mathJaxCallStats: getMathJaxHookCallStats(),
             sourceNumberParagraphCount,
           }
         }
