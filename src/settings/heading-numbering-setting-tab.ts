@@ -181,6 +181,13 @@ function getLevelLabel(physicalLevel: number, mode: HeadingStructureMode): strin
   return `H${physicalLevel}`
 }
 
+/** Format editor container carrying the drag context between pointer handlers. */
+type DragCarrier = HTMLElement & {
+  __dragLevel?: HeadingLevel
+  __dragStyle?: HeadingLevelStyle
+  __dragFmt?: readonly ContextualFormatSegment[]
+}
+
 export class HeadingNumberingSettingTab extends SettingTab {
   get name(): string {
     return '标题编号'
@@ -643,7 +650,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     
     if (!docKey) {
       // No document open — inherit global
-      const gSource = (scopeStore.globalDefault as any).formatSource as NumberingFormatSource | undefined
+      const gSource = scopeStore.globalDefault.formatSource
       return {
         source: gSource ?? null,
         formatId: gSource?.type === 'custom' ? gSource.formatId : null,
@@ -663,7 +670,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
     
     // No document override — inherits global
-    const gSource = (scopeStore.globalDefault as any).formatSource as NumberingFormatSource | undefined
+    const gSource = scopeStore.globalDefault.formatSource
     return {
       source: gSource ?? null,
       formatId: gSource?.type === 'custom' ? gSource.formatId : null,
@@ -1202,7 +1209,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       maxDepth: format.settings.maxDepth,
       levels: format.settings.levels,
       customDefinition: format.settings.levels,
-    } as any)
+    })
     this.headingDraft = clonedSettings
     this.headingDraftOriginal = deepCloneSettings(clonedSettings)
     // Normalize both so contextualFormatVariants defaults don't show as dirty
@@ -1226,7 +1233,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       preset: preset,
       maxDepth: 6,
       levels: presetLevels,
-    } as any)
+    })
     this.headingDraft = clonedSettings
     this.headingDraftOriginal = deepCloneSettings(clonedSettings)
     this.ensureAllLevelsHaveCurrentSegment(this.headingDraft)
@@ -1507,7 +1514,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     }
 
     // Check and update global default applied version
-    const gSource = (scopeStore.globalDefault as any).formatSource as NumberingFormatSource | undefined
+    const gSource = scopeStore.globalDefault.formatSource
     if (gSource?.type === 'custom' && gSource.formatId === formatId) {
       this.numberingService.syncGlobalDefaultFormatVersion(formatId, newVersion)
     }
@@ -1624,7 +1631,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
           maxDepth: latest.settings.maxDepth,
           levels: latest.settings.levels,
           customDefinition: latest.settings.levels,
-        } as any)
+        })
         this.headingDraft = fmtSettings
         this.headingDraftOriginal = deepCloneSettings(fmtSettings)
         this.ensureAllLevelsHaveCurrentSegment(this.headingDraft)
@@ -2606,9 +2613,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
     style: HeadingLevelStyle,
     activeFmt: readonly ContextualFormatSegment[],
   ): void {
-    ;(fmtEl as any).__dragLevel = lv
-    ;(fmtEl as any).__dragStyle = style
-    ;(fmtEl as any).__dragFmt = activeFmt
+    const carrier = fmtEl as DragCarrier
+    carrier.__dragLevel = lv
+    carrier.__dragStyle = style
+    carrier.__dragFmt = activeFmt
 
     fmtEl.addEventListener('pointerdown', (e: PointerEvent) => {
       if (e.button !== 0) return
@@ -2638,8 +2646,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (this.dragState) this.cancelDrag('re-drag')
     this.dragState = createDragState(idx, clientX, clientY)
 
-    const lv = (container as any).__dragLevel as HeadingLevel
-    const style = (container as any).__dragStyle as HeadingLevelStyle
+    const carrier = container as DragCarrier
+    const lv = carrier.__dragLevel
+    const style = carrier.__dragStyle
+    if (lv === undefined || !style) return
 
     const onMove = (e: PointerEvent) => this.onDragMove(container, e.clientX, e.clientY)
     const onUp = (e: PointerEvent) => {
@@ -2748,7 +2758,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     if (lv > 1) {
       this.addCustomSelect(section, '在哪个上级后重新开始', buildRestartOptions(lv), String(style.restartAfterLevel ?? ''), (val) => {
         const parsed = val === '' ? null : Number(val) as HeadingLevel
-        this.numberingService.updateLevelStyle(lv, { restartAfterLevel: parsed } as any)
+        this.numberingService.updateLevelStyle(lv, { restartAfterLevel: parsed })
         this.onshow()
       })
     }
@@ -2866,8 +2876,9 @@ export class HeadingNumberingSettingTab extends SettingTab {
     lv: HeadingLevel,
     style: HeadingLevelStyle,
   ): void {
-    ;(fmtEl as any).__dragLevel = lv
-    ;(fmtEl as any).__dragStyle = style
+    const carrier = fmtEl as DragCarrier
+    carrier.__dragLevel = lv
+    carrier.__dragStyle = style
 
     fmtEl.addEventListener('pointerdown', (e: PointerEvent) => {
       if (e.button !== 0) return
@@ -2900,8 +2911,10 @@ export class HeadingNumberingSettingTab extends SettingTab {
 
     this.dragState = createDragState(idx, clientX, clientY)
 
-    const lv = (container as any).__dragLevel as HeadingLevel
-    const style = (container as any).__dragStyle as HeadingLevelStyle
+    const carrier = container as DragCarrier
+    const lv = carrier.__dragLevel
+    const style = carrier.__dragStyle
+    if (lv === undefined || !style) return
 
     const onMove = (e: PointerEvent) => this.onDragMove(container, e.clientX, e.clientY)
     const onUp = (e: PointerEvent) => {
@@ -3595,7 +3608,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       }
       if (!hasOwnWith) {
         ls.contextualFormatVariants = {
-          ...(ls.contextualFormatVariants || {} as any),
+          ...ls.contextualFormatVariants,
           withLevelOne: [{ ...soloSeg, id: generateStableId() }],
         }
       }
@@ -4221,8 +4234,6 @@ export class HeadingNumberingSettingTab extends SettingTab {
     )
     
     // Clean on settings close
-    const onHide = () => this.closeMenu()
-    ;(this as any)._menuHideHandler = onHide
     const originalOnhide = this.onhide
     this.onhide = () => { this.closeMenu(); originalOnhide.call(this) }
   }
@@ -4298,7 +4309,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     
     const isPreset = state.formatType === 'built-in'
     const scopeStore = this.numberingService.getScopeStore()
-    const gSource = (scopeStore.globalDefault as any).formatSource as NumberingFormatSource | undefined
+    const gSource = scopeStore.globalDefault.formatSource
     const isGlobalDefault = isPreset
       ? (gSource?.type === 'built-in' && gSource.presetId === state.formatId)
       : (gSource?.type === 'custom' && gSource.formatId === state.formatId)
@@ -5638,7 +5649,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       restartSelect.onchange = () => {
         if (readonly) return
         const parsed = restartSelect.value === '' ? null : Number(restartSelect.value) as HeadingLevel
-        this.numberingService.updateLevelStyle(lv, { restartAfterLevel: parsed } as any); this.onshow()
+        this.numberingService.updateLevelStyle(lv, { restartAfterLevel: parsed }); this.onshow()
       }
       form.appendChild(restartSelect)
     }
@@ -6060,7 +6071,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
   }
 
   private initCaptionDraft(): void {
-    const raw = this.settings.get('caption' as any) as any
+    const raw = this.settings.get('caption') as CaptionSettings | undefined
     const cfg = (raw?.types ? raw : DEFAULT_CAPTION_SETTINGS) as CaptionSettings
     this.captionDraft = {
       schemaVersion: cfg.schemaVersion ?? 1,
@@ -6078,7 +6089,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
         code: { ...this.captionDraft.types.code },
       },
     }
-    const rawFormula = this.settings.get('captionFormula' as any) as any
+    const rawFormula = this.settings.get('captionFormula')
     this.captionFormulaDraft = migrateObjectNumberingConfig('formula', rawFormula)
     this.savedCaptionFormulaBaseline = { ...this.captionFormulaDraft }
   }
@@ -6099,7 +6110,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       console.warn('[InkChapter Caption] SETTINGS-SAVE-BLOCKED', errors)
       return
     }
-    this.settings.set('caption' as any, this.captionDraft as any)
+    this.settings.set('caption', this.captionDraft)
     this.savedCaptionBaseline = {
       schemaVersion: this.captionDraft.schemaVersion,
       types: {
@@ -6109,7 +6120,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
       },
     }
     if (this.captionFormulaDraft) {
-      this.settings.set('captionFormula' as any, this.captionFormulaDraft as any)
+      this.settings.set('captionFormula', this.captionFormulaDraft)
       this.savedCaptionFormulaBaseline = { ...this.captionFormulaDraft }
     }
     this.captionService?.applySettings(this.captionDraft)
@@ -6189,8 +6200,8 @@ export class HeadingNumberingSettingTab extends SettingTab {
     parent: HTMLElement,
     type: ObjectNumberingType,
     label: string,
-    get: () => Record<string, any>,
-    apply: (patch: Record<string, any>) => void,
+    get: () => Partial<ObjectNumberingConfig>,
+    apply: (patch: Partial<ObjectNumberingConfig>) => void,
     positionOptions: Array<{ value: ObjectPosition; label: string }>,
     sampleName: string,
     showFormulaMode: boolean,
@@ -6217,12 +6228,12 @@ export class HeadingNumberingSettingTab extends SettingTab {
         { value: 'typora-native', label: 'Typora 原生' },
         { value: 'inkchapter', label: '墨章自定义' },
       ], (get().formulaMode ?? 'typora-native') as 'typora-native' | 'inkchapter', 'inkchapter-caption-setting-select')
-      modeSelect.addEventListener('change', () => { apply({ formulaMode: modeSelect.value }) })
+      modeSelect.addEventListener('change', () => { apply({ formulaMode: modeSelect.value as 'typora-native' | 'inkchapter' }) })
       modeLabel.appendChild(modeSelect)
     }
 
     const positionSelect = buildSelect<ObjectPosition>(positionOptions, (get().position ?? 'above') as ObjectPosition, 'inkchapter-caption-setting-select')
-    positionSelect.addEventListener('change', () => { apply({ position: positionSelect.value }) })
+    positionSelect.addEventListener('change', () => { apply({ position: positionSelect.value as ObjectPosition }) })
     controls.appendChild(positionSelect)
 
     const prefixInput = document.createElement('input')
@@ -6248,7 +6259,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
     // R12: choosing a preset returns to the legacy preset semantics (explicit
     // scope cleared) so the two configuration paths never fight.
     presetSelect.addEventListener('change', () => {
-      apply({ preset: presetSelect.value, scope: undefined })
+      apply({ preset: presetSelect.value as ObjectNumberingPreset, scope: undefined })
       refreshPreview()
     })
     addField('编号类型 ', presetSelect)
@@ -6442,7 +6453,7 @@ export class HeadingNumberingSettingTab extends SettingTab {
             maxDepth: this.savedFormatBaseline.settings.maxDepth,
             levels: this.savedFormatBaseline.settings.levels,
             customDefinition: this.savedFormatBaseline.settings.levels,
-          } as any)
+          })
           this.headingDraft = fmtSettings
           this.headingDraftOriginal = deepCloneSettings(fmtSettings)
           this.ensureAllLevelsHaveCurrentSegment(this.headingDraft)

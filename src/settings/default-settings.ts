@@ -138,7 +138,7 @@ export const DEFAULT_SETTINGS: InkChapterSettings = {
         preset: 'decimal-hierarchical',
         maxDepth: 6,
         levels: decimalLevels,
-      } as any).levels,
+      }).levels,
     },
     documentOverrides: {},
     globalParagraphLayout: { ...DEFAULT_PARAGRAPH_LAYOUT },

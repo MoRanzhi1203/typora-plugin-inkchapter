@@ -2373,7 +2373,8 @@ export class CaptionService {
     })
 
     // ── Minimal debug caption (bypasses sidecar / name / settings / numbering) ──
-    if ((window as any).__INKCHAPTER_CAPTION_DEBUG_MINIMAL__) {
+    const debugWindow = window as unknown as Record<string, unknown>
+    if (debugWindow.__INKCHAPTER_CAPTION_DEBUG_MINIMAL__) {
       this.renderDebugMinimalCaption(targets)
       return
     }
@@ -4206,19 +4207,20 @@ export class CaptionService {
 
   private registerProbe(): void {
     try {
-      ;(window as any).__inkchapter_caption_probe__ = () => this.probe()
-      ;(window as any).__inkchapter_caption_force_refresh__ = () => this.forceRefresh()
-      ;(window as any).__inkchapter_image_source_probe__ = () => this.imageSourceProbe()
-      ;(window as any).__inkchapter_figure_alt_write_probe__ = () => this.figureAltWriteProbe()
-      ;(window as any).__inkchapter_local_image_path_probe__ = () => this.localImagePathProbe()
-      ;(window as any).__inkchapter_normalize_local_image_paths__ = () => this.normalizeLocalImagePaths()
-      ;(window as any).__inkchapter_normalize_figure_local_path__ = (index: number) => {
+      const probeWindow = window as unknown as Record<string, unknown>
+      probeWindow.__inkchapter_caption_probe__ = () => this.probe()
+      probeWindow.__inkchapter_caption_force_refresh__ = () => this.forceRefresh()
+      probeWindow.__inkchapter_image_source_probe__ = () => this.imageSourceProbe()
+      probeWindow.__inkchapter_figure_alt_write_probe__ = () => this.figureAltWriteProbe()
+      probeWindow.__inkchapter_local_image_path_probe__ = () => this.localImagePathProbe()
+      probeWindow.__inkchapter_normalize_local_image_paths__ = () => this.normalizeLocalImagePaths()
+      probeWindow.__inkchapter_normalize_figure_local_path__ = (index: number) => {
         const targets = this.adapter.collectTargets().filter(t => t.type === 'figure')
         const target = targets[index]
         if (!target) return { ok: false, reason: 'no-figure-at-index' }
         return { ok: true, ...this.normalizeFigureLocalPath(target) }
       }
-      ;(window as any).__inkchapter_numbering_preview__ = (type: ObjectNumberingType, overrides?: Partial<ObjectNumberingConfig>) => {
+      probeWindow.__inkchapter_numbering_preview__ = (type: ObjectNumberingType, overrides?: Partial<ObjectNumberingConfig>) => {
         const config = { ...migrateObjectNumberingConfig(type, resolveCaptionTypeSettings(this.captionSettings, type as CaptionTargetType)), ...overrides }
         return {
           renderedNumber: renderNumberingPreview(type, config, { n: 1, chapter: '2', section: '3', name: '示例' }),
@@ -4226,16 +4228,16 @@ export class CaptionService {
           context: { chapter: '2', section: '3', n: '1' },
         }
       }
-      ;(window as any).__inkchapter_formula_number_probe__ = () => this.formulaNumberProbe()
-      ;(window as any).__inkchapter_formula_gate_report__ = () => this.formulaGateReport()
-      ;(window as any).__inkchapter_caption_set_name__ = (type: CaptionTargetType, index: number, name: string) => {
+      probeWindow.__inkchapter_formula_number_probe__ = () => this.formulaNumberProbe()
+      probeWindow.__inkchapter_formula_gate_report__ = () => this.formulaGateReport()
+      probeWindow.__inkchapter_caption_set_name__ = (type: CaptionTargetType, index: number, name: string) => {
         const targets = this.adapter.collectTargets().filter(t => t.type === type)
         const target = targets[index]
         if (!target) return { ok: false, reason: 'no-target-at-index' }
         const record = this.setCaption(type, target, String(name ?? ''))
         return { ok: true, recordId: record?.captionId ?? null }
       }
-      ;(window as any).__inkchapter_caption_clear_name__ = (type: CaptionTargetType, index: number) => {
+      probeWindow.__inkchapter_caption_clear_name__ = (type: CaptionTargetType, index: number) => {
         const targets = this.adapter.collectTargets().filter(t => t.type === type)
         const target = targets[index]
         if (!target) return { ok: false, reason: 'no-target-at-index' }

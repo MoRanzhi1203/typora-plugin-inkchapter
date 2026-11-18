@@ -177,6 +177,12 @@ export type EnterCommitSuccessFields = {
   visualSuccess: boolean
   caretSuccess: boolean
   overallSuccess: boolean
+  /** Optional structural success layers (filled by the Enter commit path). */
+  paragraphCountSuccess?: boolean
+  sameParagraphSuccess?: boolean
+  localOffsetSuccess?: boolean
+  globalCursorBefore?: number | null
+  globalCursorAfter?: number | null
 }
 
 // ── r56: Paragraph-Local Caret Types ────────────────────────────────
@@ -225,7 +231,7 @@ function normalizeSelectionNodeToElement(node: Node | null): Element | null {
   if (!node) return null
   if (node.nodeType === 1) return node as Element
   if (node.nodeType === 3) return (node as Text).parentElement
-  return (node as any).parentElement ?? null
+  return node.parentElement ?? null
 }
 
 /** Unified public entry: resolve selection to body paragraph. */
@@ -2186,6 +2192,8 @@ export function generateParagraphFingerprint(para: HTMLElement | null): string |
 // Every rehydrate decision MUST record its strategy.
 
 export const RehydrateMatchStrategy = {
+  /** R58.6.1 — a CURRENT_LIVE record bound to a still-connected element. */
+  LIVE_BINDING: 'MATCH-LIVE-BINDING',
   RECORD_ID: 'MATCH-RECORD-ID',
   EXACT_ANCHOR: 'MATCH-EXACT-ANCHOR',
   NORMALIZED_ANCHOR: 'MATCH-NORMALIZED-ANCHOR',

@@ -26,7 +26,7 @@ export const BUILD_MARKER = 'inkchapter-backspace-trace-isolation-r37-a1b2c'
 
 /** Trace is OFF by default. Enable only via explicit window flag. */
 export function isTraceExplicitlyEnabled(): boolean {
-  return Boolean((window as any).__INKCHAPTER_NORMAL_ENTER_TRACE__)
+  return Boolean((window as unknown as Record<string, unknown>).__INKCHAPTER_NORMAL_ENTER_TRACE__)
 }
 
 // ── State ────────────────────────────────────────────────────────────
@@ -125,7 +125,8 @@ export function activateNormalEnterTrace(vaultRootHint?: string): void {
 
   let vaultRoot = vaultRootHint
   if (!vaultRoot) {
-    vaultRoot = (globalThis as any).__inkchapter_vault_root__ ?? undefined
+    const injected = (globalThis as unknown as Record<string, unknown>).__inkchapter_vault_root__
+    vaultRoot = typeof injected === 'string' ? injected : undefined
   }
   if (!vaultRoot) {
     const cwd = process.cwd()

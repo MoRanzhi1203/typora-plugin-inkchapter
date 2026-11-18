@@ -121,7 +121,8 @@ function normalizeText(text: string): string {
 function resolveVaultRoot(): string | null {
   // Try to derive from the active document path
   // This is set by the service during initialization
-  return (globalThis as any).__inkchapter_vault_root__ ?? null
+  const root = (globalThis as unknown as Record<string, unknown>).__inkchapter_vault_root__
+  return typeof root === 'string' ? root : null
 }
 
 let vaultRootOverride: string | null = null
@@ -137,7 +138,7 @@ export function injectProductionVaultRoot(root: string): void {
   productionVaultRoot = root
   productionVaultRootSet = true
   // Also set globalThis for other modules (trace, forensic)
-  ;(globalThis as any).__inkchapter_vault_root__ = root
+  ;(globalThis as unknown as Record<string, unknown>).__inkchapter_vault_root__ = root
 }
 
 function getVaultRoot(): string | null {

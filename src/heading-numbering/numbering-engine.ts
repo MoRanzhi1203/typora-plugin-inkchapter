@@ -59,6 +59,11 @@ export function buildStrictEffectiveLevels(
         ? { ...s, level: shift(s.level) }
         : { ...s })
 
+    const shiftNumberFormat = (segments: readonly NumberFormatSegment[]): NumberFormatSegment[] =>
+      segments.map(s => s.type === 'level-reference'
+        ? { ...s, level: shift(s.level) }
+        : { ...s })
+
     return {
       ...style,
       contextualFormatVariants: {
@@ -70,8 +75,8 @@ export function buildStrictEffectiveLevels(
         withoutLevelOne: shiftMultilevel(style.multilevelFormatVariants.withoutLevelOne),
       },
       formatVariants: {
-        withLevelOne: shiftMultilevel(style.formatVariants.withLevelOne as any) as any,
-        withoutLevelOne: shiftMultilevel(style.formatVariants.withoutLevelOne as any) as any,
+        withLevelOne: shiftNumberFormat(style.formatVariants.withLevelOne),
+        withoutLevelOne: shiftNumberFormat(style.formatVariants.withoutLevelOne),
       },
     }
   }
@@ -146,10 +151,9 @@ export function computeHeadingNumbering(
 ): NumberedHeading[] {
   const counters: number[] = [0, 0, 0, 0, 0, 0]
   // Use structure resolver for authoritative H1 visibility
-  const structure = (settings as any)._resolvedStructure
-    || (settings.headingStructureMode
-      ? { showLevelOneNumber: settings.headingStructureMode === 'loose' }
-      : { showLevelOneNumber: settings.showLevelOneNumber })
+  const structure = settings.headingStructureMode
+    ? { showLevelOneNumber: settings.headingStructureMode === 'loose' }
+    : { showLevelOneNumber: settings.showLevelOneNumber }
   const isStrict = !structure.showLevelOneNumber
   const skipH1 = isStrict
 
@@ -429,7 +433,7 @@ function buildLabelFromMultilevelFormat(
   const effectiveFormat = getEffectiveMultilevelFormat(activeFormat, skipH1, headingLevel)
 
   // Build templates map from all level styles
-  const templates: Record<HeadingLevel, HeadingLevelNumberTemplate> = {} as any
+  const templates = {} as Record<HeadingLevel, HeadingLevelNumberTemplate>
   for (let i = 0; i < 6; i++) {
     const lv = (i + 1) as HeadingLevel
     const ls = levelStyles[lv]

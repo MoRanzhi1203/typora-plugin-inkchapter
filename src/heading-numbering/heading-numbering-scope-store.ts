@@ -20,6 +20,10 @@ import type {
   ParagraphLayoutSettings,
   NumberingFormatSource,
   FormatLibrary,
+  NumberFormatSegment,
+  MultilevelFormatSegment,
+  ContextualFormatSegment,
+  HeadingLayoutSettings,
 } from './heading-types'
 import { DEFAULT_HEADING_LEVEL_POSITION } from './heading-types'
 import { getPresetLevels } from './presets'
@@ -168,6 +172,20 @@ function deepCloneLevels(
   return cloned
 }
 
+function cloneNumberFormatSegments(segments: NumberFormatSegment[]): NumberFormatSegment[] {
+  return segments.map(seg => ({ ...seg }))
+}
+
+function cloneMultilevelSegments(segments: MultilevelFormatSegment[]): MultilevelFormatSegment[] {
+  return segments.map(seg => ({ ...seg }))
+}
+
+function cloneContextualSegments(segments: ContextualFormatSegment[]): ContextualFormatSegment[] {
+  return segments.map(seg => seg.type === 'level-reference'
+    ? { ...seg, appearance: { ...seg.appearance } }
+    : { ...seg })
+}
+
 function deepCloneLevelStyle(s: HeadingLevelStyle): HeadingLevelStyle {
   return {
     enabled: s.enabled,
@@ -179,27 +197,17 @@ function deepCloneLevelStyle(s: HeadingLevelStyle): HeadingLevelStyle {
     startAt: s.startAt,
     restartAfterLevel: s.restartAfterLevel,
     formatVariants: {
-      withLevelOne: s.formatVariants.withLevelOne.map(seg => ({ ...seg })) as any,
-      withoutLevelOne: s.formatVariants.withoutLevelOne.map(seg => ({ ...seg })) as any,
+      withLevelOne: cloneNumberFormatSegments(s.formatVariants.withLevelOne),
+      withoutLevelOne: cloneNumberFormatSegments(s.formatVariants.withoutLevelOne),
     },
     levelTemplate: { ...s.levelTemplate },
     multilevelFormatVariants: {
-      withLevelOne: s.multilevelFormatVariants.withLevelOne.map(seg => ({ ...seg })) as any,
-      withoutLevelOne: s.multilevelFormatVariants.withoutLevelOne.map(seg => ({ ...seg })) as any,
+      withLevelOne: cloneMultilevelSegments(s.multilevelFormatVariants.withLevelOne),
+      withoutLevelOne: cloneMultilevelSegments(s.multilevelFormatVariants.withoutLevelOne),
     },
     contextualFormatVariants: {
-      withLevelOne: s.contextualFormatVariants.withLevelOne.map(seg => ({
-        ...seg,
-        appearance: seg.type === 'level-reference'
-          ? { ...(seg as any).appearance }
-          : undefined,
-      })) as any,
-      withoutLevelOne: s.contextualFormatVariants.withoutLevelOne.map(seg => ({
-        ...seg,
-        appearance: seg.type === 'level-reference'
-          ? { ...(seg as any).appearance }
-          : undefined,
-      })) as any,
+      withLevelOne: cloneContextualSegments(s.contextualFormatVariants.withLevelOne),
+      withoutLevelOne: cloneContextualSegments(s.contextualFormatVariants.withoutLevelOne),
     },
     numberTitleSpacing: s.numberTitleSpacing ?? 'space',
     position: s.position ? { ...s.position } : { ...DEFAULT_HEADING_LEVEL_POSITION },
@@ -293,40 +301,28 @@ export function deepMergeSettings(
         // Deep merge sub-objects
         formatVariants: {
           withLevelOne: override.levels[lv].formatVariants.withLevelOne.length > 0
-            ? override.levels[lv].formatVariants.withLevelOne.map(seg => ({ ...seg })) as any
-            : result.levels[lv].formatVariants.withLevelOne.map(seg => ({ ...seg })) as any,
+            ? cloneNumberFormatSegments(override.levels[lv].formatVariants.withLevelOne)
+            : cloneNumberFormatSegments(result.levels[lv].formatVariants.withLevelOne),
           withoutLevelOne: override.levels[lv].formatVariants.withoutLevelOne.length > 0
-            ? override.levels[lv].formatVariants.withoutLevelOne.map(seg => ({ ...seg })) as any
-            : result.levels[lv].formatVariants.withoutLevelOne.map(seg => ({ ...seg })) as any,
+            ? cloneNumberFormatSegments(override.levels[lv].formatVariants.withoutLevelOne)
+            : cloneNumberFormatSegments(result.levels[lv].formatVariants.withoutLevelOne),
         },
         levelTemplate: { ...result.levels[lv].levelTemplate, ...override.levels[lv].levelTemplate },
         multilevelFormatVariants: {
           withLevelOne: override.levels[lv].multilevelFormatVariants.withLevelOne.length > 0
-            ? override.levels[lv].multilevelFormatVariants.withLevelOne.map(seg => ({ ...seg })) as any
-            : result.levels[lv].multilevelFormatVariants.withLevelOne.map(seg => ({ ...seg })) as any,
+            ? cloneMultilevelSegments(override.levels[lv].multilevelFormatVariants.withLevelOne)
+            : cloneMultilevelSegments(result.levels[lv].multilevelFormatVariants.withLevelOne),
           withoutLevelOne: override.levels[lv].multilevelFormatVariants.withoutLevelOne.length > 0
-            ? override.levels[lv].multilevelFormatVariants.withoutLevelOne.map(seg => ({ ...seg })) as any
-            : result.levels[lv].multilevelFormatVariants.withoutLevelOne.map(seg => ({ ...seg })) as any,
+            ? cloneMultilevelSegments(override.levels[lv].multilevelFormatVariants.withoutLevelOne)
+            : cloneMultilevelSegments(result.levels[lv].multilevelFormatVariants.withoutLevelOne),
         },
         contextualFormatVariants: {
           withLevelOne: override.levels[lv].contextualFormatVariants.withLevelOne.length > 0
-            ? override.levels[lv].contextualFormatVariants.withLevelOne.map(seg => ({
-                ...seg,
-                appearance: seg.type === 'level-reference' ? { ...(seg as any).appearance } : undefined,
-              })) as any
-            : result.levels[lv].contextualFormatVariants.withLevelOne.map(seg => ({
-                ...seg,
-                appearance: seg.type === 'level-reference' ? { ...(seg as any).appearance } : undefined,
-              })) as any,
+            ? cloneContextualSegments(override.levels[lv].contextualFormatVariants.withLevelOne)
+            : cloneContextualSegments(result.levels[lv].contextualFormatVariants.withLevelOne),
           withoutLevelOne: override.levels[lv].contextualFormatVariants.withoutLevelOne.length > 0
-            ? override.levels[lv].contextualFormatVariants.withoutLevelOne.map(seg => ({
-                ...seg,
-                appearance: seg.type === 'level-reference' ? { ...(seg as any).appearance } : undefined,
-              })) as any
-            : result.levels[lv].contextualFormatVariants.withoutLevelOne.map(seg => ({
-                ...seg,
-                appearance: seg.type === 'level-reference' ? { ...(seg as any).appearance } : undefined,
-              })) as any,
+            ? cloneContextualSegments(override.levels[lv].contextualFormatVariants.withoutLevelOne)
+            : cloneContextualSegments(result.levels[lv].contextualFormatVariants.withoutLevelOne),
         },
         // Never share the mutable position object with the document override.
         position: override.levels[lv].position
@@ -403,7 +399,7 @@ export function resolveEffectiveSettings(
     base.levels = getPresetLevels(base.preset)
   } else if (formatLibrary) {
     // Live Reference: resolve the latest custom format definition.
-    const source = docOverride?.formatSource ?? (store.globalDefault as any).formatSource as NumberingFormatSource | undefined
+    const source = docOverride?.formatSource ?? store.globalDefault.formatSource
     if (source?.type === 'custom') {
       const latest = formatLibrary.formats.find(f => f.id === source.formatId)
       if (latest) {
@@ -461,7 +457,7 @@ function applyLayoutOverridesToSettings(
     }
     for (const [key, config] of Object.entries(overrides.headingLayouts)) {
       if (config && (key === 'h1' || key === 'h2' || key === 'h3' || key === 'h4' || key === 'h5' || key === 'h6')) {
-        (settings.headingLayouts as any)[key] = { ...config }
+        settings.headingLayouts[key as keyof HeadingLayoutSettings] = { ...config }
       }
     }
   }
@@ -520,7 +516,7 @@ export function saveHeadingSettings(
   request: SaveHeadingSettingsRequest,
 ): HeadingNumberingScopeStore {
   if (request.scope === 'global') {
-    const gd: any = deepCloneSettings(request.settings)
+    const gd = deepCloneSettings(request.settings)
     if (request.formatSource) {
       gd.formatSource = { ...request.formatSource }
     }

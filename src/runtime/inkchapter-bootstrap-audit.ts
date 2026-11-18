@@ -127,9 +127,18 @@ export function resolveRuntimeModulePath(): string | null {
 /** Best-effort framework-reported plugin metadata (never fabricated). */
 export function readFrameworkReportedPluginRoot(): string | null {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const g = globalThis as any
-    const cand = g?.typora?.communityPlugin?.pluginRoot ?? g?.CommunityPlugin?.pluginRoot
+    const g = globalThis as unknown as Record<string, unknown>
+    const typora = g.typora
+    const community = typeof typora === 'object' && typora !== null
+      ? (typora as Record<string, unknown>).communityPlugin
+      : undefined
+    const fromCurrent = typeof community === 'object' && community !== null
+      ? (community as Record<string, unknown>).pluginRoot
+      : undefined
+    const legacy = g.CommunityPlugin
+    const cand = fromCurrent ?? (typeof legacy === 'object' && legacy !== null
+      ? (legacy as Record<string, unknown>).pluginRoot
+      : undefined)
     return typeof cand === 'string' && cand !== '' ? cand : null
   } catch {
     return null

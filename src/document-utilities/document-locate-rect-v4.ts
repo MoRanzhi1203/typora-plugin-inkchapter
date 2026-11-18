@@ -95,7 +95,7 @@ export function unionClientRects(rects: ArrayLike<DOMRect> | DOMRect[] | readonl
   let t = Infinity
   let r = -Infinity
   let b = -Infinity
-  let any = false
+  let found = false
   for (const q of Array.from(rects as DOMRect[])) {
     if (q.width <= 0 || q.height <= 0) continue
     if (!Number.isFinite(q.left) || !Number.isFinite(q.right)) continue
@@ -103,9 +103,9 @@ export function unionClientRects(rects: ArrayLike<DOMRect> | DOMRect[] | readonl
     t = Math.min(t, q.top)
     r = Math.max(r, q.right)
     b = Math.max(b, q.bottom)
-    any = true
+    found = true
   }
-  return any ? makeRectSnapshot({ left: l, top: t, right: r, bottom: b }) : null
+  return found ? makeRectSnapshot({ left: l, top: t, right: r, bottom: b }) : null
 }
 
 /** RECT-INVARIANT-1..5. Returns true only when every check passes. */

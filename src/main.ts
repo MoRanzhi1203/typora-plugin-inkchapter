@@ -1,6 +1,8 @@
 import './style.scss'
 import { Notice, Plugin, PluginSettings } from '@typora-community-plugin/core'
-import type { InkChapterSettings } from './settings/settings-model'
+import type { InkChapterSettings, InkChapterUiSettings } from './settings/settings-model'
+import type { HeadingLevelRangeSettings, SpecialHeadingNumberingSettings, FormatLibrary } from './heading-numbering/heading-types'
+import type { CaptionSettings } from './heading-numbering/caption-system'
 import { DEFAULT_SETTINGS, DEFAULT_UI_SETTINGS, resolveUiSettings } from './settings/default-settings'
 import { InkChapterUiSettingTab } from './settings/inkchapter-ui-setting-tab'
 import { ImageManagementSettingTab } from './settings/image-management-setting-tab'
@@ -1271,12 +1273,12 @@ export default class extends Plugin<InkChapterSettings> {
 
     // ── Schema migration: add levelRange if missing ──
     try {
-      const current = this.settings.get('levelRange' as keyof InkChapterSettings) as any
+      const current = this.settings.get('levelRange') as HeadingLevelRangeSettings | undefined
       if (!current) {
-        this.settings.set('levelRange' as keyof InkChapterSettings, {
+        this.settings.set('levelRange', {
           defaultMaxLevel: 6,
           documentOverrides: {},
-        } as any)
+        })
         console.log('[InkChapter] levelRange migration applied')
       }
     } catch (e) {
@@ -1285,9 +1287,9 @@ export default class extends Plugin<InkChapterSettings> {
 
     // ── Schema migration: add specialNumbering if missing ──
     try {
-      const current = this.settings.get('specialNumbering' as keyof InkChapterSettings) as any
+      const current = this.settings.get('specialNumbering') as SpecialHeadingNumberingSettings | undefined
       if (!current) {
-        this.settings.set('specialNumbering' as keyof InkChapterSettings, {
+        this.settings.set('specialNumbering', {
           unnumberedCounterPolicy: 'skip',
           nameSettings: {
             enabled: true,
@@ -1300,7 +1302,7 @@ export default class extends Plugin<InkChapterSettings> {
             matchMode: 'trim',
             matchAction: 'prompt',
           },
-        } as any)
+        })
         console.log('[InkChapter] specialNumbering migration applied')
       }
     } catch (e) {
@@ -1309,12 +1311,12 @@ export default class extends Plugin<InkChapterSettings> {
 
     // ── Schema migration: init formatLibrary if missing ──
     try {
-      const current = this.settings.get('formatLibrary' as keyof InkChapterSettings) as any
+      const current = this.settings.get('formatLibrary') as FormatLibrary | undefined
       if (!current || !current.version) {
-        this.settings.set('formatLibrary' as keyof InkChapterSettings, {
+        this.settings.set('formatLibrary', {
           version: 1,
           formats: [],
-        } as any)
+        })
         console.log('[InkChapter] formatLibrary migration applied')
       }
     } catch (e) {
@@ -1323,16 +1325,16 @@ export default class extends Plugin<InkChapterSettings> {
 
     // ── Schema migration: init caption settings if missing ──
     try {
-      const current = this.settings.get('caption' as keyof InkChapterSettings) as any
+      const current = this.settings.get('caption') as CaptionSettings | undefined
       if (!current || !current.types) {
-        this.settings.set('caption' as keyof InkChapterSettings, {
+        this.settings.set('caption', {
           schemaVersion: 1,
           types: {
             table: { enabled: true, position: 'above', prefix: '表', numbering: 'continuous' },
             figure: { enabled: true, position: 'below', prefix: '图', numbering: 'continuous' },
             code: { enabled: true, position: 'above', prefix: '代码', numbering: 'continuous' },
           },
-        } as any)
+        })
         console.log('[InkChapter] caption settings migration applied')
       }
     } catch (e) {
@@ -1341,9 +1343,9 @@ export default class extends Plugin<InkChapterSettings> {
 
     // ── Schema migration: init ui (界面 / 文件夹树) if missing ──
     try {
-      const current = this.settings.get('ui' as keyof InkChapterSettings) as any
+      const current = this.settings.get('ui') as InkChapterUiSettings | undefined
       if (!current || typeof current !== 'object') {
-        this.settings.set('ui' as keyof InkChapterSettings, DEFAULT_UI_SETTINGS as any)
+        this.settings.set('ui', DEFAULT_UI_SETTINGS)
         console.log('[InkChapter] ui settings migration applied')
       }
     } catch (e) {
@@ -1355,7 +1357,7 @@ export default class extends Plugin<InkChapterSettings> {
     let vaultRoot: string | undefined
     try {
       // Access app.vault — the authoritative vault service from Typora Community Core
-      const appVault = (this.app as any).vault as { path?: string } | undefined
+      const appVault = this.app.vault as { path?: string } | undefined
       if (appVault?.path) {
         vaultRoot = appVault.path
         console.info(`[InkChapter] SIDECAR-CONTEXT-UPDATE: vaultRoot=${vaultRoot} source=vault-service`)
@@ -1732,13 +1734,13 @@ export default class extends Plugin<InkChapterSettings> {
       this.captionContextMenu.attach(() => document.getElementById('write') as HTMLElement | null)
       // Apply persisted caption settings to the runtime service (enabled/position/prefix).
       try {
-        const captionCfg = this.settings.get('caption' as keyof InkChapterSettings) as any
+        const captionCfg = this.settings.get('caption') as CaptionSettings | undefined
         if (captionCfg?.types) {
-          this.captionService.applySettings(captionCfg as any)
+          this.captionService.applySettings(captionCfg)
         }
-        const captionFormulaCfg = this.settings.get('captionFormula' as keyof InkChapterSettings) as any
+        const captionFormulaCfg = this.settings.get('captionFormula')
         if (captionFormulaCfg) {
-          this.captionService.applyFormulaSettings(captionFormulaCfg as any)
+          this.captionService.applyFormulaSettings(captionFormulaCfg)
         }
       } catch { /* fail-open */ }
       // R10 — suppress the caption projection while the source owns the captions.
@@ -4030,7 +4032,7 @@ export default class extends Plugin<InkChapterSettings> {
 
     // ── Runtime load verification ────────────────
     try {
-      const pluginRoot = (this as any).manifest?.dir ?? ''
+      const pluginRoot = this.manifest.dir ?? ''
       if (pluginRoot) {
         const mainJsPath = path.join(pluginRoot, 'main.js')
         const manifestPath = path.join(pluginRoot, 'manifest.json')
@@ -4053,7 +4055,7 @@ export default class extends Plugin<InkChapterSettings> {
           // (a local `.typora/plugins` copy). This is the AUTHORITATIVE per-window
           // load source — the same id can be installed in both roots, and only
           // this field (plus pluginRoot) tells them apart without path guessing.
-          loadSource: (this as any).manifest?.postion ?? 'unknown',
+          loadSource: this.manifest.postion ?? 'unknown',
           initializationCount: 1,
           ribbonInjected: !!document.querySelector('.typ-ribbon'),
           ribbonEnableClass: document.body.classList.contains('typ-ribbon--enable'),

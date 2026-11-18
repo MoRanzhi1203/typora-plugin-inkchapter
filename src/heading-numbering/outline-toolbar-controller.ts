@@ -269,9 +269,10 @@ export class OutlineToolbarController {
 
   constructor(callbacks: OutlineToolbarCallbacks) {
     this.callbacks = callbacks
-    ;(window as any).__inkchapterTestOutlineCollapse = () => this.runtimeCollapseTest()
+    const debugWindow = window as unknown as Record<string, unknown>
+    debugWindow.__inkchapterTestOutlineCollapse = () => this.runtimeCollapseTest()
     // Expose diagnostic for runtime verification
-    ;(window as any).__inkchapterOutlineDiagnostics = () => {
+    debugWindow.__inkchapterOutlineDiagnostics = () => {
       const row = document.querySelector(`[${ACTIONS_ATTR}]`) as HTMLElement | null
       return dumpOutlineDiagnostics(row)
     }
@@ -295,8 +296,9 @@ export class OutlineToolbarController {
     this.cancelRetry()
     this.detachObserver()
     this.unbindTabClickListeners()
-    delete (window as any).__inkchapterTestOutlineCollapse
-    delete (window as any).__inkchapterOutlineDiagnostics
+    const debugWindow = window as unknown as Record<string, unknown>
+    delete debugWindow.__inkchapterTestOutlineCollapse
+    delete debugWindow.__inkchapterOutlineDiagnostics
   }
 
   reinitialize(): void {

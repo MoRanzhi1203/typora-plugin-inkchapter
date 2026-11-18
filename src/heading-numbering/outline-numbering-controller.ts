@@ -2030,9 +2030,10 @@ export class OutlineNumberingController {
   /** Register the DevTools diagnostic probe. */
   private registerProbe(): void {
     try {
-      ;(window as any).__inkchapter_outline_sync_probe__ = () => this.outlineSyncProbe()
+      const probeWindow = window as unknown as Record<string, unknown>
+      probeWindow.__inkchapter_outline_sync_probe__ = () => this.outlineSyncProbe()
       // Phase 7R.3.11.8B.4.3 — duplicate-identity forensic probe (read-only).
-      ;(window as any).__inkchapter_outline_forensic__ = () => {
+      probeWindow.__inkchapter_outline_forensic__ = () => {
         const root = findOutlineRoot() ?? findOutlineRootRelaxed()
         if (!root) return { rootFound: false }
         const rawInventory = collectRawNativeOutlineInventory(root)

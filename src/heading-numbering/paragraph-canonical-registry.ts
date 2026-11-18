@@ -150,8 +150,10 @@ export type CanonicalMutationResult = {
     | 'NOT_TEMPORARY'
 }
 
-// ── Candidate Source ─────────────────────────────────────────────────
+/** The concrete reason carried by a failed canonical mutation. */
+type CanonicalMutationFailureReason = Extract<CanonicalMutationResult, { ok: false }>['reason']
 
+// ── Candidate Source ─────────────────────────────────────────────────
 export type CandidateSource =
   | 'LIVE'
   | 'PERSISTENT'
@@ -683,11 +685,11 @@ export class ParagraphCanonicalRegistry {
     const meta = this.runtimeMetaByRecordId.get(recordId)
     const recordCountBefore = this.runtimeMetaByRecordId.size
 
-    const block = (reason: CanonicalMutationResult extends { ok: false } ? CanonicalMutationResult['reason'] : string): CanonicalMutationResult => ({
+    const block = (reason: CanonicalMutationFailureReason): CanonicalMutationResult => ({
       ok: false,
       recordId,
       intent,
-      reason: reason as any,
+      reason,
     })
 
     if (!meta) {
@@ -698,7 +700,7 @@ export class ParagraphCanonicalRegistry {
     if (verifiedScopeId && !this.assertCanonicalScope(
       meta.scopeId, verifiedScopeId, intent, recordId,
     )) {
-      return block('DOCUMENT_MISMATCH' as any)
+      return block('DOCUMENT_MISMATCH')
     }
 
     // ── Document key check ──
@@ -864,11 +866,11 @@ export class ParagraphCanonicalRegistry {
     const meta = this.runtimeMetaByRecordId.get(recordId)
     const recordCountBefore = this.runtimeMetaByRecordId.size
 
-    const baseBlock = (reason: CanonicalMutationResult extends { ok: false } ? CanonicalMutationResult['reason'] : string): CanonicalMutationResult => ({
+    const baseBlock = (reason: CanonicalMutationFailureReason): CanonicalMutationResult => ({
       ok: false,
       recordId,
       intent: 'PROMOTE',
-      reason: reason as any,
+      reason,
     })
 
     if (!meta) {
@@ -879,7 +881,7 @@ export class ParagraphCanonicalRegistry {
     if (verifiedScopeId && !this.assertCanonicalScope(
       meta.scopeId, verifiedScopeId, 'PROMOTION', recordId,
     )) {
-      return baseBlock('DOCUMENT_MISMATCH' as any)
+      return baseBlock('DOCUMENT_MISMATCH')
     }
 
     // ── Lifecycle validation ──
@@ -1364,11 +1366,11 @@ export class ParagraphCanonicalRegistry {
     const meta = this.runtimeMetaByRecordId.get(proof.recordId)
     const recordCount = this.runtimeMetaByRecordId.size
 
-    const block = (reason: CanonicalMutationResult extends { ok: false } ? CanonicalMutationResult['reason'] : string): CanonicalMutationResult => ({
+    const block = (reason: CanonicalMutationFailureReason): CanonicalMutationResult => ({
       ok: false,
       recordId: proof.recordId,
       intent,
-      reason: reason as any,
+      reason,
     })
 
     if (!meta) {

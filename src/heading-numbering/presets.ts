@@ -263,7 +263,7 @@ function stripMfLevelOne(format: MultilevelFormatSegment[]): MultilevelFormatSeg
     }
   }
 
-  const levels = merged.filter(s => s.type === 'level-template-reference').map(s => (s as any).level as number)
+  const levels = merged.flatMap(s => s.type === 'level-template-reference' ? [s.level as number] : [])
   const maxLvl = levels.length > 0 ? Math.max(...levels) : 1
   if (merged.length === 0 || !merged.some(s => s.type === 'level-template-reference' && s.level === maxLvl as HeadingLevel)) {
     merged.push({ type: 'level-template-reference', level: maxLvl as HeadingLevel })
@@ -811,18 +811,12 @@ function deepClonePresetLevels(
         withoutLevelOne: s.multilevelFormatVariants.withoutLevelOne.map(seg => ({ ...seg })),
       },
       contextualFormatVariants: {
-        withLevelOne: s.contextualFormatVariants.withLevelOne.map(seg => ({
-          ...seg,
-          appearance: seg.type === 'level-reference'
-            ? { ...(seg as any).appearance }
-            : undefined,
-        })),
-        withoutLevelOne: s.contextualFormatVariants.withoutLevelOne.map(seg => ({
-          ...seg,
-          appearance: seg.type === 'level-reference'
-            ? { ...(seg as any).appearance }
-            : undefined,
-        })),
+        withLevelOne: s.contextualFormatVariants.withLevelOne.map(seg => seg.type === 'level-reference'
+          ? { ...seg, appearance: { ...seg.appearance } }
+          : { ...seg }),
+        withoutLevelOne: s.contextualFormatVariants.withoutLevelOne.map(seg => seg.type === 'level-reference'
+          ? { ...seg, appearance: { ...seg.appearance } }
+          : { ...seg }),
       },
       position: s.position ? { ...s.position } : { ...DEFAULT_HEADING_LEVEL_POSITION },
     }

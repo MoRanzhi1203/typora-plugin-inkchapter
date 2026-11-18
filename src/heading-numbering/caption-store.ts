@@ -43,7 +43,8 @@ export function clearCaptionVaultRootForTesting(): void {
 
 function resolveVaultRoot(): string | null {
   if (captionVaultRootOverride) return captionVaultRootOverride
-  return (globalThis as any).__inkchapter_vault_root__ ?? null
+  const root = (globalThis as unknown as Record<string, unknown>).__inkchapter_vault_root__
+  return typeof root === 'string' ? root : null
 }
 
 function getCaptionSidecarDir(): string | null {

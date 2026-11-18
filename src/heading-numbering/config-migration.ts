@@ -34,6 +34,40 @@ const PRESET_ID_ALIASES: Readonly<Record<string, HeadingNumberingPreset>> = {
 
 const CURRENT_SCHEMA_VERSION = 9
 
+/**
+ * Persisted (untyped) legacy level style. Every field is optional because the
+ * on-disk shape may be older than the current schema; each field is validated
+ * or normalized by the helpers below before it reaches runtime settings.
+ */
+interface LegacyLevelStyle {
+  enabled?: unknown
+  tokenStyle?: unknown
+  numberStyle?: unknown
+  includeParents?: unknown
+  prefix?: unknown
+  suffix?: unknown
+  separator?: unknown
+  startAt?: unknown
+  restartAfterLevel?: unknown
+  position?: unknown
+  format?: unknown
+  formatVariants?: HeadingFormatVariants
+  levelTemplate?: HeadingLevelNumberTemplate
+  multilevelFormatVariants?: MultilevelFormatVariants
+  contextualFormatVariants?: ContextualFormatVariants
+}
+
+/** Narrow an unknown persisted value to a plain record. */
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : null
+}
+
+/** Persisted level objects are structurally trusted once they are records. */
+function asLegacyLevel(value: unknown): LegacyLevelStyle | null {
+  const rec = asRecord(value)
+  return rec ? rec as LegacyLevelStyle : null
+}
+
 // ── Validation helpers ─────────────────────────────────
 
 function validateBoolean(value: unknown, fallback: boolean): boolean {
@@ -252,7 +286,7 @@ function convertFormatToMultilevelV7(
  * and converts the composition to use level-template-reference.
  */
 function migrateLevelToV7(
-  oldLevel: any,
+  oldLevel: LegacyLevelStyle | null | undefined,
   lv: HeadingLevel,
 ): {
   levelTemplate: HeadingLevelNumberTemplate
@@ -262,12 +296,17 @@ function migrateLevelToV7(
   const tokenStyle = normalizeTokenStyle(oldLevel?.tokenStyle ?? oldLevel?.numberStyle)
 
   // Check if already has multilevelFormatVariants (v7+)
-  if (oldLevel?.multilevelFormatVariants?.withLevelOne || oldLevel?.multilevelFormatVariants?.withoutLevelOne) {
+  const storedMultilevel = oldLevel?.multilevelFormatVariants
+  if (storedMultilevel?.withLevelOne || storedMultilevel?.withoutLevelOne) {
     return {
-      levelTemplate: oldLevel?.levelTemplate ?? { tokenStyle, prefix: oldLevel?.prefix ?? '', suffix: oldLevel?.suffix ?? '' },
+      levelTemplate: oldLevel?.levelTemplate ?? {
+        tokenStyle,
+        prefix: typeof oldLevel?.prefix === 'string' ? oldLevel.prefix : '',
+        suffix: typeof oldLevel?.suffix === 'string' ? oldLevel.suffix : '',
+      },
       multilevelFormatVariants: {
-        withLevelOne: normalizeMultilevelFormat(oldLevel.multilevelFormatVariants.withLevelOne, lv),
-        withoutLevelOne: normalizeMultilevelFormat(oldLevel.multilevelFormatVariants.withoutLevelOne, lv),
+        withLevelOne: normalizeMultilevelFormat(storedMultilevel?.withLevelOne, lv),
+        withoutLevelOne: normalizeMultilevelFormat(storedMultilevel?.withoutLevelOne, lv),
       },
       formatVariants: oldLevel?.formatVariants ?? { withLevelOne: [], withoutLevelOne: [] },
     }
@@ -284,7 +323,7 @@ function migrateLevelToV7(
     withL1Old = normalizeFormat(oldLevel.format, lv)
   } else {
     // Generate from legacy fields
-    const incParents = oldLevel?.includeParents ?? true
+    const incParents = oldLevel?.includeParents !== false
     const prefix = typeof oldLevel?.prefix === 'string' ? oldLevel.prefix : ''
     const suffix = typeof oldLevel?.suffix === 'string' ? oldLevel.suffix : ''
     const separator = typeof oldLevel?.separator === 'string' ? oldLevel.separator : '.'
@@ -295,7 +334,7 @@ function migrateLevelToV7(
     withoutL1Old = normalizeWithoutL1Format(lv, oldVariants.withoutLevelOne)
   } else {
     const hidden = new Set<HeadingLevel>([1 as HeadingLevel])
-    withoutL1Old = stripHiddenLevelReferences([...withL1Old], hidden as any, lv)
+    withoutL1Old = stripHiddenLevelReferences([...withL1Old], hidden, lv)
   }
 
   // Extract prefix/suffix from withLevelOne format
@@ -386,12 +425,13 @@ function normalizeMultilevelFormat(raw: unknown, currentLevel: HeadingLevel): Mu
   const seenLevels = new Set<number>()
 
   for (const seg of raw) {
-    if (!seg || typeof seg !== 'object') continue
-    if ((seg as any).type === 'literal') {
-      const val = typeof (seg as any).value === 'string' ? sanitizeFormatStringLit((seg as any).value) : ''
+    const rec = asRecord(seg)
+    if (!rec) continue
+    if (rec.type === 'literal') {
+      const val = typeof rec.value === 'string' ? sanitizeFormatStringLit(rec.value) : ''
       cleaned.push({ type: 'literal', value: val })
-    } else if ((seg as any).type === 'level-template-reference') {
-      const lv = Number((seg as any).level)
+    } else if (rec.type === 'level-template-reference') {
+      const lv = Number(rec.level)
       if (isNaN(lv) || lv < 1 || lv > 6) continue
       if (lv > currentLevel) continue
       if (seenLevels.has(lv)) continue
@@ -416,7 +456,7 @@ function sanitizeFormatStringLit(val: string): string {
  * - withLevelOne = normalized old format (or generated from legacy fields)
  * - withoutLevelOne = withLevelOne with L1 refs stripped
  */
-function migrateLevelToVariants(storedLevel: any, lv: HeadingLevel): {
+function migrateLevelToVariants(storedLevel: LegacyLevelStyle | null | undefined, lv: HeadingLevel): {
   formatVariants: { withLevelOne: NumberFormatSegment[]; withoutLevelOne: NumberFormatSegment[] }
   includeParents: boolean
 } {
@@ -427,32 +467,32 @@ function migrateLevelToVariants(storedLevel: any, lv: HeadingLevel): {
         withLevelOne: normalizeFormat(storedLevel.formatVariants.withLevelOne, lv),
         withoutLevelOne: normalizeWithoutL1Format(lv, storedLevel.formatVariants.withoutLevelOne),
       },
-      includeParents: storedLevel.includeParents ?? true,
+      includeParents: storedLevel.includeParents !== false,
     }
   }
 
   // Migrate from old format or legacy includeParents
-  const oldFormat = (storedLevel as any)?.format
+  const oldFormat = storedLevel?.format
   let withLevelOne: NumberFormatSegment[]
 
   if (Array.isArray(oldFormat) && oldFormat.length > 0) {
     withLevelOne = normalizeFormat(oldFormat, lv)
   } else {
     // Generate from legacy includeParents/prefix/suffix/separator
-    const incParents = (storedLevel as any)?.includeParents ?? true
-    const prefix = typeof (storedLevel as any)?.prefix === 'string' ? (storedLevel as any).prefix : ''
-    const suffix = typeof (storedLevel as any)?.suffix === 'string' ? (storedLevel as any).suffix : ''
-    const separator = typeof (storedLevel as any)?.separator === 'string' ? (storedLevel as any).separator : '.'
+    const incParents = storedLevel?.includeParents !== false
+    const prefix = typeof storedLevel?.prefix === 'string' ? storedLevel.prefix : ''
+    const suffix = typeof storedLevel?.suffix === 'string' ? storedLevel.suffix : ''
+    const separator = typeof storedLevel?.separator === 'string' ? storedLevel.separator : '.'
     withLevelOne = generateFormatFromLegacy(lv, incParents, prefix, suffix, separator)
   }
 
   // Derive withoutLevelOne by stripping L1
   const hidden = new Set<HeadingLevel>([1 as HeadingLevel])
-  const withoutLevelOne = stripHiddenLevelReferences([...withLevelOne], hidden as any, lv)
+  const withoutLevelOne = stripHiddenLevelReferences([...withLevelOne], hidden, lv)
 
   return {
     formatVariants: { withLevelOne, withoutLevelOne },
-    includeParents: (storedLevel as any)?.includeParents ?? true,
+    includeParents: storedLevel?.includeParents !== false,
   }
 }
 
@@ -460,7 +500,7 @@ function migrateLevelToVariants(storedLevel: any, lv: HeadingLevel): {
 function normalizeWithoutL1Format(level: HeadingLevel, raw: unknown): NumberFormatSegment[] {
   const base = Array.isArray(raw) ? normalizeFormat(raw, level) : generateFormatFromLegacy(level, true, '', '', '.')
   const hidden = new Set<HeadingLevel>([1 as HeadingLevel])
-  return stripHiddenLevelReferences([...base], hidden as any, level)
+  return stripHiddenLevelReferences([...base], hidden, level)
 }
 
 /**
@@ -476,12 +516,13 @@ function normalizeFormat(raw: unknown, currentLevel: HeadingLevel): NumberFormat
   const seenLevels = new Set<number>()
 
   for (const seg of raw) {
-    if (!seg || typeof seg !== 'object') continue
-    if ((seg as any).type === 'literal') {
-      const val = typeof (seg as any).value === 'string' ? sanitizeFormatString((seg as any).value) : ''
+    const rec = asRecord(seg)
+    if (!rec) continue
+    if (rec.type === 'literal') {
+      const val = typeof rec.value === 'string' ? sanitizeFormatString(rec.value) : ''
       cleaned.push({ type: 'literal', value: val })
-    } else if ((seg as any).type === 'level-reference') {
-      const lv = Number((seg as any).level)
+    } else if (rec.type === 'level-reference') {
+      const lv = Number(rec.level)
       if (isNaN(lv) || lv < 1 || lv > 6) continue
       if (lv > currentLevel) continue
       if (seenLevels.has(lv)) continue
@@ -534,16 +575,17 @@ function normalizeTokenStyle(raw: unknown): NumberTokenStyle {
 function inferIncludeParents(format: unknown, currentLevel: HeadingLevel): boolean {
   if (!Array.isArray(format) || format.length === 0) return true
   for (const seg of format) {
-    if (seg && typeof seg === 'object' && (seg as any).type === 'level-reference') {
-      const refLevel = Number((seg as any).level)
-      if (!isNaN(refLevel) && refLevel < currentLevel) {
-        return true
-      }
+    const rec = asRecord(seg)
+    if (!rec || rec.type !== 'level-reference') continue
+    const refLevel = Number(rec.level)
+    if (!isNaN(refLevel) && refLevel < currentLevel) {
+      return true
     }
   }
-  return format.every((seg: any) => seg?.type !== 'level-reference')
-    ? true
-    : false
+  return format.every(seg => {
+    const rec = asRecord(seg)
+    return !rec || rec.type !== 'level-reference'
+  })
 }
 
 function migrateLegacyLevels(
@@ -554,8 +596,8 @@ function migrateLegacyLevels(
   if (!legacyLevels || typeof legacyLevels !== 'object') return levels
 
   for (const lv of HEADING_LEVELS) {
-    const old = (legacyLevels as any)[String(lv)] ?? (legacyLevels as any)[lv]
-    if (!old || typeof old !== 'object') continue
+    const old = asLegacyLevel(legacyLevels[String(lv)])
+    if (!old) continue
 
     const variants = migrateLevelToVariants(old, lv)
     const v7 = migrateLevelToV7(old, lv)
@@ -567,18 +609,18 @@ function migrateLegacyLevels(
       prefix: typeof old.prefix === 'string' ? old.prefix : '',
       suffix: typeof old.suffix === 'string' ? old.suffix : '',
       separator: typeof old.separator === 'string' ? old.separator : '.',
-      startAt: validateStartAt((old as any).startAt),
-      restartAfterLevel: validateRestartAfterLevel((old as any).restartAfterLevel, lv),
+      startAt: validateStartAt(old.startAt),
+      restartAfterLevel: validateRestartAfterLevel(old.restartAfterLevel, lv),
       formatVariants: variants.formatVariants,
       levelTemplate: v7.levelTemplate,
       multilevelFormatVariants: v7.multilevelFormatVariants,
       contextualFormatVariants: { withLevelOne: [], withoutLevelOne: [] },
-      position: validatePosition((old as any).position),
+      position: validatePosition(old.position),
     }
   }
 
   // Second pass: build contextual format from multilevel format
-  const templates: Record<HeadingLevel, HeadingLevelNumberTemplate> = {} as any
+  const templates = {} as Record<HeadingLevel, HeadingLevelNumberTemplate>
   for (const lv of HEADING_LEVELS) {
     templates[lv] = levels[lv].levelTemplate
   }
@@ -602,10 +644,10 @@ export function migrateSettings(
   } catch (e) {
     logger.error('设置迁移失败，将使用默认标题编号设置', e)
     const defaults = defaultLevelStyle()
-    const levelInput = {
+    const levelInput: HeadingNumberingSettings = {
       enabled: true,
       showLevelOneNumber: false,
-      preset: 'decimal-hierarchical' as const,
+      preset: 'decimal-hierarchical',
       maxDepth: 6 as HeadingLevel,
       levels: defaults,
     }
@@ -614,8 +656,8 @@ export function migrateSettings(
       showLevelOneNumber: false,
       preset: 'decimal-hierarchical',
       maxDepth: 6 as HeadingLevel,
-      levels: deepCloneSettings(levelInput as any).levels,
-      customDefinition: deepCloneSettings(levelInput as any).levels,
+      levels: deepCloneSettings(levelInput).levels,
+      customDefinition: deepCloneSettings(levelInput).levels,
     }
   }
 }
@@ -626,10 +668,13 @@ function doMigrate(
   const s = raw ?? ({} as Partial<HeadingNumberingSettings>)
 
   // ── Handle legacy customDefinition wrapper ──────────────
-  const legacyCustomDef = (s as any)?.customDefinition
+  const legacyCustomDef = s.customDefinition as unknown as { levels?: Record<string, unknown> } | undefined
   if (legacyCustomDef?.levels && !s.levels) {
     logger.info('检测到旧版 customDefinition 配置，自动迁移中...')
-    s.levels = migrateLegacyLevels(legacyCustomDef.levels, {} as any)
+    s.levels = migrateLegacyLevels(
+      legacyCustomDef.levels,
+      {} as Record<HeadingLevel, HeadingLevelNumberTemplate>,
+    )
   }
 
   const preset = validatePreset(s.preset)
@@ -639,7 +684,7 @@ function doMigrate(
 
   // Migrate headingStructureMode from legacy showLevelOneNumber
   const headingStructureMode = migrateHeadingStructureMode(
-    (s as any).headingStructureMode,
+    s.headingStructureMode,
     showLevelOneNumber,
   )
 
@@ -648,9 +693,8 @@ function doMigrate(
   if (preset === 'custom' && s.levels) {
     levels = { ...defaultLevelStyle() }
     for (const lv of HEADING_LEVELS) {
-      const storedLevel = s.levels[lv]
-      if (storedLevel && typeof storedLevel === 'object') {
-        const stored = storedLevel as any
+      const stored = asLegacyLevel(s.levels[lv])
+      if (stored) {
         const variants = migrateLevelToVariants(stored, lv)
         const v7 = migrateLevelToV7(stored, lv)
         levels[lv] = {
@@ -671,18 +715,17 @@ function doMigrate(
       }
     }
     // Build contextual from multilevel ONLY if not already populated
-    const templates: Record<HeadingLevel, HeadingLevelNumberTemplate> = {} as any
+    const templates = {} as Record<HeadingLevel, HeadingLevelNumberTemplate>
     for (const lv of HEADING_LEVELS) {
       templates[lv] = levels[lv].levelTemplate
     }
     for (const lv of HEADING_LEVELS) {
-      const stored = s.levels?.[lv]
-      const existingContextual = (stored as any)?.contextualFormatVariants
+      const existingContextual = s.levels?.[lv]?.contextualFormatVariants
       if (existingContextual && (existingContextual.withLevelOne?.length > 0 || existingContextual.withoutLevelOne?.length > 0)) {
         // Preserve existing contextual format; only migrate as deep copy
         levels[lv].contextualFormatVariants = {
-          withLevelOne: (existingContextual.withLevelOne || []).map((seg: any) => ({ ...seg })),
-          withoutLevelOne: (existingContextual.withoutLevelOne || []).map((seg: any) => ({ ...seg })),
+          withLevelOne: (existingContextual.withLevelOne || []).map(seg => ({ ...seg })),
+          withoutLevelOne: (existingContextual.withoutLevelOne || []).map(seg => ({ ...seg })),
         }
       } else {
         // First migration: generate from multilevel
@@ -698,15 +741,14 @@ function doMigrate(
 
   // ── Migrate / normalize customDefinition ───────────────
   let customDef: Record<HeadingLevel, HeadingLevelStyle> | undefined
-  const storedCustomDef = (s as any)?.customDefinition as Record<string, unknown> | undefined
+  const storedCustomDef = s.customDefinition as unknown as Record<string, unknown> | undefined
   if (storedCustomDef && typeof storedCustomDef === 'object') {
     customDef = { ...defaultLevelStyle() }
     for (const lv of HEADING_LEVELS) {
-      const sd = storedCustomDef[String(lv)] ?? storedCustomDef[lv]
-      if (sd && typeof sd === 'object') {
-        const sdObj = sd as any
-        const variants = migrateLevelToVariants(sd, lv)
-        const v7 = migrateLevelToV7(sd, lv)
+      const sdObj = asLegacyLevel(storedCustomDef[String(lv)])
+      if (sdObj) {
+        const variants = migrateLevelToVariants(sdObj, lv)
+        const v7 = migrateLevelToV7(sdObj, lv)
         customDef[lv] = {
           enabled: typeof sdObj.enabled === 'boolean' ? sdObj.enabled : true,
           tokenStyle: normalizeTokenStyle(sdObj.tokenStyle),
@@ -725,7 +767,7 @@ function doMigrate(
       }
     }
     // Build contextual from multilevel
-    const templates2: Record<HeadingLevel, HeadingLevelNumberTemplate> = {} as any
+    const templates2 = {} as Record<HeadingLevel, HeadingLevelNumberTemplate>
     for (const lv of HEADING_LEVELS) {
       templates2[lv] = customDef[lv].levelTemplate
     }
@@ -748,7 +790,7 @@ function doMigrate(
     // "explicitly configured"; a raw file without those fields is a fresh/
     // unconfigured install and must NOT inherit strict-policy enforcement.
     headingStructureConfigured:
-      (s as any)?.headingStructureMode === 'strict' || (s as any)?.headingStructureMode === 'loose'
+      s.headingStructureMode === 'strict' || s.headingStructureMode === 'loose'
         || Object.prototype.hasOwnProperty.call(s, 'showLevelOneNumber')
         ? true
         : undefined,

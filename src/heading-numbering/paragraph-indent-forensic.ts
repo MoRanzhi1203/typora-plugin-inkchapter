@@ -56,10 +56,11 @@ export function isForensicActive(): boolean {
 }
 
 export function activateForensic(vaultRoot?: string): void {
-  if (!(window as any).__INKCHAPTER_PARAGRAPH_FORENSIC__) {
+  const debugWindow = window as unknown as Record<string, unknown>
+  if (!debugWindow.__INKCHAPTER_PARAGRAPH_FORENSIC__) {
     // Log once so user knows why probe didn't activate
-    if (!(window as any).__inkchapter_forensic_flag_checked) {
-      (window as any).__inkchapter_forensic_flag_checked = true
+    if (!debugWindow.__inkchapter_forensic_flag_checked) {
+      debugWindow.__inkchapter_forensic_flag_checked = true
       console.info('[InkChapter Forensic] Not activated — set window.__INKCHAPTER_PARAGRAPH_FORENSIC__ = true and call __inkchapter_activate_forensic__()')
     }
     return
@@ -68,7 +69,8 @@ export function activateForensic(vaultRoot?: string): void {
 
   let root = vaultRoot
   if (!root) {
-    root = (globalThis as any).__inkchapter_vault_root__ ?? undefined
+    const injected = (globalThis as unknown as Record<string, unknown>).__inkchapter_vault_root__
+    root = typeof injected === 'string' ? injected : undefined
   }
   if (!root) {
     const cwd = process.cwd()

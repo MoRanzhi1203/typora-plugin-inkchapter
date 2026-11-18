@@ -54,27 +54,21 @@ function deepCloneLevelStyle(s: HeadingLevelStyle): HeadingLevelStyle {
     startAt: s.startAt,
     restartAfterLevel: s.restartAfterLevel,
     formatVariants: {
-      withLevelOne: s.formatVariants.withLevelOne.map(seg => ({ ...seg })) as any,
-      withoutLevelOne: s.formatVariants.withoutLevelOne.map(seg => ({ ...seg })) as any,
+      withLevelOne: s.formatVariants.withLevelOne.map(seg => ({ ...seg })),
+      withoutLevelOne: s.formatVariants.withoutLevelOne.map(seg => ({ ...seg })),
     },
     levelTemplate: { ...s.levelTemplate },
     multilevelFormatVariants: {
-      withLevelOne: s.multilevelFormatVariants.withLevelOne.map(seg => ({ ...seg })) as any,
-      withoutLevelOne: s.multilevelFormatVariants.withoutLevelOne.map(seg => ({ ...seg })) as any,
+      withLevelOne: s.multilevelFormatVariants.withLevelOne.map(seg => ({ ...seg })),
+      withoutLevelOne: s.multilevelFormatVariants.withoutLevelOne.map(seg => ({ ...seg })),
     },
     contextualFormatVariants: {
-      withLevelOne: s.contextualFormatVariants.withLevelOne.map(seg => ({
-        ...seg,
-        appearance: seg.type === 'level-reference'
-          ? { ...(seg as any).appearance }
-          : undefined,
-      })) as any,
-      withoutLevelOne: s.contextualFormatVariants.withoutLevelOne.map(seg => ({
-        ...seg,
-        appearance: seg.type === 'level-reference'
-          ? { ...(seg as any).appearance }
-          : undefined,
-      })) as any,
+      withLevelOne: s.contextualFormatVariants.withLevelOne.map(seg => seg.type === 'level-reference'
+        ? { ...seg, appearance: { ...seg.appearance } }
+        : { ...seg }),
+      withoutLevelOne: s.contextualFormatVariants.withoutLevelOne.map(seg => seg.type === 'level-reference'
+        ? { ...seg, appearance: { ...seg.appearance } }
+        : { ...seg }),
     },
     numberTitleSpacing: s.numberTitleSpacing ?? 'space',
     position: s.position ? { ...s.position } : { ...DEFAULT_HEADING_LEVEL_POSITION },
@@ -249,7 +243,7 @@ export function getFormatPreview(
     if (variant && variant.length > 0) {
       const label = variant.map(seg => {
         if (seg.type === 'literal') return seg.value
-        return `${(seg as any).appearance?.prefix ?? ''}${getSampleToken((seg as any).appearance?.tokenStyle ?? 'arabic')}${(seg as any).appearance?.suffix ?? ''}`
+        return `${seg.appearance.prefix}${getSampleToken(seg.appearance.tokenStyle)}${seg.appearance.suffix}`
       }).join('')
       result.push(label)
     } else {

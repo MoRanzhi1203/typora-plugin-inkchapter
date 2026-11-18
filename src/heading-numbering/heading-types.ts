@@ -283,6 +283,17 @@ export interface HeadingNumberingSettings {
    * intent. `headingStructureMode` is the legacy default seed, NOT a user choice.
    */
   headingStructureConfigured?: boolean
+  /**
+   * Identity of the format applied to this settings snapshot (global default or
+   * document override). Persisted alongside the settings blob; informational —
+   * runtime resolution still goes through the format library.
+   */
+  formatSource?: NumberingFormatSource
+  /**
+   * Per-heading numbering overrides persisted with a document snapshot.
+   * Internal storage detail of the override store; not a user-facing setting.
+   */
+  _overrides?: Record<string, HeadingNumberingOverride>
 }
 
 // ── Runtime types ────────────────────────────────────────

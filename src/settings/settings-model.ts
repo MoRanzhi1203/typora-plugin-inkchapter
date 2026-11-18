@@ -3,6 +3,7 @@ import type { CaptionSettings } from '../heading-numbering/caption-system'
 import type { NumberingPersistenceConfig } from '../heading-numbering/numbering-persistence-settings'
 import type { ObjectNumberPersistenceConfig } from '../heading-numbering/object-number-persistence-settings'
 import type { ImageSettings } from '../image-management/image-settings'
+import type { ObjectNumberingConfig } from '../heading-numbering/object-numbering-engine'
 
 export type { HeadingNumberingSettings }
 
@@ -69,10 +70,17 @@ export interface InkChapterSettings {
   headingNumberingScopes?: HeadingNumberingScopeStore
   /** User-managed custom format library (schema version >= 11). */
   formatLibrary?: FormatLibrary
+  /** Template-update acknowledgements: `${docKey}::${formatId}` → version. */
+  acknowledgedTemplateUpdates?: Record<string, number>
   levelRange: HeadingLevelRangeSettings
   specialNumbering: SpecialHeadingNumberingSettings
   /** Caption System V1 settings (schema version >= 12, optional field). */
   caption?: CaptionSettings
+  /**
+   * R10 — persisted formula object-numbering config. Legacy raw values are
+   * migrated on read via `migrateObjectNumberingConfig('formula', …)`.
+   */
+  captionFormula?: ObjectNumberingConfig
   /**
    * R08 — heading number storage / existing-number policy / ownership ledger.
    * Optional; `normalizeNumberingPersistenceConfig` fills every field.

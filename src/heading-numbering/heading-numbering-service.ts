@@ -22,9 +22,10 @@ import type {
   FormatLibrary,
   CustomNumberingFormat,
   NumberingFormatSource,
+  BuiltInPresetId,
 } from './heading-types'
 import { resolveEffectiveMaxLevel, clampMaxLevel } from './heading-types'
-import { HEADING_LEVELS, DEFAULT_HEADING_LEVEL_POSITION } from './heading-types'
+import { HEADING_LEVELS, DEFAULT_HEADING_LEVEL_POSITION, BUILT_IN_PRESET_IDS } from './heading-types'
 import type { HeadingLevelPosition } from './heading-types'
 import { HeadingNumberingAuthority, type HeadingNumberingSnapshot } from './heading-numbering-snapshot'
 import {
@@ -284,7 +285,7 @@ import {
 } from '../runtime/document-runtime-context'
 import { emitRuntimeAudit, flushForensicSink } from '../runtime/forensic-log-sink'
 import { forensicVerboseEnabled } from './document-open-perf'
-import { runEditorInputFocusProbeWithSafety } from '../runtime/editor-input-focus-probe'
+import { runEditorInputFocusProbeWithSafety, type FocusProbePhase } from '../runtime/editor-input-focus-probe'
 import {
   resolveEmptySlot,
   evaluateEmptySpecialFinal,
@@ -392,6 +393,8 @@ interface EnterIndentTransaction {
   /** R58.7 Phase A.1.3.1a: Immutable runtime scope snapshot for this transaction. */
   scopeRef: RuntimeScopeRef | null
   traceData: Record<string, unknown>
+  /** Diagnostic observer attached before its observation session exists. */
+  _diagnosticObserver?: MutationObserver
 }
 
 /** P0-B: Mutation-authoritative settle context (observer armed BEFORE token consume). */
@@ -1673,10 +1676,11 @@ export class HeadingNumberingService {
   private getOrCreateEditorInstanceId(editorRoot: HTMLElement | null): string | null {
     if (!editorRoot) return null
     const key = '_inkChapterEditorInstanceId'
-    const existing = (editorRoot as any)[key] as string | undefined
-    if (existing) return existing
+    const carrier = editorRoot as unknown as Record<string, unknown>
+    const existing = carrier[key]
+    if (typeof existing === 'string' && existing) return existing
     const id = `editor-${this.nextEditorInstanceId++}`
-    ;(editorRoot as any)[key] = id
+    carrier[key] = id
     return id
   }
 
@@ -1845,7 +1849,7 @@ export class HeadingNumberingService {
    * focus / selection / DOM / canonical state.
    */
   runEditorInputFocusProbe(
-    phase: 'BEFORE_ACQUIRE' | 'AFTER_ACQUIRE' | 'BEFORE_INPUT' | 'AFTER_INPUT' | 'ON_DEMAND',
+    phase: FocusProbePhase,
   ): void {
     try {
       runEditorInputFocusProbeWithSafety(phase, {
@@ -2099,17 +2103,22 @@ export class HeadingNumberingService {
     // harness / DevTools. Trigger emits EDITOR-INPUT-FOCUS-PROBE (the snapshot)
     // into the forensic audit stream; it never mutates focus/selection/DOM.
     try {
-      ;(window as any).__inkchapter_probe_editor_input_focus__ = (phase: string) => {
-        this.runEditorInputFocusProbe(phase as any)
+      const probeWindow = window as unknown as Record<string, unknown>
+      const focusPhases: ReadonlyArray<FocusProbePhase> = [
+        'BEFORE_ACQUIRE', 'AFTER_ACQUIRE', 'BEFORE_INPUT', 'AFTER_INPUT', 'ON_DEMAND',
+      ]
+      probeWindow.__inkchapter_probe_editor_input_focus__ = (phase: string) => {
+        const resolved = focusPhases.find(p => p === phase) ?? 'ON_DEMAND'
+        this.runEditorInputFocusProbe(resolved)
       }
-      ;(window as any).__inkchapter_format_sync_probe__ = () => this.formatSyncProbe()
+      probeWindow.__inkchapter_format_sync_probe__ = () => this.formatSyncProbe()
       // V5.14-R4 §15 — the atomic heading decoration (label + gap) gate surface.
-      ;(window as any).__inkchapter_heading_decoration_probe__ = () => ({
+      probeWindow.__inkchapter_heading_decoration_probe__ = () => ({
         counters: this.getHeadingDecorationV514R4Counters(),
         gateReport: this.getHeadingDecorationV514R4GateReport(),
         gateDecision: this.getHeadingDecorationV514R4GateDecision(),
       })
-      ;(window as any).__inkchapter_outline_sync_probe__ = () => ({
+      probeWindow.__inkchapter_outline_sync_probe__ = () => ({
         authoritativeDocumentKey: this.getDocumentKey() ?? null,
         activeFilePath: this.getActiveFilePath() ?? null,
         toolbarDocumentKey: this.outlineToolbar.getDocumentKey(),
@@ -2121,7 +2130,7 @@ export class HeadingNumberingService {
 
   /** Initialize scope store: try reading new format, fall back to migration. */
   private initScopeStore(): HeadingNumberingScopeStore {
-    const raw = this.ctx.settings.get('headingNumberingScopes' as any) as any
+    const raw = this.ctx.settings.get('headingNumberingScopes') as HeadingNumberingScopeStore | undefined
     if (raw?.schemaVersion && raw.globalDefault) {
       const sanitized = sanitizeHeadingNumberingScopeStore(raw)
       if (sanitized) {
@@ -2137,7 +2146,7 @@ export class HeadingNumberingService {
 
     // Try migration from old headingNumbering
     // Access plugin raw data via settings.get on the legacy key
-    const oldSettings = this.ctx.settings.get('headingNumbering' as any) as any
+    const oldSettings = this.ctx.settings.get('headingNumbering') as HeadingNumberingSettings | undefined
     if (oldSettings?.preset || oldSettings?.levels) {
       const migResult = migrateHeadingNumberingToScopeStore(
         { headingNumbering: oldSettings },
@@ -2162,7 +2171,7 @@ export class HeadingNumberingService {
   /** Persist the scope store to plugin settings. */
   private persistScopeStore(store: HeadingNumberingScopeStore): void {
     this.scopeStore = store
-    this.ctx.settings.set('headingNumberingScopes' as any, store as any)
+    this.ctx.settings.set('headingNumberingScopes', store)
   }
 
   /** Get the current scope store (for settings tab read). */
@@ -2582,7 +2591,7 @@ export class HeadingNumberingService {
 
   /** Sync the global default applied format version to match the library version. */
   syncGlobalDefaultFormatVersion(formatId: string, newVersion: number): void {
-    const gSource = (this.scopeStore.globalDefault as any).formatSource as import('./heading-types').NumberingFormatSource | undefined
+    const gSource = this.scopeStore.globalDefault.formatSource
     if (!gSource || gSource.type !== 'custom' || gSource.formatId !== formatId) return
 
     this.scopeStore = {
@@ -2594,7 +2603,7 @@ export class HeadingNumberingService {
           formatId: gSource.formatId,
           version: newVersion,
         },
-      } as any,
+      },
     }
     this.persistScopeStore(this.scopeStore)
   }
@@ -2683,12 +2692,12 @@ export class HeadingNumberingService {
     const acks = this.loadAcknowledgements()
     const ackKey = `${docKey}::${formatId}`
     acks[ackKey] = templateVersion
-    this.ctx.settings.set('acknowledgedTemplateUpdates' as any, acks as any)
+    this.ctx.settings.set('acknowledgedTemplateUpdates', acks)
   }
 
   /** Load all acknowledged template update records. */
   private loadAcknowledgements(): Record<string, number> {
-    const raw = this.ctx.settings.get('acknowledgedTemplateUpdates' as any) as Record<string, number> | undefined
+    const raw = this.ctx.settings.get('acknowledgedTemplateUpdates') as Record<string, number> | undefined
     return raw ?? {}
   }
 
@@ -2706,7 +2715,7 @@ export class HeadingNumberingService {
 
   /** Get the user-managed format library from plugin settings. */
   getFormatLibrary(): FormatLibrary {
-    const raw = this.ctx.settings.get('formatLibrary' as any) as FormatLibrary | undefined
+    const raw = this.ctx.settings.get('formatLibrary') as FormatLibrary | undefined
     if (raw?.version && Array.isArray(raw.formats)) {
       // If the raw data lacks preferences, add defaults (inline migration)
       if (!raw.preferences) {
@@ -2720,19 +2729,19 @@ export class HeadingNumberingService {
         }
       }
       // Sanitize hidden preset IDs
-      const validIds = new Set(['decimal-hierarchical', 'chinese-chapter', 'chinese-outline', 'roman-hierarchical'])
-      const sanitized: string[] = []
+      const validIds = new Set<string>(BUILT_IN_PRESET_IDS)
+      const sanitized: BuiltInPresetId[] = []
       const seen = new Set<string>()
       for (const id of raw.preferences.hiddenBuiltInPresetIds ?? []) {
         if (validIds.has(id) && !seen.has(id)) {
-          sanitized.push(id)
+          sanitized.push(id as BuiltInPresetId)
           seen.add(id)
         }
       }
       return {
         ...raw,
         preferences: {
-          hiddenBuiltInPresetIds: sanitized as any,
+          hiddenBuiltInPresetIds: sanitized,
           customFormatOrder: raw.preferences.customFormatOrder ?? raw.formats.map(f => f.id),
         },
       }
@@ -2742,7 +2751,7 @@ export class HeadingNumberingService {
 
   /** Save the format library to plugin settings. */
   saveFormatLibrary(library: FormatLibrary): void {
-    this.ctx.settings.set('formatLibrary' as any, library as any)
+    this.ctx.settings.set('formatLibrary', library)
   }
 
   /**
@@ -2813,7 +2822,7 @@ export class HeadingNumberingService {
       ? library.formats.find(f => f.id === effectiveFormatId) ?? null
       : null
 
-    const gSource = (store.globalDefault as any).formatSource as NumberingFormatSource | undefined
+    const gSource = store.globalDefault.formatSource
     const docSource = docKey ? store.documentOverrides[docKey]?.formatSource : undefined
     const persistedVersion = binding.mode === 'override'
       ? (docSource?.type === 'custom' ? docSource.version ?? null : null)
@@ -4007,7 +4016,7 @@ export class HeadingNumberingService {
     try {
       const store = this.scopeStore
       const docOverride = store.documentOverrides[docPath]
-      return (docOverride?.settings as any)?._overrides as Record<string, import('./heading-types').HeadingNumberingOverride> | undefined
+      return docOverride?.settings?._overrides
     } catch {
       return undefined
     }
@@ -4021,7 +4030,7 @@ export class HeadingNumberingService {
     if (!docKey) return
     // Save overrides within the document override settings
     const s = this.s
-    ;(s as any)._overrides = overrides
+    s._overrides = overrides
     this.saveHeadingNumberingScoped(this.docContext.source, docKey, s)
   }
 
@@ -4105,7 +4114,7 @@ export class HeadingNumberingService {
   /** Get the special numbering settings. */
   getSpecialNumberingSettings(): import('./heading-types').SpecialHeadingNumberingSettings {
     try {
-      const raw = this.ctx.settings.get('specialNumbering' as any) as any
+      const raw = this.ctx.settings.get('specialNumbering') as import('./heading-types').SpecialHeadingNumberingSettings | undefined
       const result = raw ?? { unnumberedCounterPolicy: 'skip' as const, nameSettings: { enabled: false, candidates: [], matchMode: 'trim' as const, matchAction: 'prompt' as const } }
       // Completely remove name-based unnumbering
       if (result.nameSettings) {
@@ -6630,11 +6639,11 @@ export class HeadingNumberingService {
       caretSuccess,
       overallSuccess: false,
     }
-    ;(successFields as any).paragraphCountSuccess = paragraphCountSuccess
-    ;(successFields as any).sameParagraphSuccess = postTokenRes.paragraphRuntimeId === commandRuntimeId
-    ;(successFields as any).localOffsetSuccess = (postTokenRes.localLogicalOffset ?? -1) === 0
-    ;(successFields as any).globalCursorBefore = globalCursorBefore
-    ;(successFields as any).globalCursorAfter = globalCursorAfter
+    successFields.paragraphCountSuccess = paragraphCountSuccess
+    successFields.sameParagraphSuccess = postTokenRes.paragraphRuntimeId === commandRuntimeId
+    successFields.localOffsetSuccess = (postTokenRes.localLogicalOffset ?? -1) === 0
+    successFields.globalCursorBefore = globalCursorBefore
+    successFields.globalCursorAfter = globalCursorAfter
     successFields.overallSuccess =
       successFields.tokenSuccess &&
       paragraphCountSuccess &&
@@ -6839,8 +6848,7 @@ export class HeadingNumberingService {
     try {
       const fs = require('fs') as typeof import('fs')
       const path = require('path') as typeof import('path')
-      const storageRoot = this.ctx.storageRoot ??
-        (this.ctx.settings as any).getVaultRoot?.() ?? ''
+      const storageRoot = this.ctx.storageRoot ?? ''
       const tracePath = path.join(
         storageRoot || path.dirname(this.getActiveFilePath() || ''),
         '.typora',
@@ -6877,10 +6885,10 @@ export class HeadingNumberingService {
     this.observations.set(obs.observationId, obs)
 
     // Migrate diagnostic MutationObserver from transaction to observation session
-    const diagnosticObserver = (txn as any)._diagnosticObserver as MutationObserver | undefined
+    const diagnosticObserver = txn._diagnosticObserver
     if (diagnosticObserver) {
       obs.mutationObserver = diagnosticObserver
-      delete (txn as any)._diagnosticObserver
+      delete txn._diagnosticObserver
     }
 
     const snapObs = (label: string) => {
@@ -7156,7 +7164,7 @@ export class HeadingNumberingService {
       }
       if (![...this.observations.values()].some(o => o.txnId === txn.id)) {
         // Observation hasn't started yet — attach to transaction for now
-        ;(txn as any)._diagnosticObserver = observer
+        txn._diagnosticObserver = observer
       }
     } catch {
       // fail-open — diagnostic observer must never break runtime
@@ -7212,7 +7220,7 @@ export class HeadingNumberingService {
     if (candidateCount !== 1) {
       handoff.consumed = true
       // handoff failed — no candidate or ambiguous
-      ;(resolveTrace as any).replacementChosen = false
+      resolveTrace.replacementChosen = false
       logger.info(`HANDOFF-RESOLVE: ${JSON.stringify(resolveTrace)}`)
       return
     }
@@ -7223,10 +7231,10 @@ export class HeadingNumberingService {
     handoff.replacementIdentity = getElementIdentity(replacement)
     handoff.replacementResolved = true
 
-    ;(resolveTrace as any).replacementChosen = true
-    ;(resolveTrace as any).replacementIdentity = handoff.replacementIdentity
-    ;(resolveTrace as any).replacementOrdinal = paraOrdinal
-    ;(resolveTrace as any).matchEvidence = 'same-ordinal'
+    resolveTrace.replacementChosen = true
+    resolveTrace.replacementIdentity = handoff.replacementIdentity
+    resolveTrace.replacementOrdinal = paraOrdinal
+    resolveTrace.matchEvidence = 'same-ordinal'
     logger.info(`HANDOFF-RESOLVE: ${JSON.stringify(resolveTrace)}`)
 
     // ── P0-D: HANDOFF-TRANSFER — read CURRENT semantic, not frozen ──
@@ -8909,7 +8917,7 @@ export class HeadingNumberingService {
                   record: { ...o },
                   targetParagraph: boundElement,
                   targetParagraphIndex: paraIdx,
-                  strategy: 'MATCH-LIVE-BINDING' as any,
+                  strategy: RehydrateMatchStrategy.LIVE_BINDING,
                   confidence: RehydrateConfidence.EXACT,
                   score: 200,
                   candidateCountAtGroup: 0,
@@ -9081,19 +9089,19 @@ export class HeadingNumberingService {
     // ── R58.6.1: Live Owner Dominance — suppress historical for LIVE-occupied targets ──
     const liveOccupiedTargets = new Set<number>()
     for (const c of resolvedCandidates) {
-      if (c.strategy === ('MATCH-LIVE-BINDING' as any)) {
+      if (c.strategy === RehydrateMatchStrategy.LIVE_BINDING) {
         liveOccupiedTargets.add(c.targetParagraphIndex)
       }
     }
     if (liveOccupiedTargets.size > 0) {
       const suppressedIds: string[] = []
       const keptCandidates = resolvedCandidates.filter(c => {
-        if (liveOccupiedTargets.has(c.targetParagraphIndex) && c.strategy !== ('MATCH-LIVE-BINDING' as any)) {
+        if (liveOccupiedTargets.has(c.targetParagraphIndex) && c.strategy !== RehydrateMatchStrategy.LIVE_BINDING) {
           suppressedIds.push(c.recordId)
           console.info(
             `[InkChapter] HISTORICAL-CANDIDATE-SUPPRESSED-BY-LIVE-OWNER: ` +
             `targetRuntimeId=index-${c.targetParagraphIndex} ` +
-            `liveRecordId=${resolvedCandidates.find(cc => cc.strategy === ('MATCH-LIVE-BINDING' as any) && cc.targetParagraphIndex === c.targetParagraphIndex)?.recordId ?? 'unknown'} ` +
+            `liveRecordId=${resolvedCandidates.find(cc => cc.strategy === RehydrateMatchStrategy.LIVE_BINDING && cc.targetParagraphIndex === c.targetParagraphIndex)?.recordId ?? 'unknown'} ` +
             `historicalCandidateRecordIds=[${c.recordId}] ` +
             `suppressedCount=1 ` +
             `reason=exact-live-owner`,
@@ -9111,7 +9119,7 @@ export class HeadingNumberingService {
     // For same recordId + targetRuntimeId, keep only highest priority strategy
     const dedupeMap = new Map<string, RehydrateResolvedCandidate>()
     const strategyPriority: Record<string, number> = {
-      'MATCH-LIVE-BINDING': 10,
+      [RehydrateMatchStrategy.LIVE_BINDING]: 10,
       'MATCH-RECORD-ID': 9,
       'MATCH-EXACT-ANCHOR': 8,
       'MATCH-NORMALIZED-ANCHOR': 7,
@@ -9302,7 +9310,7 @@ export class HeadingNumberingService {
 
       // ── R58.2: SINGLE-DOT-CURRENT-SESSION-CANDIDATE gate ──────────
       if (targetText === '。' && semanticBefore === 'auto' &&
-          winner.strategy !== 'MATCH-LIVE-BINDING' as any) {
+          winner.strategy !== RehydrateMatchStrategy.LIVE_BINDING) {
         // Check if this is a current-session record (should not happen with lifecycle gate,
         // but this is the final safety net)
         const candMeta = this.canonicalRegistry.getRuntimeMeta(winner.recordId)
@@ -12164,7 +12172,8 @@ export class HeadingNumberingService {
         const lastA = this.lastTraceSnapshot
         let oldAEl: HTMLElement | null = null
         if (lastA?.aElement) {
-          const traceId = (lastA.aElement as any).traceId as string | undefined
+          const rawTraceId = lastA.aElement.traceId
+          const traceId = typeof rawTraceId === 'string' ? rawTraceId : undefined
           // Note: since trace identity is now WeakMap-based (no DOM dataset),
           // querySelector by [data-inkchapter-trace-id] will return null.
           // This is expected behavior — identity tracking is observer-external.
@@ -13325,10 +13334,11 @@ export class HeadingNumberingService {
           // Normal Enter Trace: OFF by default. Enable via window.__INKCHAPTER_NORMAL_ENTER_TRACE__
           // Forensic Probe: OFF by default. Enable via window.__INKCHAPTER_PARAGRAPH_FORENSIC__
           // Then call window.__inkchapter_activate_forensic__() from DevTools to activate.
-          ;(window as any).__inkchapter_activate_forensic__ = () => activateForensic()
+          const debugWindow = window as unknown as Record<string, unknown>
+          debugWindow.__inkchapter_activate_forensic__ = () => activateForensic()
           setTimeout(() => activateForensic(), 200)
           // Single-dot diagnostic: call __inkchapter_diagnose_single_dot__() from DevTools
-          ;(window as any).__inkchapter_diagnose_single_dot__ = () => {
+          debugWindow.__inkchapter_diagnose_single_dot__ = () => {
             const rt = this.adapter.getEditorRoot()
             if (!rt) return 'no editor root'
             const p = resolveCurrentBodyParagraph(rt)
@@ -13356,8 +13366,9 @@ export class HeadingNumberingService {
 
     // ── R58.7 Phase A.1.3: File will-save — create pending persistence promotion ──
     this.store.add(
-      ctx.onWorkspaceEvent('file:will-save' as any, (file: any) => {
-        const path = file?.path ?? file ?? null
+      ctx.onWorkspaceEvent('file:will-save', (file: unknown) => {
+        const record = typeof file === 'object' && file !== null ? file as Record<string, unknown> : null
+        const path = typeof record?.path === 'string' ? record.path : typeof file === 'string' ? file : null
         const scopeId = this.documentContext.scopeId
         const editorRoot = this.adapter.getEditorRoot()
         const editorInstanceId = this.getOrCreateEditorInstanceId(editorRoot)
