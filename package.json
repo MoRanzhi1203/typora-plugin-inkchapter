@@ -18,6 +18,7 @@
     "accept:numbering": "node scripts/run-numbering-acceptance.mjs",
     "accept:object-numbering": "node scripts/run-object-numbering-acceptance.mjs",
     "accept:formula-numbering": "node scripts/run-formula-numbering-acceptance.mjs",
+    "accept:diagnostic-badges": "node scripts/run-diagnostic-badge-acceptance.mjs",
     "docs:verify": "node scripts/docs/verify-docs.mjs",
     "verify:image-privacy": "node scripts/verify-image-privacy.mjs"
   },

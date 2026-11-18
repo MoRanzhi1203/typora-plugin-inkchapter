@@ -416,7 +416,7 @@ describe('V5.14-R5 §3/§7/§12/§18 — the in-body chip (host wiring)', () => 
     })])
     api().renderHeadingDiagnosticMarkers()
     const longHint = chipText()
-    expect(longHint).toBe('H1 → H6 · 缺 H2、H3、H4、H5')
+    expect(longHint).toBe('层级跳级 H1→H6')
     const longWidth = document.querySelector('.inkchapter-heading-diagnostic-reason')!.getBoundingClientRect().width
     const identity = (document.querySelector('.inkchapter-heading-diagnostic-marker') as HTMLElement).getAttribute('data-ink-stable-identity')!
     const longRect = api().getVisualGeometrySnapshot(identity)!.reasonChipRect!
@@ -426,12 +426,13 @@ describe('V5.14-R5 §3/§7/§12/§18 — the in-body chip (host wiring)', () => 
     // now the SAME target gets a short label
     inject(host, [diagFor('E1', 'H-A', 'error', 'HEADING_DUPLICATE_TEXT', '重复的标题文字「题目1」')], 2)
     api().renderHeadingDiagnosticMarkers()
-    expect(chipText()).toBe('重复标题')
+    expect(chipText()).toBe('重复标题：题目1')
+    const shortHint = chipText()
     const shortWidth = document.querySelector('.inkchapter-heading-diagnostic-reason')!.getBoundingClientRect().width
     expect(shortWidth).toBeLessThan(longWidth)
     const shortRect = api().getVisualGeometrySnapshot(identity)!.reasonChipRect!
     // §11/§22 — `right` was recomputed from the NEW short text (no stale tail)
-    expect(shortRect.width).toBeCloseTo(CHIP_EMULATED_PADDING_PX + '重复标题'.length * CHIP_EMULATED_PER_CHAR_PX, 0)
+    expect(shortRect.width).toBeCloseTo(CHIP_EMULATED_PADDING_PX + shortHint.length * CHIP_EMULATED_PER_CHAR_PX, 0)
     expect(shortRect.right).toBeCloseTo(shortRect.left + shortRect.width, 3)
     expect(api().getInlineChipRebuiltAfterHintChange()).toBe(true)
     expect(api().getInlinePresentationV514R5Counters().inlineReasonStaleWidthAfterLabelChange).toBe(0)

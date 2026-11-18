@@ -3742,6 +3742,26 @@ body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
   --ink-diagnostic-hint-active-accent: rgba(73, 108, 139, 0.66);
   --ink-diagnostic-hint-active-chip-bg: rgba(96, 130, 160, 0.24);
   --ink-diagnostic-hint-active-chip-text: #2f3c47;
+
+  /* ── R14 — BODY DIAGNOSTIC BADGE tokens ──────────────────────────────────
+     Low-saturation pill on a white/neutral surface. Severity is carried by a
+     soft fill + a 1px semantic border + a dark semantic text colour; the badge
+     must never out-shout the heading text. The summary `+N` badge is neutral. */
+  --ink-diagnostic-badge-error-bg: #fdecec;
+  --ink-diagnostic-badge-error-border: #f3b1b1;
+  --ink-diagnostic-badge-error-text: #a12626;
+  --ink-diagnostic-badge-warning-bg: #fff6e5;
+  --ink-diagnostic-badge-warning-border: #f1d08a;
+  --ink-diagnostic-badge-warning-text: #8a5a00;
+  --ink-diagnostic-badge-info-bg: #eef5ff;
+  --ink-diagnostic-badge-info-border: #b9d2f5;
+  --ink-diagnostic-badge-info-text: #2f5d9b;
+  --ink-diagnostic-badge-summary-bg: #f3f4f6;
+  --ink-diagnostic-badge-summary-border: #d6d9de;
+  --ink-diagnostic-badge-summary-text: #5f6670;
+  --ink-diagnostic-badge-tooltip-bg: rgba(32, 35, 40, 0.96);
+  --ink-diagnostic-badge-tooltip-text: #ffffff;
+  --ink-diagnostic-badge-focus-ring: rgba(47, 93, 155, 0.72);
 }
 /* ── V5.12-R9 §3/§5/§10 — HEADING_DIAGNOSTIC_MARKER = SOFT_TEXT_SURFACE +
    REASON_CHIP ──────────────────────────────────────────────────────────────
@@ -3807,90 +3827,144 @@ body.typora-sourceview-on #write p[data-inkchapter-indent-marker]::after {
   background: var(--ink-heading-sev-active, var(--ink-diagnostic-hint-active-bg));
   transition: background-color 140ms ease;
 }
-/* V5.14-R8 R4 — the reason-chip CONTAINER. A heading can carry SEVERAL
-   diagnostics; EVERY one keeps its OWN pill (never merged into one highest-
-   severity label). The container is an overlay-only flex-wrap ROW positioned by
-   the host and bounded by the editor's REAL visible rect (inline `max-width`),
-   so the pills wrap with a 4~6px gap and can never overlap each other, the
-   heading text, or the Drawer. */
+/* R14 — BODY DIAGNOSTIC BADGES (reason chip).
+   A heading can carry several diagnostics; at most TWO specific badges plus a
+   neutral `+N` summary are painted. The container is an overlay-only flex row
+   positioned by the host and bounded by the editor's REAL visible rect (inline
+   `max-width`), so pills wrap as whole units and never overlap the heading,
+   the caret or each other. The container itself is pointer-transparent; only
+   the individual pill is interactive. */
 .inkchapter-heading-diagnostic-reason {
   pointer-events: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 6px;
-  /* ROOT (V5.14-R8 R4) — the marker wrapper is a 0×0 absolute box, so an
-     absolutely-positioned child with `width:auto` shrink-to-fits against a ZERO
-     containing block and collapses to its MINIMUM content width (ONE glyph),
-     producing a one-character-wide vertical chip. `max-content` sizes the row to
-     the labels; the host's inline `max-width` (the editor safe rect) still clamps
-     it, and the pills then wrap as whole units. `max-width:100%` must NOT be used
-     here — it would resolve against the same 0-wide containing block. */
+  gap: 6px;
   width: max-content;
   max-width: none;
   box-sizing: border-box;
 }
-/* ONE compact pill per diagnostic label (V5.12-R9 §6: 18~20px tall, 11px text,
-   6~8px inline padding, soft severity tint, no shadow, no heavy border). */
 .inkchapter-heading-diagnostic-reason__item {
-  pointer-events: none;
+  position: relative;
+  pointer-events: auto;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   box-sizing: border-box;
-  max-width: 100%;
+  max-width: 180px;
   min-height: 20px;
-  padding: 1px 7px;
-  border: 0;
-  border-radius: 999px;
+  padding: 1px 8px;
+  border: 1px solid var(--ink-diagnostic-badge-summary-border);
+  border-radius: 9px;
   box-shadow: none;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
-  line-height: 15px;
-  white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  color: var(--ink-ui-diagnostic-chip-text, var(--ink-ui-text-muted, #6b7280));
-  background-color: var(--ink-ui-diagnostic-chip-bg, color-mix(in srgb, var(--ink-ui-surface, #ffffff) 88%, transparent));
-  transition: color 140ms ease, background-color 140ms ease, opacity 140ms ease;
+  line-height: 18px;
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: visible;
+  user-select: none;
+  cursor: pointer;
+  color: var(--ink-diagnostic-badge-summary-text);
+  background-color: var(--ink-diagnostic-badge-summary-bg);
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
-/* §4 — severity semantics are PER PILL (a heading may mix error + warning + hint):
-   muted tint + medium-depth semantic text, never a saturated pure red / amber. */
+/* §4 — severity semantics are PER BADGE (a heading may mix error/warning/info). */
 .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='error'] {
-  --ink-heading-sev: var(--ink-ui-diagnostic-error, var(--ink-ui-sev-error, #b55454));
-  color: color-mix(in srgb, var(--ink-heading-sev) 66%, #5f5f5f);
-  background-color: color-mix(in srgb, var(--ink-heading-sev) 13%, transparent);
+  color: var(--ink-diagnostic-badge-error-text);
+  background-color: var(--ink-diagnostic-badge-error-bg);
+  border-color: var(--ink-diagnostic-badge-error-border);
 }
 .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='warning'] {
-  --ink-heading-sev: var(--ink-ui-diagnostic-warning, var(--ink-ui-sev-warning, #a87932));
-  color: color-mix(in srgb, var(--ink-heading-sev) 64%, #5f5f5f);
-  background-color: color-mix(in srgb, var(--ink-heading-sev) 14%, transparent);
+  color: var(--ink-diagnostic-badge-warning-text);
+  background-color: var(--ink-diagnostic-badge-warning-bg);
+  border-color: var(--ink-diagnostic-badge-warning-border);
 }
-/* V1 §3/§4 — HINT (info) pill tint: same blue-gray family, lower saturation. */
 .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='info'] {
-  --ink-heading-sev: var(--ink-diagnostic-hint-text, #60778a);
-  color: color-mix(in srgb, var(--ink-heading-sev) 62%, #5f5f5f);
-  background-color: color-mix(in srgb, var(--ink-heading-sev) 12%, transparent);
+  color: var(--ink-diagnostic-badge-info-text);
+  background-color: var(--ink-diagnostic-badge-info-bg);
+  border-color: var(--ink-diagnostic-badge-info-border);
 }
-/* V5.14-R3 §P12 §21 — while ACTIVE EVERY pill of the selected heading is clearly
-   stronger (bright pill + deep text); each pill keeps its OWN severity. */
-.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'] .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='error'],
-.inkchapter-heading-diagnostic-active .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='error'] {
-  background-color: var(--ink-diagnostic-error-active-chip-bg);
-  color: var(--ink-diagnostic-error-active-chip-text);
+/* The `+N` summary is deliberately NEUTRAL: it is a navigation affordance, not
+   a fourth severity level. */
+.inkchapter-heading-diagnostic-reason__item[data-ink-badge-kind='summary'] {
+  color: var(--ink-diagnostic-badge-summary-text);
+  background-color: var(--ink-diagnostic-badge-summary-bg);
+  border-color: var(--ink-diagnostic-badge-summary-border);
+  font-weight: 600;
+  min-width: 28px;
 }
-.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'] .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='warning'],
-.inkchapter-heading-diagnostic-active .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='warning'] {
-  background-color: var(--ink-diagnostic-warning-active-chip-bg);
-  color: var(--ink-diagnostic-warning-active-chip-text);
+/* Hover / keyboard focus / press — subtle, never a large highlight over the
+   heading. */
+.inkchapter-heading-diagnostic-reason__item:hover {
+  filter: brightness(0.97);
+  border-color: color-mix(in srgb, currentColor 45%, var(--ink-diagnostic-badge-summary-border));
 }
-.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'] .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='info'],
-.inkchapter-heading-diagnostic-active .inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-severity='info'] {
-  background-color: var(--ink-diagnostic-hint-active-chip-bg);
-  color: var(--ink-diagnostic-hint-active-chip-text);
+.inkchapter-heading-diagnostic-reason__item:focus-visible {
+  outline: 2px solid var(--ink-diagnostic-badge-focus-ring);
+  outline-offset: 2px;
+}
+.inkchapter-heading-diagnostic-reason__item:active {
+  filter: brightness(0.92);
+}
+/* R14 tooltip — pure CSS (no per-move DOM churn), positioned above the pill and
+   never part of the layout flow. The native `title` attribute stays as a
+   fallback. */
+.inkchapter-heading-diagnostic-reason__item::after {
+  content: attr(data-ink-tooltip);
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  max-width: 280px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--ink-diagnostic-badge-tooltip-bg);
+  color: var(--ink-diagnostic-badge-tooltip-text);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: 0;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 5;
+  transition: opacity 120ms ease;
+}
+.inkchapter-heading-diagnostic-reason__item:hover::after,
+.inkchapter-heading-diagnostic-reason__item:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}
+/* ACTIVE heading — every badge of the selected heading gains a stronger border;
+   it never changes the badge geometry. */
+.inkchapter-heading-diagnostic-marker[data-ink-diagnostic-active='true'] .inkchapter-heading-diagnostic-reason__item {
+  border-color: color-mix(in srgb, currentColor 55%, transparent);
 }
 /* V5.3 — dark inline mark: brighter edge + stronger fill (still muted, no
    neon/glow). */
 @media (prefers-color-scheme: dark) {
+  /* R14 — dark theme keeps the SAME severity ordering with low-luminance fills. */
+  :root {
+    --ink-diagnostic-badge-error-bg: rgba(225, 95, 95, 0.16);
+    --ink-diagnostic-badge-error-border: rgba(240, 140, 140, 0.52);
+    --ink-diagnostic-badge-error-text: #f3b3b3;
+    --ink-diagnostic-badge-warning-bg: rgba(225, 170, 60, 0.16);
+    --ink-diagnostic-badge-warning-border: rgba(238, 195, 110, 0.52);
+    --ink-diagnostic-badge-warning-text: #f0d49a;
+    --ink-diagnostic-badge-info-bg: rgba(105, 150, 210, 0.16);
+    --ink-diagnostic-badge-info-border: rgba(140, 180, 230, 0.52);
+    --ink-diagnostic-badge-info-text: #b8d2f5;
+    --ink-diagnostic-badge-summary-bg: rgba(160, 168, 180, 0.14);
+    --ink-diagnostic-badge-summary-border: rgba(160, 168, 180, 0.42);
+    --ink-diagnostic-badge-summary-text: #c3c8d0;
+    --ink-diagnostic-badge-tooltip-bg: rgba(16, 18, 22, 0.98);
+    --ink-diagnostic-badge-tooltip-text: #f3f4f6;
+    --ink-diagnostic-badge-focus-ring: rgba(150, 190, 245, 0.8);
+  }
   .inkchapter-diagnostic-inline-mark {
     --ink-locate-inline-bg: color-mix(in srgb, var(--ink-locate-color) 20%, transparent);
     --ink-locate-inline-edge: color-mix(in srgb, var(--ink-locate-color) 92%, transparent);

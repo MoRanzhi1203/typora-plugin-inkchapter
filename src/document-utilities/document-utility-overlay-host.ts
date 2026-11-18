@@ -1046,6 +1046,12 @@ import {
   type HeadingRect,
 } from './document-heading-diagnostic-marker-v5-12'
 import {
+  buildDiagnosticBadge,
+  buildDiagnosticBadgeSet,
+  formatDiagnosticBadgeTooltip,
+  type DiagnosticBadgeInput,
+} from './document-diagnostic-badge-v1'
+import {
   HEADING_REASON_CHIP_STABILITY_V2_AUDIT_EVENT,
   createHeadingReasonChipStabilityV2Counters,
   computeHeadingVisualDirtyTargets,
@@ -2696,6 +2702,12 @@ interface HeadingReasonItem {
   severity: 'error' | 'warning' | 'info'
   text: string
   rank: number
+  /** R14 — a specific diagnostic badge or the `+N` summary badge. */
+  kind?: 'diagnostic' | 'summary'
+  /** R14 — full title + one-sentence description + real `Lxx` line. */
+  tooltip?: string
+  /** R14 — every diagnostic this heading really owns (summary click scope). */
+  headingDiagnosticIds?: string[]
 }
 
 interface HeadingMarkerGroup {
@@ -2923,6 +2935,9 @@ export class DocumentUtilityOverlayHost {
   private topBtnEl: HTMLButtonElement | null = null
   private bottomBtnEl: HTMLButtonElement | null = null
   private drawerOpen = false
+  /** R14 — diagnostics temporarily focused by a heading `+N` summary badge. */
+  private headingBadgeGroupFocusIds = new Set<string>()
+  private headingBadgeGroupFocusTimer: ReturnType<typeof setTimeout> | null = null
   private resizeObserver: ResizeObserver | null = null
   /**
    * LAYOUT-INVALIDATION — the last committed diagnostic-visual inputs. A real
@@ -8181,8 +8196,21 @@ export class DocumentUtilityOverlayHost {
     container: HTMLElement,
     items: readonly HeadingReasonItem[],
   ): void {
-    const signature = items.map(i => `${i.severity}:${i.diagnosticId}:${i.text}`).join('|')
+    const signature = items.map(i => `${i.kind ?? 'diagnostic'}:${i.severity}:${i.diagnosticId}:${i.text}:${i.tooltip ?? ''}`).join('|')
     if (container.getAttribute('data-ink-reason-item-signature') === signature) return
+    const headingDiagnosticIds = items.find(i => (i.headingDiagnosticIds?.length ?? 0) > 0)?.headingDiagnosticIds ?? []
+    if (headingDiagnosticIds.length > 0) {
+      container.setAttribute('data-ink-diagnostic-ids', JSON.stringify(headingDiagnosticIds))
+    } else {
+      container.removeAttribute('data-ink-diagnostic-ids')
+    }
+    container.removeAttribute('aria-hidden')
+    container.setAttribute('role', 'group')
+    container.setAttribute('aria-label', `诊断：${items.map(i => i.text).join('、')}`)
+    const containerTooltip = items[0]?.tooltip ?? items[0]?.text ?? ''
+    if (containerTooltip !== '' && container.getAttribute('title') !== containerTooltip) {
+      container.setAttribute('title', containerTooltip)
+    }
     const existing = Array.from(container.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item'))
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
@@ -8193,15 +8221,23 @@ export class DocumentUtilityOverlayHost {
         el.setAttribute('data-inkchapter-owned', 'heading-diagnostic')
         container.appendChild(el)
       }
+      const kind = item.kind ?? 'diagnostic'
+      if (el.getAttribute('data-ink-badge-kind') !== kind) el.setAttribute('data-ink-badge-kind', kind)
       if (el.getAttribute('data-ink-diagnostic-severity') !== item.severity) {
         el.setAttribute('data-ink-diagnostic-severity', item.severity)
       }
       if (el.getAttribute('data-ink-diagnostic-id') !== item.diagnosticId) {
-        el.setAttribute('data-ink-diagnostic-id', item.diagnosticId)
+        if (item.diagnosticId === '') el.removeAttribute('data-ink-diagnostic-id')
+        else el.setAttribute('data-ink-diagnostic-id', item.diagnosticId)
       }
       if (el.textContent !== item.text) el.textContent = item.text
-      if (el.getAttribute('title') !== item.text) el.setAttribute('title', item.text)
-      el.setAttribute('aria-hidden', 'true')
+      const tooltip = item.tooltip ?? item.text
+      if (el.getAttribute('title') !== tooltip) el.setAttribute('title', tooltip)
+      if (el.getAttribute('data-ink-tooltip') !== tooltip) el.setAttribute('data-ink-tooltip', tooltip)
+      if (el.getAttribute('aria-label') !== tooltip) el.setAttribute('aria-label', tooltip)
+      if (el.getAttribute('role') !== 'button') el.setAttribute('role', 'button')
+      if (el.getAttribute('tabindex') !== '0') el.setAttribute('tabindex', '0')
+      if (el.getAttribute('contenteditable') !== 'false') el.setAttribute('contenteditable', 'false')
     }
     for (let i = items.length; i < existing.length; i++) {
       try { existing[i].remove() } catch { /* noop */ }
@@ -8360,9 +8396,58 @@ export class DocumentUtilityOverlayHost {
         }
       }
     }
-    // V5.14-R8 R4 — a deterministic, order-stable label sequence (severity desc).
+    // ── R14 — the ONE badge presentation authority per heading ─────────────
+    // Every chip-eligible diagnostic of this heading is mapped by
+    // `document-diagnostic-badge-v1`: specific short label, semantic dedupe,
+    // stable priority order, and at most TWO specific badges plus a `+N`
+    // summary. The underlying diagnostics are never dropped.
     for (const g of groups.values()) {
-      g.reasonItems.sort((a, b) => (b.rank - a.rank) || a.diagnosticId.localeCompare(b.diagnosticId))
+      const headingText = (g.el.textContent ?? '').trim()
+      const line = this.headingSourceLineOf(g.el)
+      const inputs: DiagnosticBadgeInput[] = []
+      for (const diagnosticId of g.diagnosticIds) {
+        const d = this.diagnosticById(diagnosticId)
+        if (!d) continue
+        if (!shouldRenderReasonChip({ metadata: (d.metadata ?? {}) as Record<string, unknown>, code: d.code })) continue
+        inputs.push({
+          diagnosticId,
+          code: d.code,
+          severity: d.severity,
+          message: d.message,
+          detail: d.detail ?? null,
+          category: d.category ?? null,
+          metadata: (d.metadata ?? null) as Record<string, unknown> | null,
+          line,
+          headingText,
+          targetIdentity: d.targetIdentity ?? null,
+        })
+      }
+      const set = buildDiagnosticBadgeSet(inputs)
+      // R14 — the summary scope is exactly the CHIP-ELIGIBLE diagnostics whose
+      // badges it summarizes (document-scoped suppressions are not counted).
+      const headingDiagnosticIds = inputs.map(i => i.diagnosticId)
+      g.reasonItems = set.visible.map(b => ({
+        diagnosticId: b.diagnosticId,
+        severity: b.severity,
+        text: b.shortLabel,
+        rank: severityRank(b.severity),
+        kind: 'diagnostic' as const,
+        tooltip: formatDiagnosticBadgeTooltip(b),
+        headingDiagnosticIds,
+      }))
+      if (set.summary) {
+        const highest = mergeHeadingMarkerSeverity(set.all.map(b => b.severity)) ?? 'info'
+        g.reasonItems.push({
+          diagnosticId: '',
+          severity: highest,
+          text: set.summary.label,
+          rank: -1,
+          kind: 'summary',
+          tooltip: `该标题还有 ${set.summary.count} 个问题，点击在检测面板查看全部`,
+          headingDiagnosticIds,
+        })
+      }
+      if (g.reasonItems.length > 0) g.reasonText = g.reasonItems[0].text
     }
     return { groups, headingWithoutVisualTarget, expectedTargets, groupTargetKeys, outlineDiagnosticTargets }
   }
@@ -8515,7 +8600,15 @@ export class DocumentUtilityOverlayHost {
       wrapper.setAttribute('data-ink-layout-epoch', String(epoch))
       wrapper.setAttribute('data-ink-geometry-generation', String(geometryGeneration))
       wrapper.setAttribute('data-ink-stable-identity', identity)
-      wrapper.setAttribute('aria-hidden', 'true')
+      wrapper.setAttribute('data-ink-heading-text', (g.el.textContent ?? '').trim())
+      {
+        const headingLine = this.headingSourceLineOf(g.el)
+        if (headingLine != null) wrapper.setAttribute('data-ink-heading-line', String(headingLine))
+        else wrapper.removeAttribute('data-ink-heading-line')
+      }
+      // R14 — the badge container is INTERACTIVE (click → central panel), so the
+      // marker can no longer be a fully hidden aria subtree.
+      wrapper.removeAttribute('aria-hidden')
       wrapper.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;'
       const rail = wrapper.querySelector('.inkchapter-heading-diagnostic-marker__rail') as HTMLElement | null
       const icon = wrapper.querySelector('.inkchapter-heading-diagnostic-marker__icon') as HTMLElement | null
@@ -8836,7 +8929,7 @@ export class DocumentUtilityOverlayHost {
             // §8.1 — plugin-owned presentation identity: MutationObserver treats this
             // subtree as PLUGIN_PRESENTATION (never semantic / global heading reflow).
             chip.setAttribute('data-inkchapter-owned', 'heading-diagnostic')
-            chip.setAttribute('aria-hidden', 'true')
+            chip.setAttribute('data-ink-heading-identity', identity)
             wrapper.appendChild(chip)
           }
           // V5.14-R8 R4 — ONE pill per diagnostic; EVERY label of this heading is
@@ -11288,7 +11381,167 @@ export class DocumentUtilityOverlayHost {
     stampCaretInertPresentation(layer, false)
     docLayer.appendChild(layer)
     this.headingMarkerLayer = layer
+    this.bindHeadingBadgeInteraction(layer)
     return layer
+  }
+
+  // ── R14 — body badge interaction (click / keyboard → central panel) ──────
+
+  private headingBadgeItemFromEvent(ev: Event): HTMLElement | null {
+    const target = ev.target
+    if (!(target instanceof Element)) return null
+    const item = target.closest<HTMLElement>('.inkchapter-heading-diagnostic-reason__item')
+    return item != null && this.headingMarkerLayer?.contains(item) ? item : null
+  }
+
+  private bindHeadingBadgeInteraction(layer: HTMLElement): void {
+    if (layer.getAttribute('data-ink-badge-interaction') === 'true') return
+    layer.setAttribute('data-ink-badge-interaction', 'true')
+    // Never move the caret / selection when a badge is pressed: the badge is an
+    // overlay decoration, never editable heading text.
+    layer.addEventListener('mousedown', (ev) => {
+      if (this.headingBadgeItemFromEvent(ev)) ev.preventDefault()
+    })
+    layer.addEventListener('click', (ev) => {
+      const item = this.headingBadgeItemFromEvent(ev)
+      if (!item) return
+      ev.preventDefault()
+      ev.stopPropagation()
+      this.activateHeadingBadge(item)
+    })
+    layer.addEventListener('keydown', (ev) => {
+      const item = this.headingBadgeItemFromEvent(ev)
+      if (!item) return
+      if (ev.key === 'Escape') {
+        this.clearHeadingBadgeGroupFocus()
+        item.blur()
+        ev.preventDefault()
+        ev.stopPropagation()
+        return
+      }
+      if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+        ev.preventDefault()
+        ev.stopPropagation()
+        this.activateHeadingBadge(item)
+      }
+    })
+  }
+
+  private activateHeadingBadge(item: HTMLElement): void {
+    const marker = item.closest<HTMLElement>('.inkchapter-heading-diagnostic-marker')
+    const identity = marker?.getAttribute('data-ink-stable-identity') ?? ''
+    const kind = item.getAttribute('data-ink-badge-kind') ?? 'diagnostic'
+    if (kind === 'summary') {
+      this.focusHeadingDiagnosticGroup(identity)
+      return
+    }
+    const diagnosticId = item.getAttribute('data-ink-diagnostic-id') ?? ''
+    if (diagnosticId !== '') this.openDiagnosticsAndLocate(diagnosticId)
+  }
+
+  /** Specific badge → open the panel (if closed), select the exact diagnostic. */
+  private openDiagnosticsAndLocate(diagnosticId: string): void {
+    this.clearHeadingBadgeGroupFocus()
+    if (!this.drawerOpen) this.openDrawer('all')
+    else this.renderDrawer()
+    this.locateDiagnostic(diagnosticId)
+  }
+
+  /**
+   * `+N` summary → open the panel and temporarily focus EVERY diagnostic of the
+   * heading (the panel structure is unchanged; the rows carry a transient class).
+   */
+  private focusHeadingDiagnosticGroup(identity: string): void {
+    const layer = this.headingMarkerLayer
+    if (!layer || identity === '') return
+    let marker: HTMLElement | null = null
+    for (const candidate of Array.from(layer.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-marker'))) {
+      if (candidate.getAttribute('data-ink-stable-identity') === identity) { marker = candidate; break }
+    }
+    const chip = marker?.querySelector<HTMLElement>('.inkchapter-heading-diagnostic-reason') ?? null
+    let ids: string[] = []
+    try {
+      const raw = marker?.getAttribute('data-ink-diagnostic-ids') ?? chip?.getAttribute('data-ink-diagnostic-ids') ?? '[]'
+      const parsed: unknown = JSON.parse(raw)
+      ids = Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string' && v !== '') : []
+    } catch { ids = [] }
+    if (ids.length === 0) return
+    if (!this.drawerOpen) this.openDrawer('all')
+    else this.renderDrawer()
+    this.locateDiagnostic(ids[0])
+    this.headingBadgeGroupFocusIds = new Set(ids)
+    this.applyHeadingBadgeGroupFocus()
+    // The locate transaction may re-render the Drawer asynchronously; re-apply the
+    // transient group focus while the summary scope is still current.
+    for (const delay of [0, 160, 480, 960]) {
+      setTimeout(() => {
+        if (this.headingBadgeGroupFocusIds.size > 0) this.applyHeadingBadgeGroupFocus()
+      }, delay)
+    }
+    if (this.headingBadgeGroupFocusTimer != null) clearTimeout(this.headingBadgeGroupFocusTimer)
+    this.headingBadgeGroupFocusTimer = setTimeout(() => this.clearHeadingBadgeGroupFocus(), 6000)
+  }
+
+  private applyHeadingBadgeGroupFocus(): void {
+    if (!this.drawerEl) return
+    const ids = this.headingBadgeGroupFocusIds
+    for (const row of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))) {
+      const id = row.getAttribute('data-diagnostic-id') ?? ''
+      if (ids.has(id)) row.classList.add('is-r14-group-focus')
+      else row.classList.remove('is-r14-group-focus')
+      if (ids.has(id)) row.setAttribute('data-ink-r14-group-focus', 'true')
+      else row.removeAttribute('data-ink-r14-group-focus')
+    }
+  }
+
+  private clearHeadingBadgeGroupFocus(): void {
+    if (this.headingBadgeGroupFocusTimer != null) {
+      clearTimeout(this.headingBadgeGroupFocusTimer)
+      this.headingBadgeGroupFocusTimer = null
+    }
+    this.headingBadgeGroupFocusIds.clear()
+    if (!this.drawerEl) return
+    for (const row of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item.is-r14-group-focus'))) {
+      row.classList.remove('is-r14-group-focus')
+      row.removeAttribute('data-ink-r14-group-focus')
+    }
+  }
+
+  /**
+   * R14 — the heading's REAL 1-based source line for the badge tooltip.
+   * Typora does not always stamp `data-line` on headings, so fall back to a
+   * deterministic scan of the SAME document source: match the heading text and
+   * its occurrence ordinal among DOM headings (duplicates stay distinguishable).
+   */
+  private headingSourceLineOf(el: HTMLElement): number | null {
+    const lineAttr = el.getAttribute('data-line')
+    if (lineAttr != null && lineAttr !== '') {
+      const n = Number.parseInt(lineAttr, 10)
+      if (Number.isFinite(n)) return n + 1
+    }
+    let markdown = ''
+    try { markdown = this.opts.ctx.authority.getMarkdown() ?? '' } catch { return null }
+    if (markdown === '') return null
+    const text = (el.textContent ?? '').trim()
+    if (text === '') return null
+    let occurrence = 0
+    try {
+      const root = document.getElementById('write') ?? document
+      for (const h of Array.from(root.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'))) {
+        if (h === el) break
+        if ((h.textContent ?? '').trim() === text) occurrence++
+      }
+    } catch { /* keep occurrence 0 */ }
+    const lines = markdown.split(/\r?\n/)
+    let seen = 0
+    for (let i = 0; i < lines.length; i++) {
+      const match = /^(#{1,6})\s+(.*)$/.exec(lines[i])
+      if (!match) continue
+      if (match[2].trim() !== text) continue
+      if (seen === occurrence) return i + 1
+      seen++
+    }
+    return null
   }
 
   /**
@@ -12240,9 +12493,25 @@ export class DocumentUtilityOverlayHost {
     // §11/§12 — the reason chip is an OVERLAY child (never in the heading flow).
     // V5.12-R9 §6 — exactly ONE chip per heading: the PASSIVE marker owns it, so
     // the active pass ADOPTS the existing chip instead of creating a second one.
-    const reasonText = shouldRenderReasonChip({ metadata: (diag.metadata ?? {}) as Record<string, unknown>, code: diag.code })
-      ? buildHeadingLocateReason({ code: diag.code, message: diag.message, metadata: (diag.metadata ?? {}) as Record<string, unknown> })
+    const reasonBadge = shouldRenderReasonChip({ metadata: (diag.metadata ?? {}) as Record<string, unknown>, code: diag.code })
+      ? buildDiagnosticBadge({
+          diagnosticId: diag.id,
+          code: diag.code,
+          severity: diag.severity,
+          message: diag.message,
+          detail: diag.detail ?? null,
+          category: diag.category ?? null,
+          metadata: (diag.metadata ?? null) as Record<string, unknown> | null,
+          line: (() => {
+            const lineAttr = element.getAttribute('data-line')
+            return lineAttr != null && lineAttr !== '' ? Number.parseInt(lineAttr, 10) + 1 : null
+          })(),
+          headingText: (element.textContent ?? '').trim(),
+          targetIdentity: diag.targetIdentity ?? null,
+        })
       : null
+    const reasonText = reasonBadge?.shortLabel ?? null
+    const reasonTooltip = reasonBadge ? formatDiagnosticBadgeTooltip(reasonBadge) : undefined
     let reasonChipRect: HeadingRect | null = null
     // ── V5.14-R4 §10 — the chip rect is read from the CURRENT geometry
     // generation's snapshot, never a rect left over from an earlier pass (the
@@ -12295,10 +12564,16 @@ export class DocumentUtilityOverlayHost {
         const chip = document.createElement('div')
         chip.className = 'inkchapter-heading-diagnostic-reason'
         chip.setAttribute('data-inkchapter-owned', 'heading-diagnostic')
-        chip.setAttribute('aria-hidden', 'true')
-        chip.setAttribute('title', reasonText)
+        chip.setAttribute('data-ink-heading-identity', headingIdentity)
         this.syncHeadingReasonChipItems(chip, [
-          { diagnosticId: diag.id, severity, text: reasonText, rank: severityRank(String(diag.severity ?? 'info')) },
+          {
+            diagnosticId: diag.id,
+            severity,
+            text: reasonText,
+            rank: severityRank(String(diag.severity ?? 'info')),
+            kind: 'diagnostic',
+            tooltip: reasonTooltip,
+          },
         ])
         // V5.14-R8 §4.4 — max-width 由 placement 的有界宽度给出（永不越过安全右界），
         // 文案换行不 ellipsis；top 用**实测**高度重新居中（避免换行后偏移）。
@@ -34881,6 +35156,8 @@ export class DocumentUtilityOverlayHost {
 
   private closeDrawer(): void {
     if (!this.drawerEl) return
+    // R14 — closing the panel also ends any transient `+N` badge group focus.
+    this.clearHeadingBadgeGroupFocus()
     // V5.12-R3 §13 — a USER CLOSE is a new intent: it bumps the intent epoch so a
     // transaction started earlier can never auto-reopen the Drawer afterwards.
     this.drawerIntentEpoch++
@@ -34913,6 +35190,21 @@ export class DocumentUtilityOverlayHost {
   showTransientHint(message: string): void {
     if (!message) return
     this.showToast(message)
+  }
+
+  /**
+   * R14 — TEST-VAULT acceptance only: run the SAME diagnostic fix entry the
+   * central panel uses. Returns false when no fix controller exists (no new
+   * write path, no bypass of the fix planner).
+   */
+  startDiagnosticFixForAcceptance(diagnosticId: string): boolean {
+    if (!this.diagnosticFixController) return false
+    this.diagnosticFixController.startDiagnostic(diagnosticId)
+    return true
+  }
+
+  isDiagnosticFixBusyForAcceptance(): boolean {
+    return this.diagnosticFixController?.isBusy() === true
   }
 
   private showToast(message: string): void {

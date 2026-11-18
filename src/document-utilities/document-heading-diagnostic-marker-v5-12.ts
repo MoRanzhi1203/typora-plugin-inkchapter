@@ -41,8 +41,9 @@ export const HEADING_ACTIVE_FILL_ALPHA_MAX = 0.12
 /** §11 — the reason chip stays short. */
 export const HEADING_REASON_CHIP_MAX_CHARS = 18
 
-// V5.14-R5 §3/§4/§5/§7 — the ONE DiagnosticCode -> inlineHint authority.
-import { inlineHintCategoryForCode, inlineHintIsSafe, resolveInlineHint } from './document-diagnostic-inline-presentation-v514-r5'
+// R14 — the ONE short-label authority is the badge presentation model; the
+// legacy inline hint remains only as an internal detail of that model.
+import { resolveDiagnosticBadgeLabel } from './document-diagnostic-badge-v1'
 import {
   HEADING_REASON_CHIP_PREFERRED_GAP_PX_V2,
   computeHeadingReasonChipPlacement as computeCanonicalHeadingReasonChipPlacement,
@@ -326,13 +327,13 @@ export interface HeadingReasonFacts {
  * code yields a short CATEGORY label instead.
  */
 export function buildHeadingLocateReason(diagnostic: HeadingReasonFacts): string | null {
-  const { hint, source } = resolveInlineHint({
+  const { label } = resolveDiagnosticBadgeLabel({
+    diagnosticId: '',
     code: diagnostic.code,
-    message: diagnostic.message,
+    message: diagnostic.message ?? null,
     metadata: (diagnostic.metadata ?? {}) as Record<string, unknown>,
   })
-  if (source === 'MESSAGE_FALLBACK') return inlineHintCategoryForCode(diagnostic.code)
-  return inlineHintIsSafe(hint) ? hint : inlineHintCategoryForCode(diagnostic.code)
+  return label
 }
 
 /** §27 — passive marker dedupe key (one marker per heading element). */

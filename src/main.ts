@@ -114,6 +114,10 @@ import { installBlankLineAcceptanceRunner } from './runtime/blank-line-acceptanc
 import { installNumberingAcceptanceRunner } from './runtime/numbering-acceptance-runner'
 import { installObjectNumberAcceptanceRunner } from './runtime/object-number-acceptance-runner'
 import { installFormulaNumberingAcceptanceRunner, FORMULA_NUMBER_TEXT_PATTERN } from './runtime/formula-numbering-acceptance-runner'
+import {
+  installDiagnosticBadgeAcceptanceRunner,
+  type BadgeAcceptanceDomFacts,
+} from './runtime/diagnostic-badge-acceptance-runner'
 import { createImageEvidenceRuntime } from './image-management/image-evidence-runtime'
 import { createNodeImageEvidenceProvider } from './image-management/image-evidence-provider'
 import { resolveDiagnosticProfile, type ResolvedDiagnosticProfile } from './document-utilities/document-diagnostic-profile-v1'
@@ -2640,6 +2644,106 @@ export default class extends Plugin<InkChapterSettings> {
           log: (message) => console.info(`[InkChapter] ${message}`),
         }))
       }
+      // ── R14 — TEST-VAULT body-diagnostic-badge runtime acceptance ───────
+      // OFF unless INKCHAPTER_DIAGNOSTIC_BADGE_ACCEPTANCE=1 and the dedicated
+      // acceptance document is active. It reads the SAME published diagnostics
+      // and clicks the REAL badge DOM (no second detection, no synthetic DOM).
+      this.register(installDiagnosticBadgeAcceptanceRunner({
+        vaultRoot: vaultRoot ?? null,
+        getActiveFilePath: () => this.app.workspace.activeFile ?? null,
+        getMarkdown: () => {
+          try { return editor.getMarkdown() } catch { return '' }
+        },
+        replaceContent: (markdown: string) => {
+          try { File.reloadContent(markdown, false, false, false, true) } catch { /* fail-open */ }
+        },
+        readSnapshot: () => this.documentUtilities?.getSnapshot() ?? null,
+        readDomFacts: (): BadgeAcceptanceDomFacts => {
+          const markers = Array.from(
+            document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-marker[data-ink-stable-identity]'),
+          ).map(marker => {
+            const chip = marker.querySelector<HTMLElement>('.inkchapter-heading-diagnostic-reason')
+            let diagnosticIds: string[] = []
+            try {
+              const raw = chip?.getAttribute('data-ink-diagnostic-ids') ?? '[]'
+              const parsed: unknown = JSON.parse(raw)
+              if (Array.isArray(parsed)) diagnosticIds = parsed.filter((v): v is string => typeof v === 'string' && v !== '')
+            } catch { diagnosticIds = [] }
+            const badges = Array.from(
+              marker.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item'),
+            ).map(el => ({
+              text: (el.textContent ?? '').trim(),
+              severity: el.getAttribute('data-ink-diagnostic-severity') ?? '',
+              diagnosticId: el.getAttribute('data-ink-diagnostic-id') ?? '',
+              kind: (el.getAttribute('data-ink-badge-kind') === 'summary' ? 'summary' : 'diagnostic') as 'diagnostic' | 'summary',
+              tooltip: el.getAttribute('data-ink-tooltip') ?? el.getAttribute('title') ?? '',
+            }))
+            const lineAttr = marker.getAttribute('data-ink-heading-line')
+            const line = lineAttr != null && lineAttr !== '' ? Number.parseInt(lineAttr, 10) : null
+            return {
+              identity: marker.getAttribute('data-ink-stable-identity') ?? '',
+              headingText: marker.getAttribute('data-ink-heading-text') ?? '',
+              headingLine: line != null && Number.isFinite(line) ? line : null,
+              diagnosticIds,
+              badges,
+            }
+          })
+          const drawerEl = document.querySelector<HTMLElement>('.inkchapter-doc-drawer')
+          const drawer = {
+            open: drawerEl != null && (() => {
+              try { return getComputedStyle(drawerEl).display !== 'none' } catch { return false }
+            })(),
+            rows: drawerEl
+              ? Array.from(drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]')).map(row => ({
+                  diagnosticId: row.getAttribute('data-diagnostic-id') ?? '',
+                  selected: row.classList.contains('is-selected'),
+                  groupFocused: row.getAttribute('data-ink-r14-group-focus') === 'true',
+                }))
+              : [],
+          }
+          const writeRoot = document.getElementById('write') ?? document
+          const numberedHeadings = Array.from(
+            writeRoot.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'),
+          ).map(h => ({
+            text: (h.textContent ?? '').trim(),
+            number: h.getAttribute('data-inkchapter-heading-number') ?? '',
+          })).filter(h => h.number !== '')
+          return { markers, drawer, numberedHeadings }
+        },
+        clickBadge: (diagnosticId: string) => {
+          const item = Array.from(
+            document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-id]'),
+          ).find(el => el.getAttribute('data-ink-diagnostic-id') === diagnosticId)
+          if (!item) return false
+          item.click()
+          return true
+        },
+        clickSummary: (headingIdentity: string) => {
+          const marker = Array.from(
+            document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-marker[data-ink-stable-identity]'),
+          ).find(el => el.getAttribute('data-ink-stable-identity') === headingIdentity)
+          const summary = marker?.querySelector<HTMLElement>('[data-ink-badge-kind="summary"]') ?? null
+          if (!summary) return false
+          summary.click()
+          return true
+        },
+        pressBadgeKey: (diagnosticId: string, key: string) => {
+          const item = Array.from(
+            document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-id]'),
+          ).find(el => el.getAttribute('data-ink-diagnostic-id') === diagnosticId)
+          if (!item) return false
+          item.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+          return true
+        },
+        fixDiagnostic: (diagnosticId: string) => this.documentUtilities?.host.startDiagnosticFixForAcceptance(diagnosticId) ?? false,
+        isFixBusy: () => this.documentUtilities?.host.isDiagnosticFixBusyForAcceptance() ?? false,
+        recomputeDiagnostics: () => { this.documentUtilities?.requestDiagnosticsRefresh?.('ACCEPTANCE_BADGE_UNDO') },
+        undo: () => invokeEditorUndo(editor as unknown as TyporaUndoApi),
+        redo: () => invokeEditorRedo(editor as unknown as TyporaUndoApi),
+        wait: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)),
+        subscribeFileOpen: (callback) => this.app.workspace.on('file:open' as never, (() => callback()) as never),
+        log: (message) => console.info(`[InkChapter] ${message}`),
+      }))
     this.prewarmImageEvidenceForActiveDocument()
       console.log('[InkChapter] document utilities mounted')
     } catch (e) {

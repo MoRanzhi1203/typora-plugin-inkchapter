@@ -222,7 +222,7 @@ describe('R9-HEADING-03 — Heading Gap (warning severity)', () => {
     expect(wrapper.getAttribute('data-ink-diagnostic-severity')).toBe('warning')
     expect(wrapper.querySelector('.inkchapter-heading-diagnostic-marker__icon')).toBeNull()
     expect(wrapper.querySelector('.inkchapter-heading-diagnostic-marker__rail')).toBeNull()
-    expect((document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement).textContent).toBe('H4 → H6 · 缺 H5')
+    expect((document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement).textContent).toBe('层级跳级 H4→H6')
     // the amber soft fill + a light pill are the SCSS severity semantics.
     const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
     expect(css).toMatch(/--ink-heading-sev-soft:\s*color-mix\(in srgb, var\(--ink-heading-sev\) 10%, transparent\)/)
@@ -232,7 +232,7 @@ describe('R9-HEADING-03 — Heading Gap (warning severity)', () => {
 
 // ── R9-HEADING-04 — Duplicate Heading ──────────────────────────────────────
 describe('R9-HEADING-04 — Duplicate Heading', () => {
-  it('a duplicate-text heading gets the SAME soft fill + "重复标题" chip (V5.14-R5 §4)', () => {
+  it('a duplicate-text heading gets the SAME soft fill + "重复标题：乙" chip (R14 §5.3)', () => {
     const w = makeWorld()
     host = w.h
     inject(host, [headingDiag('D1', 'HEADING_DUPLICATE_TEXT', 'error', { text: '乙' })])
@@ -240,7 +240,7 @@ describe('R9-HEADING-04 — Duplicate Heading', () => {
     const wrapper = document.querySelector('.inkchapter-heading-diagnostic-marker') as HTMLElement
     expect(wrapper.getAttribute('data-ink-diagnostic-severity')).toBe('error')
     expect(passiveFragmentCount()).toBe(1)
-    expect((document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement).textContent).toBe('重复标题')
+    expect((document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement).textContent).toBe('重复标题：乙')
     expect(wrapper.querySelector('.inkchapter-heading-diagnostic-marker__icon')).toBeNull()
     expect(wrapper.querySelector('.inkchapter-heading-diagnostic-marker__rail')).toBeNull()
   })
@@ -401,5 +401,105 @@ describe('R9-HEADING-10 — scope discipline (no global heading pollution, Drawe
     const c = api().getHeadingMarkerSurfaceCounters()
     expect(c.drawerStyleMutation).toBe(0)
     expect(c.problemsControlStyleMutation).toBe(0)
+  })
+})
+
+// ── R14 — body diagnostic badges: aggregation / interaction / CSS ──────────
+describe('R14 — body diagnostic badges', () => {
+  const manual = () => headingDiag('M1', 'HEADING_MANUAL_NUMBER_PREFIX', 'warning', {})
+  const duplicate = () => ({
+    ...headingDiag('D1', 'HEADING_DUPLICATE_TEXT', 'warning', {}),
+    message: '重复的标题文字「第一节」',
+  })
+
+  it('paints TWO specific badges + a neutral "+1" summary for three problems', () => {
+    const w = makeWorld()
+    host = w.h
+    inject(host, [gapWarning(), manual(), duplicate()])
+    api().renderHeadingDiagnosticMarkers()
+    const items = Array.from(document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item'))
+    expect(items.map(el => el.textContent)).toEqual(['层级跳级 H4→H6', '手工编号', '+1'])
+    expect(items[2].getAttribute('data-ink-badge-kind')).toBe('summary')
+    // underlying diagnostics are never dropped: the summary knows all three ids
+    const container = document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement
+    expect(JSON.parse(container.getAttribute('data-ink-diagnostic-ids') ?? '[]')).toEqual(['W1', 'M1', 'D1'])
+  })
+
+  it('badges carry an actionable tooltip, role and caret-inert attributes', () => {
+    const w = makeWorld()
+    host = w.h
+    inject(host, [gapWarning()])
+    api().renderHeadingDiagnosticMarkers()
+    const item = document.querySelector('.inkchapter-heading-diagnostic-reason__item') as HTMLElement
+    expect(item.getAttribute('role')).toBe('button')
+    expect(item.getAttribute('tabindex')).toBe('0')
+    expect(item.getAttribute('contenteditable')).toBe('false')
+    expect(item.getAttribute('data-ink-tooltip')).toContain('标题层级')
+    expect(item.getAttribute('data-ink-tooltip')).toContain('L5')
+    expect(item.textContent).not.toContain('标题问题')
+  })
+
+  it('mousedown on a badge never moves the caret (default is prevented)', () => {
+    const w = makeWorld()
+    host = w.h
+    inject(host, [gapWarning()])
+    api().renderHeadingDiagnosticMarkers()
+    const item = document.querySelector('.inkchapter-heading-diagnostic-reason__item') as HTMLElement
+    const ev = new MouseEvent('mousedown', { bubbles: true, cancelable: true })
+    item.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(true)
+  })
+
+  it('clicking a specific badge opens the panel and locates the EXACT diagnostic', () => {
+    const w = makeWorld()
+    host = w.h
+    inject(host, [gapWarning(), manual()])
+    api().renderHeadingDiagnosticMarkers()
+    const calls: string[] = []
+    ;(host as unknown as { locateDiagnostic: (id: string) => void }).locateDiagnostic = id => { calls.push(id) }
+    const items = Array.from(document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item'))
+    items[1].click()
+    expect(calls).toEqual(['M1'])
+    const drawer = document.querySelector('.inkchapter-doc-drawer') as HTMLElement
+    expect(drawer.style.display).toBe('flex')
+  })
+
+  it('clicking "+N" focuses EVERY diagnostic of the heading', () => {
+    const w = makeWorld()
+    host = w.h
+    inject(host, [gapWarning(), manual(), duplicate()])
+    api().renderHeadingDiagnosticMarkers()
+    const calls: string[] = []
+    ;(host as unknown as { locateDiagnostic: (id: string) => void }).locateDiagnostic = id => { calls.push(id) }
+    const summary = document.querySelector('[data-ink-badge-kind="summary"]') as HTMLElement
+    summary.click()
+    expect(calls).toEqual(['W1'])
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))
+    const focused = rows.filter(r => r.getAttribute('data-ink-r14-group-focus') === 'true').map(r => r.getAttribute('data-diagnostic-id'))
+    expect(focused.sort()).toEqual(['D1', 'M1', 'W1'])
+  })
+
+  it('keyboard Enter activates a badge (no mouse required)', () => {
+    const w = makeWorld()
+    host = w.h
+    inject(host, [gapWarning(), manual()])
+    api().renderHeadingDiagnosticMarkers()
+    const calls: string[] = []
+    ;(host as unknown as { locateDiagnostic: (id: string) => void }).locateDiagnostic = id => { calls.push(id) }
+    const items = Array.from(document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item'))
+    items[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    expect(calls).toEqual(['M1'])
+  })
+
+  it('R14 CSS tokens / interaction affordances exist', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/style.scss'), 'utf8')
+    expect(css).toContain('--ink-diagnostic-badge-error-bg')
+    expect(css).toContain('--ink-diagnostic-badge-warning-bg')
+    expect(css).toContain('--ink-diagnostic-badge-info-bg')
+    expect(css).toContain('--ink-diagnostic-badge-summary-bg')
+    expect(css).toContain('pointer-events: auto')
+    expect(css).toContain(':focus-visible')
+    expect(css).toContain('content: attr(data-ink-tooltip)')
+    expect(css).toContain('data-ink-badge-kind=\'summary\'')
   })
 })

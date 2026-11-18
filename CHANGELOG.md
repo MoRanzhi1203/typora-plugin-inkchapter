@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- 正文诊断徽章（R14）：标题右侧不再出现「标题问题」这类无法识别具体错误的泛化标签，改为真实短名（`层级跳级 H3→H5`、`重复标题：第一节`、`手工编号`、`编号错序`、`双重编号`、`编号作用域缺层级` 等）；同一标题最多两个具体徽章 + 中性 `+N`，按严重级别与稳定 ruleId 排序，不再因检测顺序变化而互换；徽章为 `contenteditable=false` 覆盖层，不写入 Markdown、不占标题文本流、不移动光标，也不影响任何标题编号模式。
 - 行内公式渲染（R13 专项）：真实 Typora 1.6.7 验收定位到行内公式不显示的第二层根因是 **Typora 原生数学设置**，不是编号算法：`strict_mode=true` 且 `enable_inline_math` 未启用时，Typora 根本不生成 `.md-inline-math` 宿主，块级 `$$…$$` 仍正常，导致此前验收只看到块公式通过。现在：
   - 新增只读设置检测（`src/infrastructure/typora-native-settings.ts`，绝不写入 Typora 配置），设置页「公式编号」在原生开关关闭或严格模式开启时给出明确提示与修复路径；
   - 依据 Typora 真实渲染契约区分宿主：行内调用携带 `display:false`，块级调用传度量对象（无 `display`）；行内渲染永不注入 `\tag`；
@@ -28,6 +29,8 @@
 - 同一修复同时应用于图片 / 表格 / 代码 / 公式四条链路；旧「编号类型」预设与显式作用域保持一致。
 
 ### Added
+
+- 正文诊断徽章交互体系（R14）：新增 `document-diagnostic-badge-v1`（短文案 / 严重级别 / 同标题语义去重 / 稳定排序 / `+N` 聚合）、R14 徽章配色 token 与深色主题、点击定位中央检测面板、`+N` 聚焦该标题全部诊断、纯 CSS tooltip（完整说明 + `Lxx`）、`Enter`/`Space` 键盘访问与 `mousedown` 光标保护；新增 `pnpm run accept:diagnostic-badges` 真实 Typora DOM 验收（文案 / 聚合 / 点击 / 汇总 / 键盘 / 修复 / 撤销 / 内容重置）。证据见 [DIAGNOSTIC_BADGE_R14_RUNTIME_ACCEPTANCE.md](docs/diagnostics/DIAGNOSTIC_BADGE_R14_RUNTIME_ACCEPTANCE.md)。
 
 - 统一对象编号作用域（R12）：图片 / 表格 / 代码 / 公式共用同一套作用域模型，可分别选择**重置层级**（全文连续或 H1–H6）与**前缀层级**（无前缀或 H1–H6）；两者互相独立，例如「按 H2 重置、只用 H1 前缀」得到 `图 1-1 / 图 1-2 / 图 1-1`。
 - 物理标题路径（R12）：语义标题状态新增 `physicalPathByLevel`（H1–H6 祖先路径），对象前缀不再依赖 DOM 文本、渲染编号或 `data-*` 属性；缺 H3 时不会把手动选择的 H2 编号悄悄降级为章编号。

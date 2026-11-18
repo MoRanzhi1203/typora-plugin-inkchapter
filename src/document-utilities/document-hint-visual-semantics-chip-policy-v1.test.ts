@@ -186,7 +186,7 @@ describe('V1 §3/§19/§28 — active severity authority + fill/chip decoupling'
 
   it('§13/§28 — the active FILL is painted BEFORE (and independently of) the chip decision', () => {
     const fragIdx = OVERLAY_HOST.indexOf("frag.className = 'inkchapter-heading-diagnostic-active__fragment'")
-    const reasonIdx = OVERLAY_HOST.indexOf('const reasonText = shouldRenderReasonChip(')
+    const reasonIdx = OVERLAY_HOST.indexOf('const reasonBadge = shouldRenderReasonChip(')
     expect(fragIdx).toBeGreaterThan(-1)
     expect(reasonIdx).toBeGreaterThan(-1)
     // the fill loop precedes the chip policy ⇒ suppressing the chip cannot remove the fill
@@ -195,6 +195,8 @@ describe('V1 §3/§19/§28 — active severity authority + fill/chip decoupling'
 
   it('§9 — BOTH the passive and active chip paths enforce the scope policy', () => {
     expect(OVERLAY_HOST).toContain('const reason = shouldRenderReasonChip(')
-    expect(OVERLAY_HOST).toContain('const reasonText = shouldRenderReasonChip(')
+    expect(OVERLAY_HOST).toContain('const reasonBadge = shouldRenderReasonChip(')
+    // R14 — the chip text is the shared badge model, never an ad-hoc message slice.
+    expect(OVERLAY_HOST).toContain('buildDiagnosticBadge(')
   })
 })

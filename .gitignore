@@ -70,6 +70,10 @@ test/vault/runtime/acceptance/object-numbering-acceptance-last-run.json
 test/vault/runtime/acceptance/FormulaNumbering-R11-Runtime-Acceptance.md
 test/vault/runtime/acceptance/formula-numbering-acceptance-request.json
 test/vault/runtime/acceptance/formula-numbering-acceptance-last-run.json
+# R14 — body diagnostic badge runtime acceptance (generated working document / request / report).
+test/vault/runtime/acceptance/DiagnosticBadges-R14-Runtime-Acceptance.md
+test/vault/runtime/acceptance/diagnostic-badge-acceptance-request.json
+test/vault/runtime/acceptance/diagnostic-badge-acceptance-last-run.json
 
 # Archived raw test-vault backups (may contain unpublished user documents).
 docs/archive/test-vault/

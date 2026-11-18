@@ -129,7 +129,13 @@ describe('CONTRAST-V52 — strong-contrast token bands + primary/secondary hiera
     // The slice intentionally spans the heading marker block too: the inline fill
     // strength and the text-tight `border-radius: 2px` carriers both live there.
     const inline = scss.slice(scss.indexOf('.inkchapter-diagnostic-inline-mark {'), scss.indexOf('/* ── Phase 7R.3.11.8B.6'))
-    for (const m of inline.matchAll(/box-shadow:\s*([^;]+);/g)) expect(m[1].trim()).toBe('none')
+    // R14 — parse RULE BODIES and only inspect the locate/inline carriers. The
+    // badge tooltip has its own shadow and is deliberately NOT part of this
+    // surface (it is not the locate frame / inline mark).
+    for (const block of inline.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!/inkchapter-(diagnostic-inline|heading-diagnostic-(passive|active))/.test(block[1])) continue
+      for (const m of block[2].matchAll(/box-shadow:\s*([^;]+);/g)) expect(m[1].trim()).toBe('none')
+    }
   })
 
   it('CONTRAST-V52-6: no ::selection override and every block kind is FILL-only', () => {
@@ -294,7 +300,10 @@ describe('LINK-V52 — inline warning fill + no false BELOW_PANELS', () => {
     const bg = body.split('\n').find(l => l.includes('--ink-locate-inline-bg:')) ?? ''
     expect(parsePct(bg) / 100).toBeGreaterThanOrEqual(0.12)
     expect(inline).toContain('2px')
-    for (const m of inline.matchAll(/box-shadow:\s*([^;]+);/g)) expect(m[1].trim()).toBe('none')
+    for (const block of inline.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!/inkchapter-(diagnostic-inline|heading-diagnostic-(passive|active))/.test(block[1])) continue
+      for (const m of block[2].matchAll(/box-shadow:\s*([^;]+);/g)) expect(m[1].trim()).toBe('none')
+    }
   })
 
   it('LINK-V52-3/4: a committed inline marker is not gated by frame presentation — the VISUAL-INVARIANT passes', () => {

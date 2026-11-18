@@ -298,7 +298,7 @@ describe('V512R1-5/6/7 — active emphasis is text-tight (fragments, numbering, 
 
 // ── V512R1-8 ───────────────────────────────────────────────────────────────
 describe('V512R1-8 — the reason chip is short and overlay-only', () => {
-  it('V512R1-8: H4 → H6 produces "H4 → H6 · 缺 H5" without reflowing the heading', () => {
+  it('V512R1-8: H4 → H6 produces "层级跳级 H4→H6" without reflowing the heading', () => {
     const w = makeWorld()
     host = w.h
     const d = headingDiag('E1', 'HEADING_LEVEL_GAP', 'error', { previousLevel: 4, currentLevel: 6, missingLevels: [5] })
@@ -306,8 +306,10 @@ describe('V512R1-8 — the reason chip is short and overlay-only', () => {
     headingHost().renderHeadingActiveEmphasisForTest('E1', d as never, w.heading)
     const chip = document.querySelector('.inkchapter-heading-diagnostic-reason') as HTMLElement
     expect(chip).not.toBeNull()
-    expect(chip.textContent).toBe('H4 → H6 · 缺 H5')
-    expect(chip.getAttribute('title')).toBe('H4 → H6 · 缺 H5')
+    expect(chip.textContent).toBe('层级跳级 H4→H6')
+    // R14 — the tooltip carries the FULL title/description + real line.
+    expect(chip.getAttribute('title')).toContain('标题层级')
+    expect(chip.getAttribute('title')).toContain('L5')
     // The chip lives in the document layer, NOT inside the heading.
     expect(w.heading.querySelector('.inkchapter-heading-diagnostic-reason')).toBeNull()
     expect(headingHost().getHeadingMarkerCounters().headingReasonChipReflow).toBe(0)
@@ -356,15 +358,15 @@ describe('V512R1-9/10 — dismiss keeps passive; multiple diagnostics merge', ()
     const items = Array.from(
       document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item'),
     )
-    expect(items.map(el => el.textContent)).toEqual(['多余 H1', 'H2 → H4 · 缺 H3'])
-    expect(items.map(el => el.getAttribute('data-ink-diagnostic-severity'))).toEqual(['error', 'warning'])
+    expect(items.map(el => el.textContent)).toEqual(['层级跳级 H2→H4', '多余 H1'])
+    expect(items.map(el => el.getAttribute('data-ink-diagnostic-severity'))).toEqual(['warning', 'error'])
     // The active pass ADOPTS the passive container as-is (never rewrites it down to
     // the single clicked diagnostic).
     headingHost().renderHeadingActiveEmphasisForTest('W1', headingDiag('W1', 'HEADING_LEVEL_GAP', 'warning', { previousLevel: 2, currentLevel: 4, missingLevels: [3] }) as never, w.heading)
     const activeItems = Array.from(
       document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item'),
     )
-    expect(activeItems.map(el => el.textContent)).toEqual(['多余 H1', 'H2 → H4 · 缺 H3'])
+    expect(activeItems.map(el => el.textContent)).toEqual(['层级跳级 H2→H4', '多余 H1'])
   })
 })
 
@@ -477,18 +479,17 @@ describe('V512R1-CONTRACT — pure marker surface', () => {
   })
 
   it('V512R1-CONTRACT-4: reason builder + severity merge + identity', () => {
-    // ── V5.14-R5 §4/§5/§17 — the inline chip is GENERATED from the DiagnosticCode
-    // (never a slice of the long message); an unmapped code yields a short CATEGORY
-    // label instead of the truncated severity sentence.
-    expect(buildHeadingLocateReason({ code: 'HEADING_LEVEL_GAP', metadata: { previousLevel: 4, currentLevel: 6, missingLevels: [5] } })).toBe('H4 → H6 · 缺 H5')
-    expect(buildHeadingLocateReason({ code: 'HEADING_LEVEL_GAP', metadata: { previousLevel: 1, currentLevel: 3, missingLevels: [2] } })).toBe('H1 → H3 · 缺 H2')
+    // ── R14 §5 — the inline chip is GENERATED from the DiagnosticCode / title
+    // (never a slice of the long message, never a generic category word).
+    expect(buildHeadingLocateReason({ code: 'HEADING_LEVEL_GAP', metadata: { previousLevel: 4, currentLevel: 6, missingLevels: [5] } })).toBe('层级跳级 H4→H6')
+    expect(buildHeadingLocateReason({ code: 'HEADING_LEVEL_GAP', metadata: { previousLevel: 1, currentLevel: 3, missingLevels: [2] } })).toBe('层级跳级 H1→H3')
     expect(buildHeadingLocateReason({ code: 'STRICT_SINGLE_H1_MULTIPLE_H1', metadata: { h1Count: 2, reason: 'MULTIPLE_H1' } })).toBe('多余 H1')
     expect(buildHeadingLocateReason({ code: 'X', metadata: { reason: 'H1_NOT_FIRST' } })).toBe('H1 非首项')
-    // V5.14-R5 §21 — an unknown code never leaks a long / severity-bearing message.
+    // R14 §5.2 — an unknown code never falls back to a generic category word.
     const unknown = buildHeadingLocateReason({ code: 'UNKNOWN', message: 'A'.repeat(40), metadata: {} })!
-    expect(unknown.length).toBeLessThanOrEqual(10)
-    expect(unknown).toBe('文档问题')
-    expect(buildHeadingLocateReason({ code: 'UNKNOWN', message: '', metadata: {} })).toBe('文档问题')
+    expect(unknown.length).toBeLessThanOrEqual(12)
+    expect(unknown).not.toBe('文档问题')
+    expect(buildHeadingLocateReason({ code: 'UNKNOWN', message: '', metadata: {} })).not.toBe('文档问题')
 
     expect(severityRank('error')).toBeGreaterThan(severityRank('warning'))
     expect(mergeHeadingMarkerSeverity(['warning', 'error', 'info'])).toBe('error')
