@@ -2938,6 +2938,10 @@ export class DocumentUtilityOverlayHost {
   /** R14 — diagnostics temporarily focused by a heading `+N` summary badge. */
   private headingBadgeGroupFocusIds = new Set<string>()
   private headingBadgeGroupFocusTimer: ReturnType<typeof setTimeout> | null = null
+  /** R14 — badge-initiated locate must never collapse the diagnostics drawer. */
+  private badgeLocateKeepDrawerOpenUntil = 0
+  private lastBadgeActivationKey = ''
+  private lastBadgeActivationAt = 0
   private resizeObserver: ResizeObserver | null = null
   /**
    * LAYOUT-INVALIDATION — the last committed diagnostic-visual inputs. A real
@@ -11397,18 +11401,33 @@ export class DocumentUtilityOverlayHost {
   private bindHeadingBadgeInteraction(layer: HTMLElement): void {
     if (layer.getAttribute('data-ink-badge-interaction') === 'true') return
     layer.setAttribute('data-ink-badge-interaction', 'true')
-    // Never move the caret / selection when a badge is pressed: the badge is an
-    // overlay decoration, never editable heading text.
-    layer.addEventListener('mousedown', (ev) => {
-      if (this.headingBadgeItemFromEvent(ev)) ev.preventDefault()
-    })
+    // Never move the caret / selection when a badge is pressed, and never let
+    // Typora's editor consume the gesture: the badge is an overlay decoration,
+    // not editable heading text. Capture phase makes this independent from the
+    // editor's own bubble/capture handlers.
+    const swallow = (ev: Event): void => {
+      if (!this.headingBadgeItemFromEvent(ev)) return
+      ev.preventDefault()
+      ev.stopPropagation()
+    }
+    layer.addEventListener('pointerdown', swallow, true)
+    layer.addEventListener('mousedown', swallow, true)
+    // Some Typora builds suppress `click` on overlay decorations; `pointerup`
+    // is the fallback activation (deduped against `click`).
+    layer.addEventListener('pointerup', (ev) => {
+      const item = this.headingBadgeItemFromEvent(ev)
+      if (!item) return
+      ev.preventDefault()
+      ev.stopPropagation()
+      this.activateHeadingBadge(item)
+    }, true)
     layer.addEventListener('click', (ev) => {
       const item = this.headingBadgeItemFromEvent(ev)
       if (!item) return
       ev.preventDefault()
       ev.stopPropagation()
       this.activateHeadingBadge(item)
-    })
+    }, true)
     layer.addEventListener('keydown', (ev) => {
       const item = this.headingBadgeItemFromEvent(ev)
       if (!item) return
@@ -11424,13 +11443,20 @@ export class DocumentUtilityOverlayHost {
         ev.stopPropagation()
         this.activateHeadingBadge(item)
       }
-    })
+    }, true)
   }
 
   private activateHeadingBadge(item: HTMLElement): void {
     const marker = item.closest<HTMLElement>('.inkchapter-heading-diagnostic-marker')
     const identity = marker?.getAttribute('data-ink-stable-identity') ?? ''
     const kind = item.getAttribute('data-ink-badge-kind') ?? 'diagnostic'
+    const key = kind === 'summary'
+      ? `summary:${identity}`
+      : `id:${item.getAttribute('data-ink-diagnostic-id') ?? ''}`
+    const now = Date.now()
+    if (key === this.lastBadgeActivationKey && now - this.lastBadgeActivationAt < 450) return
+    this.lastBadgeActivationKey = key
+    this.lastBadgeActivationAt = now
     if (kind === 'summary') {
       this.focusHeadingDiagnosticGroup(identity)
       return
@@ -11442,9 +11468,12 @@ export class DocumentUtilityOverlayHost {
   /** Specific badge → open the panel (if closed), select the exact diagnostic. */
   private openDiagnosticsAndLocate(diagnosticId: string): void {
     this.clearHeadingBadgeGroupFocus()
-    if (!this.drawerOpen) this.openDrawer('all')
-    else this.renderDrawer()
+    // An explicit badge interaction ALWAYS opens/keeps the drawer visible.
+    this.badgeLocateKeepDrawerOpenUntil = Date.now() + 2500
+    this.openDrawer('all')
+    this.renderDrawer()
     this.locateDiagnostic(diagnosticId)
+    this.reassertBadgeDrawerOpen()
   }
 
   /**
@@ -11466,9 +11495,11 @@ export class DocumentUtilityOverlayHost {
       ids = Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string' && v !== '') : []
     } catch { ids = [] }
     if (ids.length === 0) return
-    if (!this.drawerOpen) this.openDrawer('all')
-    else this.renderDrawer()
+    this.badgeLocateKeepDrawerOpenUntil = Date.now() + 2500
+    this.openDrawer('all')
+    this.renderDrawer()
     this.locateDiagnostic(ids[0])
+    this.reassertBadgeDrawerOpen()
     this.headingBadgeGroupFocusIds = new Set(ids)
     this.applyHeadingBadgeGroupFocus()
     // The locate transaction may re-render the Drawer asynchronously; re-apply the
@@ -11480,6 +11511,21 @@ export class DocumentUtilityOverlayHost {
     }
     if (this.headingBadgeGroupFocusTimer != null) clearTimeout(this.headingBadgeGroupFocusTimer)
     this.headingBadgeGroupFocusTimer = setTimeout(() => this.clearHeadingBadgeGroupFocus(), 6000)
+  }
+
+  /** R14 — a badge-initiated locate may never leave the drawer collapsed/hidden. */
+  private reassertBadgeDrawerOpen(): void {
+    const ensure = (): void => {
+      if (!this.drawerEl) return
+      const collapsed = this.drawerEl.hasAttribute('data-locate-collapsed')
+      const compact = this.drawerEl.hasAttribute('data-locate-compact')
+      if (!this.drawerOpen) this.setDrawerOpen(true)
+      if (collapsed) this.setDrawerCollapseForLocate(false)
+      if (compact) this.setDrawerCompactForLocate(false, true)
+      if (!this.drawerOpen || !this.drawerEl.isConnected) return
+      if (collapsed || compact) this.renderDrawer()
+    }
+    for (const delay of [0, 120, 360, 720, 1400]) setTimeout(ensure, delay)
   }
 
   private applyHeadingBadgeGroupFocus(): void {
@@ -14525,6 +14571,9 @@ export class DocumentUtilityOverlayHost {
     // auto-switch it to compact-docked / open / anything else. Only an explicit,
     // bounded recovery (`force`) may change it.
     if (on && this.drawerLocatePresentationLeaseActive && !force) return
+    // R14 — a badge-initiated locate must keep the panel open: never compact it
+    // during the short guard window.
+    if (on && Date.now() < this.badgeLocateKeepDrawerOpenUntil) return
     if (this.drawerCompactActive === on) return
     this.drawerCompactActive = on
     if (!this.drawerEl) return
@@ -20291,6 +20340,9 @@ export class DocumentUtilityOverlayHost {
   /** V5 — LOCATE_COLLAPSE drawer state (single attribute; no layout transition). */
   private setDrawerCollapseForLocate(on: boolean): void {
     if (this.drawerCollapseActive === on) return
+    // R14 — a badge-initiated locate must keep the panel open: never collapse it
+    // during the short guard window.
+    if (on && Date.now() < this.badgeLocateKeepDrawerOpenUntil) return
     this.drawerCollapseActive = on
     // V5.12-R9 §3 — the transient collapse OPENS the presentation lease; the
     // post-commit restore closes it (exact replay of presentationBeforeLocate).

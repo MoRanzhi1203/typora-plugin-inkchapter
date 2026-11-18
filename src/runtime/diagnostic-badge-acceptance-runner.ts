@@ -54,6 +54,11 @@ export interface BadgeAcceptanceMarkerFact {
 
 export interface BadgeAcceptanceDrawerFact {
   open: boolean
+  /** R14 — the locate presentation may collapse/compact the drawer. */
+  collapsed: boolean
+  compact: boolean
+  /** Rendered width (0 = not laid out / hidden). */
+  width: number
   rows: Array<{ diagnosticId: string; selected: boolean; groupFocused: boolean }>
 }
 
@@ -201,7 +206,7 @@ async function runAcceptance(
     try { return deps.readSnapshot() } catch { return null }
   }
   const domNow = (): BadgeAcceptanceDomFacts => {
-    try { return deps.readDomFacts() } catch { return { markers: [], drawer: { open: false, rows: [] }, numberedHeadings: [] } }
+    try { return deps.readDomFacts() } catch { return { markers: [], drawer: { open: false, collapsed: false, compact: false, width: 0, rows: [] }, numberedHeadings: [] } }
   }
 
   try {
@@ -313,6 +318,11 @@ async function runAcceptance(
         const selected = drawer.rows.find(r => r.selected)?.diagnosticId ?? ''
         assertions.push({ id: 'click.specific.dispatched', ok: clicked, detail: target.diagnosticId })
         assertions.push({ id: 'click.specific.drawer-open', ok: drawer.open, detail: String(drawer.open) })
+        assertions.push({
+          id: 'click.specific.drawer-visible',
+          ok: drawer.open && !drawer.collapsed && !drawer.compact && drawer.width > 60,
+          detail: `open=${drawer.open} collapsed=${drawer.collapsed} compact=${drawer.compact} width=${drawer.width}`,
+        })
         assertions.push({ id: 'click.specific.selected', ok: selected === target.diagnosticId, detail: `${selected} / ${target.diagnosticId}` })
         assertions.push({
           id: 'click.specific.markdown-unchanged',
@@ -337,6 +347,11 @@ async function runAcceptance(
         const missing = target.diagnosticIds.filter(id => !focused.has(id))
         assertions.push({ id: 'click.summary.dispatched', ok: clicked, detail: target.identity })
         assertions.push({ id: 'click.summary.drawer-open', ok: drawer.open, detail: String(drawer.open) })
+        assertions.push({
+          id: 'click.summary.drawer-visible',
+          ok: drawer.open && !drawer.collapsed && !drawer.compact && drawer.width > 60,
+          detail: `open=${drawer.open} collapsed=${drawer.collapsed} compact=${drawer.compact} width=${drawer.width}`,
+        })
         assertions.push({
           id: 'click.summary.all-focused',
           ok: missing.length === 0,

@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- 正文诊断徽章点击后检测面板未打开（R14 修复）：徽章交互改为 **capture 阶段** 的 pointerdown/mousedown/pointerup/click 并 `stopPropagation`，避免 Typora 编辑器吞掉手势；`pointerup` 作为 `click` 的兜底（450ms 去重）。徽章触发的定位在 2.5s 保护窗口内**禁止抽屉折叠/紧凑**，并在 0/120/360/720/1400ms 重新断言面板为打开状态。Runtime 验收新增 `drawer-visible`（open + 未折叠 + 未紧凑 + 实测宽度），真实 Typora 结果 `width=360`。
 - 正文诊断徽章（R14）：标题右侧不再出现「标题问题」这类无法识别具体错误的泛化标签，改为真实短名（`层级跳级 H3→H5`、`重复标题：第一节`、`手工编号`、`编号错序`、`双重编号`、`编号作用域缺层级` 等）；同一标题最多两个具体徽章 + 中性 `+N`，按严重级别与稳定 ruleId 排序，不再因检测顺序变化而互换；徽章为 `contenteditable=false` 覆盖层，不写入 Markdown、不占标题文本流、不移动光标，也不影响任何标题编号模式。
 - 行内公式渲染（R13 专项）：真实 Typora 1.6.7 验收定位到行内公式不显示的第二层根因是 **Typora 原生数学设置**，不是编号算法：`strict_mode=true` 且 `enable_inline_math` 未启用时，Typora 根本不生成 `.md-inline-math` 宿主，块级 `$$…$$` 仍正常，导致此前验收只看到块公式通过。现在：
   - 新增只读设置检测（`src/infrastructure/typora-native-settings.ts`，绝不写入 Typora 配置），设置页「公式编号」在原生开关关闭或严格模式开启时给出明确提示与修复路径；

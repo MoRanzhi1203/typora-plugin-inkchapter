@@ -13,8 +13,8 @@
 | 步骤 | 内容 | 结果 |
 |---|---|---|
 | `badges-presentation` | 文案 / 严重级别 / 聚合数量 / tooltip / 行号全部与同一份诊断快照一致；无「标题问题」等泛化文案 | PASS |
-| `badges-click-specific` | 点击具体徽章 → 面板打开 → 选中同一 diagnosticId；Markdown 不变 | PASS |
-| `badges-click-summary` | 点击 `+N` → 面板打开 → 该标题全部诊断行临时聚焦；Markdown 不变 | PASS |
+| `badges-click-specific` | 真实指针序列（pointerdown/mousedown/pointerup/mouseup/click）→ 面板打开且**未折叠/未紧凑**（实测 `width=360`）→ 选中同一 diagnosticId；Markdown 不变 | PASS |
+| `badges-click-summary` | 点击 `+N` → 面板打开且未折叠/未紧凑 → 该标题全部诊断行临时聚焦；Markdown 不变 | PASS |
 | `badges-keyboard` | 键盘 `Enter` 激活徽章并选中同一诊断 | PASS |
 | `badges-fix-undo` | 真实单项修复 → 源码更新 → 徽章消失 → `Ctrl+Z` 等价 Undo → 徽章恢复 | PASS |
 | `badges-content-reset` | 内容清空 → 旧徽章清零 → 恢复 → 徽章重建；标题编号不变 | PASS |

@@ -2693,6 +2693,9 @@ export default class extends Plugin<InkChapterSettings> {
             open: drawerEl != null && (() => {
               try { return getComputedStyle(drawerEl).display !== 'none' } catch { return false }
             })(),
+            collapsed: drawerEl?.getAttribute('data-locate-collapsed') === 'true',
+            compact: drawerEl?.getAttribute('data-locate-compact') === 'true',
+            width: drawerEl ? drawerEl.getBoundingClientRect().width : 0,
             rows: drawerEl
               ? Array.from(drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]')).map(row => ({
                   diagnosticId: row.getAttribute('data-diagnostic-id') ?? '',
@@ -2715,7 +2718,14 @@ export default class extends Plugin<InkChapterSettings> {
             document.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-reason__item[data-ink-diagnostic-id]'),
           ).find(el => el.getAttribute('data-ink-diagnostic-id') === diagnosticId)
           if (!item) return false
-          item.click()
+          // R14 — drive the REAL pointer sequence (a bare `.click()` hid the fact
+          // that a collapsed drawer could still report `display:flex`).
+          const base = { bubbles: true, cancelable: true, button: 0, pointerType: 'mouse' }
+          try { item.dispatchEvent(new PointerEvent('pointerdown', base)) } catch { /* older engine */ }
+          item.dispatchEvent(new MouseEvent('mousedown', base))
+          try { item.dispatchEvent(new PointerEvent('pointerup', base)) } catch { /* older engine */ }
+          item.dispatchEvent(new MouseEvent('mouseup', base))
+          item.dispatchEvent(new MouseEvent('click', base))
           return true
         },
         clickSummary: (headingIdentity: string) => {
