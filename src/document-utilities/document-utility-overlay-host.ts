@@ -1047,10 +1047,14 @@ import {
 } from './document-heading-diagnostic-marker-v5-12'
 import {
   buildDiagnosticBadge,
-  buildDiagnosticBadgeSet,
   formatDiagnosticBadgeTooltip,
-  type DiagnosticBadgeInput,
 } from './document-diagnostic-badge-v1'
+// R14-02 — the ONE body-badge presentation + interaction authority.
+import {
+  buildHeadingBadgePresentation,
+  HeadingBadgeInteractionController,
+  type HeadingBadgeDiagnosticSource,
+} from './document-heading-badge-controller-v1'
 import {
   HEADING_REASON_CHIP_STABILITY_V2_AUDIT_EVENT,
   createHeadingReasonChipStabilityV2Counters,
@@ -2951,22 +2955,20 @@ export class DocumentUtilityOverlayHost {
   private topBtnEl: HTMLButtonElement | null = null
   private bottomBtnEl: HTMLButtonElement | null = null
   private drawerOpen = false
-  /** R14 — diagnostics temporarily focused by a heading `+N` summary badge. */
-  private headingBadgeGroupFocusIds = new Set<string>()
-  private headingBadgeGroupFocusTimer: ReturnType<typeof setTimeout> | null = null
-  /** R14 — badge-initiated locate must never collapse the diagnostics drawer. */
-  private badgeLocateKeepDrawerOpenUntil = 0
-  private lastBadgeActivationKey = ''
-  private lastBadgeActivationAt = 0
+  /**
+   * R14-02 — body badge interaction authority. Owns gesture origin, activation
+   * dedupe, the `+N` group-focus timers and the badge→drawer keep-open window;
+   * the host only supplies panel ports.
+   */
+  private readonly headingBadgeController = new HeadingBadgeInteractionController({
+    openAndLocate: diagnosticId => this.openDiagnosticsAndLocate(diagnosticId),
+    openAndLocateFirst: diagnosticIds => this.openDiagnosticsAndFocusGroup(diagnosticIds),
+    paintGroupFocus: ids => this.paintHeadingBadgeGroupFocus(ids),
+    clearGroupFocusPaint: () => this.clearHeadingBadgeGroupFocusPaint(),
+    isDisposed: () => this.disposed,
+  })
   /** R14 — tracked reassert timers (cleared on close / dispose, never accumulate). */
   private badgeReassertTimers: Array<ReturnType<typeof setTimeout>> = []
-  /** R14 — real pointer gesture origin, so a drag/right-click cannot activate. */
-  private badgePointerDownItem: HTMLElement | null = null
-  private badgePointerDownX = 0
-  private badgePointerDownY = 0
-  private badgePointerDownButton = -1
-  /** A drag that ends on a badge must suppress the synthetic click that follows. */
-  private badgeSuppressClickUntil = 0
   /** R14 — memoized heading source-line index keyed by the current Markdown text. */
   private headingLineCache: { markdown: string; byText: Map<string, number[]> } | null = null
   private resizeObserver: ResizeObserver | null = null
@@ -5115,17 +5117,9 @@ export class DocumentUtilityOverlayHost {
       clearTimeout(this.settleTimer)
       this.settleTimer = null
     }
-    // R14 — badge interaction timers/caches must not outlive the host.
+    // R14-02 — badge interaction timers/gesture state must not outlive the host.
+    this.headingBadgeController.dispose()
     this.clearBadgeReassertTimers()
-    if (this.headingBadgeGroupFocusTimer != null) {
-      clearTimeout(this.headingBadgeGroupFocusTimer)
-      this.headingBadgeGroupFocusTimer = null
-    }
-    this.headingBadgeGroupFocusIds.clear()
-    this.badgeLocateKeepDrawerOpenUntil = 0
-    this.badgePointerDownItem = null
-    this.badgePointerDownButton = -1
-    this.badgeSuppressClickUntil = 0
     this.headingLineCache = null
     // V1-FIXTURE §20 — dispose cancels the bounded decode-settle retry.
     if (this.fixturePreflightTimer != null) {
@@ -8445,52 +8439,18 @@ export class DocumentUtilityOverlayHost {
     // stable priority order, and at most TWO specific badges plus a `+N`
     // summary. The underlying diagnostics are never dropped.
     for (const g of groups.values()) {
-      const headingText = (g.el.textContent ?? '').trim()
-      const line = this.headingSourceLineOf(g.el)
-      const inputs: DiagnosticBadgeInput[] = []
+      const diagnostics: HeadingBadgeDiagnosticSource[] = []
       for (const diagnosticId of g.diagnosticIds) {
         const d = this.diagnosticById(diagnosticId)
-        if (!d) continue
-        if (!shouldRenderReasonChip({ metadata: (d.metadata ?? {}) as Record<string, unknown>, code: d.code })) continue
-        inputs.push({
-          diagnosticId,
-          code: d.code,
-          severity: d.severity,
-          message: d.message,
-          detail: d.detail ?? null,
-          category: d.category ?? null,
-          metadata: (d.metadata ?? null) as Record<string, unknown> | null,
-          line,
-          headingText,
-          targetIdentity: d.targetIdentity ?? null,
-        })
+        if (d) diagnostics.push(d)
       }
-      const set = buildDiagnosticBadgeSet(inputs)
-      // R14 — the summary scope is exactly the CHIP-ELIGIBLE diagnostics whose
-      // badges it summarizes (document-scoped suppressions are not counted).
-      const headingDiagnosticIds = inputs.map(i => i.diagnosticId)
-      g.reasonItems = set.visible.map(b => ({
-        diagnosticId: b.diagnosticId,
-        severity: b.severity,
-        text: b.shortLabel,
-        rank: severityRank(b.severity),
-        kind: 'diagnostic' as const,
-        tooltip: formatDiagnosticBadgeTooltip(b),
-        headingDiagnosticIds,
-      }))
-      if (set.summary) {
-        const highest = mergeHeadingMarkerSeverity(set.all.map(b => b.severity)) ?? 'info'
-        g.reasonItems.push({
-          diagnosticId: '',
-          severity: highest,
-          text: set.summary.label,
-          rank: -1,
-          kind: 'summary',
-          tooltip: `该标题还有 ${set.summary.count} 个问题，点击在检测面板查看全部`,
-          headingDiagnosticIds,
-        })
-      }
-      if (g.reasonItems.length > 0) g.reasonText = g.reasonItems[0].text
+      const presentation = buildHeadingBadgePresentation({
+        headingText: (g.el.textContent ?? '').trim(),
+        line: this.headingSourceLineOf(g.el),
+        diagnostics,
+      })
+      g.reasonItems = presentation.reasonItems
+      if (presentation.reasonText !== null) g.reasonText = presentation.reasonText
     }
     return { groups, headingWithoutVisualTarget, expectedTargets, groupTargetKeys, outlineDiagnosticTargets }
   }
@@ -11424,165 +11384,47 @@ export class DocumentUtilityOverlayHost {
     stampCaretInertPresentation(layer, false)
     docLayer.appendChild(layer)
     this.headingMarkerLayer = layer
-    this.bindHeadingBadgeInteraction(layer)
+    this.headingBadgeController.bind(layer)
     return layer
   }
 
-  // ── R14 — body badge interaction (click / keyboard → central panel) ──────
-
-  private headingBadgeItemFromEvent(ev: Event): HTMLElement | null {
-    const target = ev.target
-    if (!(target instanceof Element)) return null
-    const item = target.closest<HTMLElement>('.inkchapter-heading-diagnostic-reason__item')
-    return item != null && this.headingMarkerLayer?.contains(item) ? item : null
-  }
-
-  private bindHeadingBadgeInteraction(layer: HTMLElement): void {
-    if (layer.getAttribute('data-ink-badge-interaction') === 'true') return
-    layer.setAttribute('data-ink-badge-interaction', 'true')
-    // Never move the caret / selection when a badge is pressed, and never let
-    // Typora's editor consume the gesture: the badge is an overlay decoration,
-    // not editable heading text. Capture phase makes this independent from the
-    // editor's own bubble/capture handlers.
-    // Only the PRIMARY (left) button is swallowed; right-click must keep its
-    // native context-menu behaviour.
-    const onPointerDown = (ev: Event): void => {
-      const item = this.headingBadgeItemFromEvent(ev)
-      if (!item) return
-      const mouse = ev as MouseEvent
-      if (typeof mouse.button === 'number' && mouse.button !== 0) return
-      this.badgePointerDownItem = item
-      this.badgePointerDownX = mouse.clientX ?? 0
-      this.badgePointerDownY = mouse.clientY ?? 0
-      this.badgePointerDownButton = mouse.button ?? 0
-      ev.preventDefault()
-      ev.stopPropagation()
-    }
-    layer.addEventListener('pointerdown', onPointerDown, true)
-    layer.addEventListener('mousedown', onPointerDown, true)
-    // Some Typora builds suppress `click` on overlay decorations; `pointerup`
-    // is the fallback activation. It only fires for the SAME left-button press
-    // that started on this badge and did not turn into a text-selection drag.
-    layer.addEventListener('pointerup', (ev) => {
-      const item = this.headingBadgeItemFromEvent(ev)
-      if (!item) return
-      const mouse = ev as MouseEvent
-      const downItem = this.badgePointerDownItem
-      const downButton = this.badgePointerDownButton
-      const moved = Math.hypot(
-        (mouse.clientX ?? 0) - this.badgePointerDownX,
-        (mouse.clientY ?? 0) - this.badgePointerDownY,
-      )
-      this.badgePointerDownItem = null
-      this.badgePointerDownButton = -1
-      if ((mouse.button ?? 0) !== 0 || downItem !== item || downButton !== 0 || moved > 6) {
-        // A drag / mismatched origin must not become an activation via the
-        // synthetic `click` that the browser dispatches afterwards.
-        this.badgeSuppressClickUntil = Date.now() + 500
-        return
-      }
-      ev.preventDefault()
-      ev.stopPropagation()
-      this.activateHeadingBadge(item)
-    }, true)
-    layer.addEventListener('click', (ev) => {
-      const item = this.headingBadgeItemFromEvent(ev)
-      if (!item) return
-      const mouse = ev as MouseEvent
-      if (typeof mouse.button === 'number' && mouse.button !== 0) return
-      if (Date.now() < this.badgeSuppressClickUntil) {
-        this.badgeSuppressClickUntil = 0
-        ev.preventDefault()
-        ev.stopPropagation()
-        return
-      }
-      ev.preventDefault()
-      ev.stopPropagation()
-      this.activateHeadingBadge(item)
-    }, true)
-    layer.addEventListener('keydown', (ev) => {
-      const item = this.headingBadgeItemFromEvent(ev)
-      if (!item) return
-      if (ev.key === 'Escape') {
-        this.clearHeadingBadgeGroupFocus()
-        item.blur()
-        ev.preventDefault()
-        ev.stopPropagation()
-        return
-      }
-      if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
-        ev.preventDefault()
-        ev.stopPropagation()
-        this.activateHeadingBadge(item)
-      }
-    }, true)
-  }
-
-  private activateHeadingBadge(item: HTMLElement): void {
-    const marker = item.closest<HTMLElement>('.inkchapter-heading-diagnostic-marker')
-    const identity = marker?.getAttribute('data-ink-stable-identity') ?? ''
-    const kind = item.getAttribute('data-ink-badge-kind') ?? 'diagnostic'
-    const key = kind === 'summary'
-      ? `summary:${identity}`
-      : `id:${item.getAttribute('data-ink-diagnostic-id') ?? ''}`
-    const now = Date.now()
-    if (key === this.lastBadgeActivationKey && now - this.lastBadgeActivationAt < 450) return
-    this.lastBadgeActivationKey = key
-    this.lastBadgeActivationAt = now
-    if (kind === 'summary') {
-      this.focusHeadingDiagnosticGroup(identity)
-      return
-    }
-    const diagnosticId = item.getAttribute('data-ink-diagnostic-id') ?? ''
-    if (diagnosticId !== '') this.openDiagnosticsAndLocate(diagnosticId)
-  }
+  // ── R14-02 — body badge interaction adapter (gestures live in the controller) ──
 
   /** Specific badge → open the panel (if closed), select the exact diagnostic. */
   private openDiagnosticsAndLocate(diagnosticId: string): void {
-    this.clearHeadingBadgeGroupFocus()
-    // An explicit badge interaction ALWAYS opens/keeps the drawer visible.
-    this.badgeLocateKeepDrawerOpenUntil = Date.now() + 2500
     this.openDrawer('all')
     this.renderDrawer()
     this.locateDiagnostic(diagnosticId)
     this.reassertBadgeDrawerOpen()
   }
 
-  /**
-   * `+N` summary → open the panel and temporarily focus EVERY diagnostic of the
-   * heading (the panel structure is unchanged; the rows carry a transient class).
-   */
-  private focusHeadingDiagnosticGroup(identity: string): void {
-    const layer = this.headingMarkerLayer
-    if (!layer || identity === '') return
-    let marker: HTMLElement | null = null
-    for (const candidate of Array.from(layer.querySelectorAll<HTMLElement>('.inkchapter-heading-diagnostic-marker'))) {
-      if (candidate.getAttribute('data-ink-stable-identity') === identity) { marker = candidate; break }
-    }
-    const chip = marker?.querySelector<HTMLElement>('.inkchapter-heading-diagnostic-reason') ?? null
-    let ids: string[] = []
-    try {
-      const raw = marker?.getAttribute('data-ink-diagnostic-ids') ?? chip?.getAttribute('data-ink-diagnostic-ids') ?? '[]'
-      const parsed: unknown = JSON.parse(raw)
-      ids = Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string' && v !== '') : []
-    } catch { ids = [] }
-    if (ids.length === 0) return
-    this.badgeLocateKeepDrawerOpenUntil = Date.now() + 2500
+  /** `+N` summary → open the panel and locate the heading's first diagnostic. */
+  private openDiagnosticsAndFocusGroup(diagnosticIds: readonly string[]): void {
+    if (diagnosticIds.length === 0) return
     this.openDrawer('all')
     this.renderDrawer()
-    this.locateDiagnostic(ids[0])
+    this.locateDiagnostic(diagnosticIds[0])
     this.reassertBadgeDrawerOpen()
-    this.headingBadgeGroupFocusIds = new Set(ids)
-    this.applyHeadingBadgeGroupFocus()
-    // The locate transaction may re-render the Drawer asynchronously; re-apply the
-    // transient group focus while the summary scope is still current.
-    for (const delay of [0, 160, 480, 960]) {
-      setTimeout(() => {
-        if (this.headingBadgeGroupFocusIds.size > 0) this.applyHeadingBadgeGroupFocus()
-      }, delay)
+  }
+
+  /** Paint the transient `+N` group focus onto the CURRENT panel rows. */
+  private paintHeadingBadgeGroupFocus(ids: ReadonlySet<string>): void {
+    if (!this.drawerEl) return
+    for (const row of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))) {
+      const id = row.getAttribute('data-diagnostic-id') ?? ''
+      if (ids.has(id)) row.classList.add('is-r14-group-focus')
+      else row.classList.remove('is-r14-group-focus')
+      if (ids.has(id)) row.setAttribute('data-ink-r14-group-focus', 'true')
+      else row.removeAttribute('data-ink-r14-group-focus')
     }
-    if (this.headingBadgeGroupFocusTimer != null) clearTimeout(this.headingBadgeGroupFocusTimer)
-    this.headingBadgeGroupFocusTimer = setTimeout(() => this.clearHeadingBadgeGroupFocus(), 6000)
+  }
+
+  private clearHeadingBadgeGroupFocusPaint(): void {
+    if (!this.drawerEl) return
+    for (const row of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item.is-r14-group-focus'))) {
+      row.classList.remove('is-r14-group-focus')
+      row.removeAttribute('data-ink-r14-group-focus')
+    }
   }
 
   /** R14 — a badge-initiated locate may never leave the drawer collapsed/hidden. */
@@ -11606,31 +11448,6 @@ export class DocumentUtilityOverlayHost {
     }
     for (const delay of [0, 120, 360, 720, 1400]) {
       this.badgeReassertTimers.push(setTimeout(ensure, delay))
-    }
-  }
-
-  private applyHeadingBadgeGroupFocus(): void {
-    if (!this.drawerEl) return
-    const ids = this.headingBadgeGroupFocusIds
-    for (const row of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item[data-diagnostic-id]'))) {
-      const id = row.getAttribute('data-diagnostic-id') ?? ''
-      if (ids.has(id)) row.classList.add('is-r14-group-focus')
-      else row.classList.remove('is-r14-group-focus')
-      if (ids.has(id)) row.setAttribute('data-ink-r14-group-focus', 'true')
-      else row.removeAttribute('data-ink-r14-group-focus')
-    }
-  }
-
-  private clearHeadingBadgeGroupFocus(): void {
-    if (this.headingBadgeGroupFocusTimer != null) {
-      clearTimeout(this.headingBadgeGroupFocusTimer)
-      this.headingBadgeGroupFocusTimer = null
-    }
-    this.headingBadgeGroupFocusIds.clear()
-    if (!this.drawerEl) return
-    for (const row of Array.from(this.drawerEl.querySelectorAll<HTMLElement>('.inkchapter-doc-drawer__item.is-r14-group-focus'))) {
-      row.classList.remove('is-r14-group-focus')
-      row.removeAttribute('data-ink-r14-group-focus')
     }
   }
 
@@ -14671,7 +14488,7 @@ export class DocumentUtilityOverlayHost {
     if (on && this.drawerLocatePresentationLeaseActive && !force) return
     // R14 — a badge-initiated locate must keep the panel open: never compact it
     // during the short guard window.
-    if (on && Date.now() < this.badgeLocateKeepDrawerOpenUntil) return
+    if (on && this.headingBadgeController.shouldKeepDrawerOpen()) return
     if (this.drawerCompactActive === on) return
     this.drawerCompactActive = on
     if (!this.drawerEl) return
@@ -20440,7 +20257,7 @@ export class DocumentUtilityOverlayHost {
     if (this.drawerCollapseActive === on) return
     // R14 — a badge-initiated locate must keep the panel open: never collapse it
     // during the short guard window.
-    if (on && Date.now() < this.badgeLocateKeepDrawerOpenUntil) return
+    if (on && this.headingBadgeController.shouldKeepDrawerOpen()) return
     this.drawerCollapseActive = on
     // V5.12-R9 §3 — the transient collapse OPENS the presentation lease; the
     // post-commit restore closes it (exact replay of presentationBeforeLocate).
@@ -35308,13 +35125,11 @@ export class DocumentUtilityOverlayHost {
     if (!this.drawerEl) return
     // R14 — an explicit user close always wins: stop the badge reassert window so
     // a pending timer can never reopen the panel behind the user's back.
-    this.badgeLocateKeepDrawerOpenUntil = 0
+    this.headingBadgeController.resetKeepDrawerOpen()
+    this.headingBadgeController.resetGesture()
     this.clearBadgeReassertTimers()
-    this.badgePointerDownItem = null
-    this.badgePointerDownButton = -1
-    this.badgeSuppressClickUntil = 0
     // R14 — closing the panel also ends any transient `+N` badge group focus.
-    this.clearHeadingBadgeGroupFocus()
+    this.headingBadgeController.clearGroupFocus()
     // V5.12-R3 §13 — a USER CLOSE is a new intent: it bumps the intent epoch so a
     // transaction started earlier can never auto-reopen the Drawer afterwards.
     this.drawerIntentEpoch++

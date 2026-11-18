@@ -30,7 +30,8 @@
 ## 关联实现
 
 - 展示模型：`src/document-utilities/document-diagnostic-badge-v1.ts`
-- DOM 渲染与交互：`src/document-utilities/document-utility-overlay-host.ts`
+- 展示 + 交互控制器（R14-02）：`src/document-utilities/document-heading-badge-controller-v1.ts`
+- DOM 渲染：`src/document-utilities/document-utility-overlay-host.ts`
 - 验收 runner：`src/runtime/diagnostic-badge-acceptance-runner.ts`
 - 启动器：`scripts/run-diagnostic-badge-acceptance.mjs`
-- 单元测试：`document-diagnostic-badge-v1.test.ts`、`document-heading-diagnostic-marker-surface-v512-r9.test.ts`（R14 交互 / CSS）
+- 单元测试：`document-diagnostic-badge-v1.test.ts`、`document-heading-diagnostic-marker-surface-v512-r9.test.ts`（R14 交互 / CSS）、`document-heading-badge-controller-v1.test.ts`（R14-02 展示 + 交互）
