@@ -79,6 +79,22 @@ export const R14_MAX_DUPLICATE_TITLE_CHARS = 6
 export const R14_MAX_BADGES_BEFORE_SUMMARY = 2
 
 /**
+ * R14 — only these rule pairs are semantically the SAME visible problem and may
+ * be merged on their shared short label. Every other badge keeps its target
+ * identity in the dedupe key, so two independent problems that happen to share
+ * a short label are never silently collapsed into one.
+ */
+const SEMANTIC_EQUIVALENT_CODE_GROUPS: ReadonlyArray<readonly string[]> = [
+  ['HEADING_NUMBER_SEQUENCE_INVALID', 'HEADING_NUMBER_ORDER_ANOMALY'],
+]
+
+function semanticBadgeKey(code: string, label: string, targetIdentity: string): string {
+  const group = SEMANTIC_EQUIVALENT_CODE_GROUPS.find(codes => codes.includes(code))
+  if (group) return `group:${group[0]}`
+  return `item:${label}|${targetIdentity !== '' ? targetIdentity : code}`
+}
+
+/**
  * R14 §6.4 — stable priority bands. Lower number = higher priority.
  * P0 level gap / double number / conflict, P1 order/mismatch/missing,
  * P2 manual/format, P3 duplicate, P4 completeness, P5 everything else.
@@ -287,7 +303,7 @@ export function buildDiagnosticBadge(input: DiagnosticBadgeInput): DiagnosticBad
     line,
     targetIdentity: String(input.targetIdentity ?? ''),
     priority: HEADING_BADGE_PRIORITY[code] ?? 5,
-    semanticKey: `${label.label}`,
+    semanticKey: semanticBadgeKey(code, label.label, String(input.targetIdentity ?? '')),
     labelSource: label.source,
   }
 }

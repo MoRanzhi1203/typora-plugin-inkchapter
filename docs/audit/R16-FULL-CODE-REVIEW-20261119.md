@@ -237,7 +237,29 @@
 | 索引访问检查 | `tsc --noUncheckedIndexedAccess` | 4772 条（W8） |
 | Runtime | `pnpm run accept:diagnostic-badges` | 6 步 PASS |
 
-## 九、限制说明
+## 九、修复状态（2026-11-19 更新）
+
+已按本报告修复以下可落地警告：
+
+| 项 | 修复内容 | 验证 |
+|---|---|---|
+| W1 | 徽章 reassert / group-focus 定时器纳入句柄管理，关闭面板与 `dispose()` 清理，回调检查 `disposed`，不再累积 | 类型检查 + 交互测试 |
+| W2 | `pointerdown` 记录来源按钮/坐标；`pointerup` 仅对同一徽章、左键、位移 ≤6px 生效；拖动后的合成 `click` 被抑制；右键保留原生菜单 | 新增 2 个交互测试（拖动、右键） |
+| W3 | 标题行号回退按 `sourceRevision`/Markdown 文本缓存索引，并对 `**粗体**`、`` `代码` ``、链接、HTML、转义标记做归一化 | 类型检查 + 现有 tooltip 测试 |
+| W4 | 语义去重 key 加入 targetIdentity；仅 `HEADING_NUMBER_SEQUENCE_INVALID` / `HEADING_NUMBER_ORDER_ANOMALY` 允许按文案合并 | 新增同文案不同目标不合并测试 |
+| W5 | 显式关闭面板时清空 2.5s 保护窗口与 reassert 定时器，用户关闭优先 | 交互测试 |
+| W12（部分） | `package.json` 增加 `engines.node >= 20`；依赖版本对齐/升级留待独立依赖分支 | 构建通过 |
+
+仍未在本轮处理（需要独立专项，不适合与缺陷修复混在一起）：
+
+- W6 显式 `any` 200 处：需要按模块定义真实类型与 schema。
+- W7 403 处未使用声明：需要逐目录清理并启用 `noUnusedLocals`。
+- W8 4772 处未检查索引访问：需要按边界逐步开启 `noUncheckedIndexedAccess`。
+- W9/W10 超大文件拆分：属于架构重构，风险与工作量均高。
+- W11 ESLint/Prettier 门禁：需要新增依赖与团队规则约定。
+- 依赖高危通告：需要独立依赖升级分支并逐项回归。
+
+## 十、限制说明
 
 - 仓库未配置 ESLint/Prettier，因此“代码规范”部分以 TypeScript 严格检查 + 未使用声明扫描 + 全量测试 + 构建为准，未执行 ESLint 规则集。
 - 682 个 TS 文件通过全仓静态扫描、类型检查和测试覆盖；人工深读聚焦于超大型模块、近期改动与生命周期/交互高风险代码，未逐行人工阅读全部文件。

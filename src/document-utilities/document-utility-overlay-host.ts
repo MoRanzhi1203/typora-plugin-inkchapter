@@ -2854,6 +2854,22 @@ export interface BlankMarkerChipPlacementInput {
   headless?: boolean
 }
 
+/**
+ * R14 — normalize a heading label so the DOM `textContent` can be matched against
+ * the raw Markdown heading line even when the heading carries inline formatting
+ * (`**bold**`, `` `code` ``, links, images, inline HTML, escaped markers).
+ */
+function normalizeHeadingSourceText(text: string): string {
+  return String(text ?? '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/<[^>]*>/g, '')
+    .replace(/[*_~`]/g, '')
+    .replace(/\\([\\`*_{}\[\]()#+\-.!>])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export class DocumentUtilityOverlayHost {
   private root: HTMLDivElement | null = null
   private toolbarEl: HTMLDivElement | null = null
@@ -2942,6 +2958,17 @@ export class DocumentUtilityOverlayHost {
   private badgeLocateKeepDrawerOpenUntil = 0
   private lastBadgeActivationKey = ''
   private lastBadgeActivationAt = 0
+  /** R14 — tracked reassert timers (cleared on close / dispose, never accumulate). */
+  private badgeReassertTimers: Array<ReturnType<typeof setTimeout>> = []
+  /** R14 — real pointer gesture origin, so a drag/right-click cannot activate. */
+  private badgePointerDownItem: HTMLElement | null = null
+  private badgePointerDownX = 0
+  private badgePointerDownY = 0
+  private badgePointerDownButton = -1
+  /** A drag that ends on a badge must suppress the synthetic click that follows. */
+  private badgeSuppressClickUntil = 0
+  /** R14 — memoized heading source-line index keyed by the current Markdown text. */
+  private headingLineCache: { markdown: string; byText: Map<string, number[]> } | null = null
   private resizeObserver: ResizeObserver | null = null
   /**
    * LAYOUT-INVALIDATION — the last committed diagnostic-visual inputs. A real
@@ -5088,6 +5115,18 @@ export class DocumentUtilityOverlayHost {
       clearTimeout(this.settleTimer)
       this.settleTimer = null
     }
+    // R14 — badge interaction timers/caches must not outlive the host.
+    this.clearBadgeReassertTimers()
+    if (this.headingBadgeGroupFocusTimer != null) {
+      clearTimeout(this.headingBadgeGroupFocusTimer)
+      this.headingBadgeGroupFocusTimer = null
+    }
+    this.headingBadgeGroupFocusIds.clear()
+    this.badgeLocateKeepDrawerOpenUntil = 0
+    this.badgePointerDownItem = null
+    this.badgePointerDownButton = -1
+    this.badgeSuppressClickUntil = 0
+    this.headingLineCache = null
     // V1-FIXTURE §20 — dispose cancels the bounded decode-settle retry.
     if (this.fixturePreflightTimer != null) {
       clearTimeout(this.fixturePreflightTimer)
@@ -11405,18 +11444,43 @@ export class DocumentUtilityOverlayHost {
     // Typora's editor consume the gesture: the badge is an overlay decoration,
     // not editable heading text. Capture phase makes this independent from the
     // editor's own bubble/capture handlers.
-    const swallow = (ev: Event): void => {
-      if (!this.headingBadgeItemFromEvent(ev)) return
+    // Only the PRIMARY (left) button is swallowed; right-click must keep its
+    // native context-menu behaviour.
+    const onPointerDown = (ev: Event): void => {
+      const item = this.headingBadgeItemFromEvent(ev)
+      if (!item) return
+      const mouse = ev as MouseEvent
+      if (typeof mouse.button === 'number' && mouse.button !== 0) return
+      this.badgePointerDownItem = item
+      this.badgePointerDownX = mouse.clientX ?? 0
+      this.badgePointerDownY = mouse.clientY ?? 0
+      this.badgePointerDownButton = mouse.button ?? 0
       ev.preventDefault()
       ev.stopPropagation()
     }
-    layer.addEventListener('pointerdown', swallow, true)
-    layer.addEventListener('mousedown', swallow, true)
+    layer.addEventListener('pointerdown', onPointerDown, true)
+    layer.addEventListener('mousedown', onPointerDown, true)
     // Some Typora builds suppress `click` on overlay decorations; `pointerup`
-    // is the fallback activation (deduped against `click`).
+    // is the fallback activation. It only fires for the SAME left-button press
+    // that started on this badge and did not turn into a text-selection drag.
     layer.addEventListener('pointerup', (ev) => {
       const item = this.headingBadgeItemFromEvent(ev)
       if (!item) return
+      const mouse = ev as MouseEvent
+      const downItem = this.badgePointerDownItem
+      const downButton = this.badgePointerDownButton
+      const moved = Math.hypot(
+        (mouse.clientX ?? 0) - this.badgePointerDownX,
+        (mouse.clientY ?? 0) - this.badgePointerDownY,
+      )
+      this.badgePointerDownItem = null
+      this.badgePointerDownButton = -1
+      if ((mouse.button ?? 0) !== 0 || downItem !== item || downButton !== 0 || moved > 6) {
+        // A drag / mismatched origin must not become an activation via the
+        // synthetic `click` that the browser dispatches afterwards.
+        this.badgeSuppressClickUntil = Date.now() + 500
+        return
+      }
       ev.preventDefault()
       ev.stopPropagation()
       this.activateHeadingBadge(item)
@@ -11424,6 +11488,14 @@ export class DocumentUtilityOverlayHost {
     layer.addEventListener('click', (ev) => {
       const item = this.headingBadgeItemFromEvent(ev)
       if (!item) return
+      const mouse = ev as MouseEvent
+      if (typeof mouse.button === 'number' && mouse.button !== 0) return
+      if (Date.now() < this.badgeSuppressClickUntil) {
+        this.badgeSuppressClickUntil = 0
+        ev.preventDefault()
+        ev.stopPropagation()
+        return
+      }
       ev.preventDefault()
       ev.stopPropagation()
       this.activateHeadingBadge(item)
@@ -11514,9 +11586,16 @@ export class DocumentUtilityOverlayHost {
   }
 
   /** R14 — a badge-initiated locate may never leave the drawer collapsed/hidden. */
+  private clearBadgeReassertTimers(): void {
+    for (const timer of this.badgeReassertTimers) clearTimeout(timer)
+    this.badgeReassertTimers = []
+  }
+
   private reassertBadgeDrawerOpen(): void {
+    this.clearBadgeReassertTimers()
     const ensure = (): void => {
-      if (!this.drawerEl) return
+      if (this.disposed) return
+      if (!this.drawerEl || !this.drawerEl.isConnected) return
       const collapsed = this.drawerEl.hasAttribute('data-locate-collapsed')
       const compact = this.drawerEl.hasAttribute('data-locate-compact')
       if (!this.drawerOpen) this.setDrawerOpen(true)
@@ -11525,7 +11604,9 @@ export class DocumentUtilityOverlayHost {
       if (!this.drawerOpen || !this.drawerEl.isConnected) return
       if (collapsed || compact) this.renderDrawer()
     }
-    for (const delay of [0, 120, 360, 720, 1400]) setTimeout(ensure, delay)
+    for (const delay of [0, 120, 360, 720, 1400]) {
+      this.badgeReassertTimers.push(setTimeout(ensure, delay))
+    }
   }
 
   private applyHeadingBadgeGroupFocus(): void {
@@ -11565,29 +11646,46 @@ export class DocumentUtilityOverlayHost {
       const n = Number.parseInt(lineAttr, 10)
       if (Number.isFinite(n)) return n + 1
     }
-    let markdown = ''
-    try { markdown = this.opts.ctx.authority.getMarkdown() ?? '' } catch { return null }
-    if (markdown === '') return null
-    const text = (el.textContent ?? '').trim()
+    const text = normalizeHeadingSourceText(el.textContent ?? '')
     if (text === '') return null
+    const index = this.headingSourceLineIndex()
+    if (index == null) return null
+    const candidates = index.byText.get(text)
+    if (candidates == null || candidates.length === 0) return null
     let occurrence = 0
     try {
       const root = document.getElementById('write') ?? document
       for (const h of Array.from(root.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'))) {
         if (h === el) break
-        if ((h.textContent ?? '').trim() === text) occurrence++
+        if (normalizeHeadingSourceText(h.textContent ?? '') === text) occurrence++
       }
     } catch { /* keep occurrence 0 */ }
+    return candidates[occurrence] ?? null
+  }
+
+  /**
+   * Build ONE normalized `heading text -> source lines` index per Markdown text.
+   * Repeated marker renders reuse it instead of splitting the whole document for
+   * every heading.
+   */
+  private headingSourceLineIndex(): { markdown: string; byText: Map<string, number[]> } | null {
+    let markdown = ''
+    try { markdown = this.opts.ctx.authority.getMarkdown() ?? '' } catch { return null }
+    if (markdown === '') return null
+    if (this.headingLineCache?.markdown === markdown) return this.headingLineCache
+    const byText = new Map<string, number[]>()
     const lines = markdown.split(/\r?\n/)
-    let seen = 0
     for (let i = 0; i < lines.length; i++) {
-      const match = /^(#{1,6})\s+(.*)$/.exec(lines[i])
+      const match = /^#{1,6}\s+(.*)$/.exec(lines[i])
       if (!match) continue
-      if (match[2].trim() !== text) continue
-      if (seen === occurrence) return i + 1
-      seen++
+      const key = normalizeHeadingSourceText(match[1])
+      if (key === '') continue
+      const existing = byText.get(key)
+      if (existing) existing.push(i + 1)
+      else byText.set(key, [i + 1])
     }
-    return null
+    this.headingLineCache = { markdown, byText }
+    return this.headingLineCache
   }
 
   /**
@@ -35208,6 +35306,13 @@ export class DocumentUtilityOverlayHost {
 
   private closeDrawer(): void {
     if (!this.drawerEl) return
+    // R14 — an explicit user close always wins: stop the badge reassert window so
+    // a pending timer can never reopen the panel behind the user's back.
+    this.badgeLocateKeepDrawerOpenUntil = 0
+    this.clearBadgeReassertTimers()
+    this.badgePointerDownItem = null
+    this.badgePointerDownButton = -1
+    this.badgeSuppressClickUntil = 0
     // R14 — closing the panel also ends any transient `+N` badge group focus.
     this.clearHeadingBadgeGroupFocus()
     // V5.12-R3 §13 — a USER CLOSE is a new intent: it bumps the intent epoch so a

@@ -210,6 +210,9 @@ async function runAcceptance(
   }
 
   try {
+    // Cold-start markers are painted after the first diagnostics snapshot; wait
+    // for the real DOM before taking the baseline (no zero-marker false FAIL).
+    await deps.wait(2500)
     const originalMarkdown = deps.getMarkdown()
     const snapshot = snapshotNow()
     markers = domNow().markers
@@ -449,11 +452,17 @@ async function runAcceptance(
     {
       const beforeNumbers = domNow().numberedHeadings
       deps.replaceContent('')
-      await deps.wait(1500)
-      const cleared = domNow()
+      let cleared = domNow()
+      for (let i = 0; i < 12 && cleared.markers.length > 0; i++) {
+        await deps.wait(500)
+        cleared = domNow()
+      }
       deps.replaceContent(originalMarkdown)
-      await deps.wait(1800)
-      const restored = domNow()
+      let restored = domNow()
+      for (let i = 0; i < 12 && restored.markers.length < markers.length; i++) {
+        await deps.wait(500)
+        restored = domNow()
+      }
       const afterNumbers = restored.numberedHeadings
       push('badges-content-reset', '内容清空后无旧徽章，恢复后重新渲染', [
         { id: 'reset.cleared', ok: cleared.markers.length === 0, detail: `markers=${cleared.markers.length}` },

@@ -175,6 +175,16 @@ describe('R14 badge aggregation', () => {
     expect(set.summary).toBeNull()
   })
 
+  it('does NOT merge two same-label problems with different target identities', () => {
+    const set = buildDiagnosticBadgeSet([
+      { diagnosticId: 'a', code: 'HEADING_MANUAL_NUMBER_PREFIX', severity: 'warning', targetIdentity: 'heading:H1' },
+      { diagnosticId: 'b', code: 'HEADING_MANUAL_NUMBER_PREFIX', severity: 'warning', targetIdentity: 'heading:H2' },
+    ])
+    expect(set.all).toHaveLength(2)
+    expect(set.visible).toHaveLength(2)
+    expect(set.summary).toBeNull()
+  })
+
   it('T14 keeps different real problems apart', () => {
     const set = buildDiagnosticBadgeSet([
       { diagnosticId: 'a', code: 'HEADING_LEVEL_GAP', severity: 'warning', metadata: { previousLevel: 3, currentLevel: 5 } },

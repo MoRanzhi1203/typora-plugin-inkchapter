@@ -450,6 +450,34 @@ describe('R14 — body diagnostic badges', () => {
     expect(ev.defaultPrevented).toBe(true)
   })
 
+  it('a text-selection drag that ends over a badge does NOT activate it', () => {
+    const w = makeWorld()
+    host = w.h
+    inject(host, [gapWarning()])
+    api().renderHeadingDiagnosticMarkers()
+    const calls: string[] = []
+    ;(host as unknown as { locateDiagnostic: (id: string) => void }).locateDiagnostic = id => { calls.push(id) }
+    const item = document.querySelector('.inkchapter-heading-diagnostic-reason__item') as HTMLElement
+    item.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: 10, clientY: 10 }))
+    item.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true, button: 0, clientX: 120, clientY: 80 }))
+    item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }))
+    expect(calls).toEqual([])
+  })
+
+  it('right-click on a badge does not activate the panel', () => {
+    const w = makeWorld()
+    host = w.h
+    inject(host, [gapWarning()])
+    api().renderHeadingDiagnosticMarkers()
+    const calls: string[] = []
+    ;(host as unknown as { locateDiagnostic: (id: string) => void }).locateDiagnostic = id => { calls.push(id) }
+    const item = document.querySelector('.inkchapter-heading-diagnostic-reason__item') as HTMLElement
+    item.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, button: 2, clientX: 10, clientY: 10 }))
+    item.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true, button: 2, clientX: 10, clientY: 10 }))
+    item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 2 }))
+    expect(calls).toEqual([])
+  })
+
   it('clicking a specific badge opens the panel and locates the EXACT diagnostic', () => {
     const w = makeWorld()
     host = w.h
